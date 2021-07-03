@@ -5,44 +5,52 @@ Unix IO Interface.
 """
 module UnixIO
 
+export UnixFD
 
-const STDIN = Base.STDIN_NO
-const STDOUT = Base.STDOUT_NO
-const STDERR = Base.STDERR_NO
+struct UnixFD <: IO
+    fd::Cint
+end
+
+Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
+
+const STDIN = UnixFD(Base.STDIN_NO)
+const STDOUT = UnixFD(Base.STDOUT_NO)
+const STDERR = UnixFD(Base.STDERR_NO)
 
 
 # Opening and Closing Unix Files.
 
 
 using Base.Filesystem:
-JL_O_APPEND,  JL_O_NOCTTY,  JL_O_RDWR,         
+JL_O_APPEND,  JL_O_NOCTTY,  JL_O_RDWR,
 JL_O_CREAT,   JL_O_TRUNC,
 JL_O_EXCL,    JL_O_RDONLY,  JL_O_WRONLY
 
 
 """
-    open(pathname, flags; [yield=true]) -> file descriptor
+    open(pathname, [flags = JL_O_RDWR]; [yield=true]) -> UnixFD
 
 Open the file specified by pathname.
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
-function open(pathname, flags; yield=true)
+function open(pathname::AbstractString, flags = JL_O_RDWR; yield=true)
     if yield
-        @threadcall(:open, Cint, (Cstring, Cint), pathname, flags)
+        fd = @threadcall(:open, Cint, (Cstring, Cint), pathname, flags)
     else
-        @ccall open(pathname::Cstring, flags::Cint)::Cint
+        fd = @ccall open(pathname::Cstring, flags::Cint)::Cint
     end
+    UnixFD(fd)
 end
 
 
 """
-    close(fd)
+    close(fd::UnixFD)
 
 Close a file descriptor, so that it no longer refers to
 any file and may be reused.
 See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
 """
-close(fd) = @ccall close(fd::Cint)::Cint
+Base.close(fd::UnixFD) = @ccall close(fd::Cint)::Cint
 
 
 
@@ -52,7 +60,7 @@ close(fd) = @ccall close(fd::Cint)::Cint
 """
     read(fd, buf, count; [yield=true]) -> number of bytes read
 
-Attempts to read up to count bytes from file descriptor `fd`
+Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
@@ -65,28 +73,51 @@ function read(fd, buf, count; yield=true)
 end
 
 
-"""
-    read(fd, v::Vector{UInt8}) -> number of bytes read
-
-Read bytes from `fd` into `v`.
-"""
-read(fd, v) = read(fd, v, sizeof(v))
-
-
-"""
-    read(fd) -> Vector{UInt8}
-    read(fd, String) -> String
-
-Read bytes from `fd` into a new Vector or String.
-"""
-function read(fd)
-    buf = Vector{UInt8}(undef,1024)
-    n = read(fd, buf)
-    buf[1:n]
+function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
+    nread = 0
+    while nread < nbytes
+        n = UnixIO.read(fd, buf + nread, nbytes - nread)
+        if n == -1
+            throw(Base.SystemError("read($fd) failed", Base.Libc.errno()))
+        elseif n == 0
+            throw(EOFError())
+        end
+        nread += n
+    end
+    nothing
 end
 
-read(fd, ::Type{String}) = String(read(fd))
 
+function Base.read(fd::UnixFD, ::Type{UInt8})
+    byte_ref = Ref{UInt8}(0)
+    unsafe_read(fd, byte_ref, 1)
+    return byte_ref[]
+end
+
+
+Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
+    readbytes!(fd, buf, UInt(nbytes); kw...)
+
+function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
+                         all::Bool=true)
+    lb = length(buf)
+    nread = 0
+    while nread < nbytes
+        @assert nread <= lb
+        if lb == nread
+            lb = min(lb * 2, nbytes)
+            resize!(buf, lb)
+        end
+        n = UnixIO.read(fd, pointer(buf) + nread, lb - nread)
+        if n == -1
+            throw(Base.SystemError("read($fd) failed", Base.Libc.errno()))
+        elseif n == 0 || !all
+            break
+        end
+        nread += n
+    end
+    return nread
+end
 
 
 # Writing to Unix Files.
@@ -107,15 +138,18 @@ function write(fd, buf, count; yield=true)
     end
 end
 
-"""
-    write(fd, s::String; [yield=true]) -> number of bytes written
-    write(fd, v::Vector{UInt8}; [yield=true]) -> number of bytes written
 
-Read bytes to `fd` from a Vector or String.
-"""
-write(fd, s::AbstractString; kw...) = write(fd, codeunits(s); kw...)
-
-write(fd, v::AbstractVector{UInt8}; kw...) = write(fd, v, length(v); kw...)
+function Base.unsafe_write(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
+    nwritten = 0
+    while nwritten < nbytes
+        n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
+        if n == -1
+            throw(Base.SystemError("write($fd) failed", Base.Libc.errno()))
+        end
+        nwritten += n
+    end
+    return Int(nwritten)
+end
 
 
 
@@ -128,7 +162,7 @@ const SOCK_STREAM = 1
 """
     socketpair() -> fd1, fd2
 
-Create a pair of connected Unix Domain Sockets (AF_UNIX, SOCK_STREAM).
+Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 """
 function socketpair()
@@ -138,7 +172,7 @@ function socketpair()
     if r == -1
         throw(Base.SystemError("waitpid($pid) failed", Base.Libc.errno()))
     end
-    (v[1], v[2])
+    (UnixFD(v[1]), UnixFD(v[2]))
 end
 
 const SHUT_RD = 0
@@ -248,8 +282,11 @@ function open(f::Function, cmd::Cmd; check_status=true,
     close(child_io)
 
     status = 0
-    try
+    result = try
         f(parent_io)
+    catch
+        @ccall kill(pid::Cint, 9::Cint)::Cint
+        rethrow()
     finally
         close(parent_io)
         status = waitpid(pid)
@@ -258,8 +295,9 @@ function open(f::Function, cmd::Cmd; check_status=true,
         if !WIFEXITED(status) || WEXITSTATUS(status) != 0
             throw(waitpid_error(cmd, status))
         end
+        return result
     end
-    return status
+    return status, result
 end
 
 
@@ -271,17 +309,10 @@ Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
 """
 function read(cmd::Cmd; kw...)
-    result = IOBuffer()
     open(cmd; kw...) do io
         shutdown(io, SHUT_WR)
-        buf = Vector{UInt8}(undef, 4096)
-        n = 1
-        while n > 0
-            n = read(io, buf)
-            Base.write(result, view(buf, 1:n))
-        end
+        Base.read(io)
     end
-    take!(result)
 end
 
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
@@ -293,21 +324,19 @@ read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 readme() = join([
     Docs.doc(@__MODULE__),
     "## Opening and Closing File Descriptors\n",
-    (Docs.@doc open(pathname, flags)),
-    (Docs.@doc close),
+    Docs.doc(open, String, Int),
+    Docs.doc(Base.close, UnixFD),
     "## Reading and Writing File Descriptors\n",
-    (Docs.@doc read(fd, buf, count)),
-    (Docs.@doc read(fd, v)),
-    (Docs.@doc read(fd)),
-    (Docs.@doc write),
+    Docs.doc(read, UnixFD, Ptr{UInt8}, Cint),
+    Docs.doc(write),
     "## Unix Domain Sockets\n",
-    (Docs.@doc socketpair),
-    (Docs.@doc shutdown),
+    Docs.doc(socketpair),
+    Docs.doc(shutdown),
     "## Executing Unix Commands.\n",
-    (Docs.@doc system),
-    (Docs.@doc open(f, cmd)),
-    (Docs.@doc read(cmd)),
-    (Docs.@doc waitpid)
+    Docs.doc(system),
+    Docs.doc(open, Function, Cmd),
+    Docs.doc(read, Cmd),
+    Docs.doc(waitpid)
     ], "\n\n")
 
 

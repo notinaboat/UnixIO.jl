@@ -7,14 +7,29 @@ Unix IO Interface.
 
 
 ```
-open(pathname, flags; [yield=true]) -> file descriptor
+open(pathname, [flags = JL_O_RDWR]; [yield=true]) -> UnixFD
 ```
 
 Open the file specified by pathname. See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
 
 ```
-close(fd)
+close(stream)
+```
+
+Close an I/O stream. Performs a [`flush`](@ref) first.
+
+```
+close(c::Channel[, excp::Exception])
+```
+
+Close a channel. An exception (optionally given by `excp`), is thrown by:
+
+  * [`put!`](@ref) on a closed channel.
+  * [`take!`](@ref) and [`fetch`](@ref) on an empty, closed channel.
+
+```
+close(fd::UnixFD)
 ```
 
 Close a file descriptor, so that it no longer refers to any file and may be reused. See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
@@ -27,22 +42,7 @@ Close a file descriptor, so that it no longer refers to any file and may be reus
 read(fd, buf, count; [yield=true]) -> number of bytes read
 ```
 
-Attempts to read up to count bytes from file descriptor `fd` into the buffer starting at `buf`. See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
-
-
-```
-read(fd, v::Vector{UInt8}) -> number of bytes read
-```
-
-Read bytes from `fd` into `v`.
-
-
-```
-read(fd) -> Vector{UInt8}
-read(fd, String) -> String
-```
-
-Read bytes from `fd` into a new Vector or String.
+Attempt to read up to count bytes from file descriptor `fd` into the buffer starting at `buf`. See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 
 ```
@@ -50,13 +50,6 @@ write(fd, buf, count; [yield=true]) -> number of bytes written
 ```
 
 Write up to count bytes from `buf` to the file referred to by the file descriptor `fd`. See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
-
-```
-write(fd, s::String; [yield=true]) -> number of bytes written
-write(fd, v::Vector{UInt8}; [yield=true]) -> number of bytes written
-```
-
-Read bytes to `fd` from a Vector or String.
 
 
 ## Unix Domain Sockets
@@ -66,7 +59,7 @@ Read bytes to `fd` from a Vector or String.
 socketpair() -> fd1, fd2
 ```
 
-Create a pair of connected Unix Domain Sockets (AF*UNIX, SOCK*STREAM). See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
+Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`). See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 
 
 ```
@@ -87,18 +80,24 @@ See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
 
 
 ```
-open(pathname, flags; [yield=true]) -> file descriptor
+open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 ```
 
-Open the file specified by pathname. See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
+Run `cmd` using `fork` and `execv`. Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
 
 
 ```
-read(fd) -> Vector{UInt8}
-read(fd, String) -> String
+read(fd, buf, count; [yield=true]) -> number of bytes read
 ```
 
-Read bytes from `fd` into a new Vector or String.
+Attempt to read up to count bytes from file descriptor `fd` into the buffer starting at `buf`. See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
+
+```
+read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
+read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
+```
+
+Run `cmd` using `fork` and `execv`. Return byes written to stdout by `cmd`.
 
 
 ```
