@@ -6,43 +6,33 @@ Unix IO Interface.
 ## Opening and Closing File Descriptors
 
 
-```
-open(pathname, [flags = JL_O_RDWR]; [yield=true]) -> UnixFD
-```
+    open(pathname, [flags = JL_O_RDWR]; [yield=true]) -> UnixFD
 
-Open the file specified by pathname. See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
+Open the file specified by pathname.
+
+The `UnixFD` returned by `UnixIO.open` can be used with
+`UnixIO.read` and `UnixIO.write`. It can also be used with
+the standard `Base.IO` functions
+(`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc)
+
+See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
 
-```
-close(stream)
-```
+    close(fd::UnixFD)
 
-Close an I/O stream. Performs a [`flush`](@ref) first.
-
-```
-close(c::Channel[, excp::Exception])
-```
-
-Close a channel. An exception (optionally given by `excp`), is thrown by:
-
-  * [`put!`](@ref) on a closed channel.
-  * [`take!`](@ref) and [`fetch`](@ref) on an empty, closed channel.
-
-```
-close(fd::UnixFD)
-```
-
-Close a file descriptor, so that it no longer refers to any file and may be reused. See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
+Close a file descriptor, so that it no longer refers to
+any file and may be reused.
+See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
 
 
 ## Reading and Writing File Descriptors
 
 
-```
-read(fd, buf, count; [yield=true]) -> number of bytes read
-```
+    read(fd, buf, count; [yield=true]) -> number of bytes read
 
-Attempt to read up to count bytes from file descriptor `fd` into the buffer starting at `buf`. See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
+Attempt to read up to count bytes from file descriptor `fd`
+into the buffer starting at `buf`.
+See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 
 ```
@@ -79,25 +69,17 @@ system(command) -> exit status
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
 
 
-```
-open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
-```
+    open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
-Run `cmd` using `fork` and `execv`. Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
+Run `cmd` using `fork` and `execv`.
+Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
 
 
-```
-read(fd, buf, count; [yield=true]) -> number of bytes read
-```
+    read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
+    read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
 
-Attempt to read up to count bytes from file descriptor `fd` into the buffer starting at `buf`. See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
-
-```
-read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
-read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
-```
-
-Run `cmd` using `fork` and `execv`. Return byes written to stdout by `cmd`.
+Run `cmd` using `fork` and `execv`.
+Return byes written to stdout by `cmd`.
 
 
 ```

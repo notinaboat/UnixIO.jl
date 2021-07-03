@@ -27,12 +27,18 @@ JL_O_CREAT,   JL_O_TRUNC,
 JL_O_EXCL,    JL_O_RDONLY,  JL_O_WRONLY
 
 
-"""
+@doc (open_doc = """
     open(pathname, [flags = JL_O_RDWR]; [yield=true]) -> UnixFD
 
 Open the file specified by pathname.
+
+The `UnixFD` returned by `UnixIO.open` can be used with
+`UnixIO.read` and `UnixIO.write`. It can also be used with
+the standard `Base.IO` functions
+(`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc)
+
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
-"""
+""")
 function open(pathname::AbstractString, flags = JL_O_RDWR; yield=true)
     if yield
         fd = @threadcall(:open, Cint, (Cstring, Cint), pathname, flags)
@@ -43,13 +49,13 @@ function open(pathname::AbstractString, flags = JL_O_RDWR; yield=true)
 end
 
 
-"""
+@doc (close_doc = """
     close(fd::UnixFD)
 
 Close a file descriptor, so that it no longer refers to
 any file and may be reused.
 See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
-"""
+""")
 Base.close(fd::UnixFD) = @ccall close(fd::Cint)::Cint
 
 
@@ -57,14 +63,14 @@ Base.close(fd::UnixFD) = @ccall close(fd::Cint)::Cint
 # Reading from Unix Files.
 
 
-"""
+@doc (read_doc = """
     read(fd, buf, count; [yield=true]) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
-"""
-function read(fd, buf, count; yield=true)
+""")
+function read(fd::UnixFD, buf, count; yield=true)
     if yield
         @threadcall(:read, Cint, (Cint, Ptr{Cvoid}, Csize_t), fd, buf, count)
     else
@@ -256,12 +262,12 @@ execv(path, args) = @ccall execv(path::Ptr{UInt8}, args::Ptr{Ptr{UInt8}})::Cint
 _exit(status) = @ccall _exit(status::Cint)::Cvoid
 
 
-"""
+@doc (open_cmd_doc = """
     open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
 Run `cmd` using `fork` and `execv`.
 Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
-"""
+""")
 function open(f::Function, cmd::Cmd; check_status=true,
                                      capture_stderr=false)
 
@@ -301,13 +307,15 @@ function open(f::Function, cmd::Cmd; check_status=true,
 end
 
 
-"""
+@doc (read_cmd_doc = """
     read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
     read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
 
 Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
-"""
+""")
+read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
+
 function read(cmd::Cmd; kw...)
     open(cmd; kw...) do io
         shutdown(io, SHUT_WR)
@@ -315,7 +323,6 @@ function read(cmd::Cmd; kw...)
     end
 end
 
-read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 
 
@@ -324,18 +331,18 @@ read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 readme() = join([
     Docs.doc(@__MODULE__),
     "## Opening and Closing File Descriptors\n",
-    Docs.doc(open, String, Int),
-    Docs.doc(Base.close, UnixFD),
+    open_doc,
+    close_doc,
     "## Reading and Writing File Descriptors\n",
-    Docs.doc(read, UnixFD, Ptr{UInt8}, Cint),
+    read_doc,
     Docs.doc(write),
     "## Unix Domain Sockets\n",
     Docs.doc(socketpair),
     Docs.doc(shutdown),
     "## Executing Unix Commands.\n",
     Docs.doc(system),
-    Docs.doc(open, Function, Cmd),
-    Docs.doc(read, Cmd),
+    open_cmd_doc,
+    read_cmd_doc,
     Docs.doc(waitpid)
     ], "\n\n")
 
