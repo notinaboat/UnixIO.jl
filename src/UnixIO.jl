@@ -292,13 +292,22 @@ read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 readme() = join([
     Docs.doc(@__MODULE__),
-    "## Interface\n",
-    (Docs.@doc open),
+    "## Opening and Closing File Descriptors\n",
+    (Docs.@doc open(pathname, flags)),
     (Docs.@doc close),
-    (Docs.@doc read),
+    "## Reading and Writing File Descriptors\n",
+    (Docs.@doc read(fd, buf, count)),
+    (Docs.@doc read(fd, v)),
+    (Docs.@doc read(fd)),
     (Docs.@doc write),
+    "## Unix Domain Sockets\n",
     (Docs.@doc socketpair),
-    (Docs.@doc shutdown)
+    (Docs.@doc shutdown),
+    "## Executing Unix Commands.\n",
+    (Docs.@doc system),
+    (Docs.@doc open(f, cmd)),
+    (Docs.@doc read(cmd)),
+    (Docs.@doc waitpid)
     ], "\n\n")
 
 
