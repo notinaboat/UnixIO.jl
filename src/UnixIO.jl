@@ -14,7 +14,7 @@ using ReadmeDocs
 
 # Unix File Descriptor wrapper.
 
-mutable struct UnixFD <: IO
+struct UnixFD <: IO
     fd::Cint
     read_buffer::IOBuffer
     UnixFD(fd) = new(fd, PipeBuffer())
@@ -182,6 +182,47 @@ See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 shutdown(sockfd, how) = @ccall shutdown(sockfd::Cint, how::Cint)::Cint
 shutdown_read(sockfd) = shutdown(sockfd, SHUT_RD)
 shutdown_write(sockfd) =  shutdown(sockfd, SHUT_WR)
+
+
+
+README"## Polling."
+
+const POLLIN   = 0x01
+const POLLPRI  = 0x02
+const POLLOUT  = 0x04
+const POLLERR  = 0x08
+const POLLHUP  = 0x10
+const POLLNVAL = 0x20
+
+mutable struct pollfd
+    fd::Cint
+    events::Cshort
+    revents::Cshort
+end
+
+README"""
+    poll(fds, nfds, timeout)
+    poll([fd => event_mask, ...], timeout)
+
+Wait for one of a set of file descriptors to become ready to perform I/O.
+See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
+"""
+poll(fds, nfds, timeout) = @threadcall(:poll, Cint,
+                                       (Ptr{Cvoid}, Cint, Cint),
+                                       fds, nfds, timeout)
+
+function poll(fds, timeout)
+    c_fds = [pollfd(fd.fd, events, 0) for (fd, events) in fds]
+    n = GC.@preserve c_fds poll(pointer(c_fds), length(c_fds), timeout)
+    if n == -1
+        throw(Base.SystemError("UnixIO.poll($fds) failed", Base.Libc.errno()))
+    end
+    result = typeof(fds)()
+    for (i, (fd, events)) in enumerate(fds)
+        push!(result, fd => c_fds[i].revents )
+    end
+    return result
+end
 
 
 
@@ -371,7 +412,7 @@ function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
             resize!(buf, lb)
         end
         @assert lb > nread
-        n = UnixIO.read(fd, pointer(buf) + nread, lb - nread)
+        n = GC.@preserve buf UnixIO.read(fd, pointer(buf) + nread, lb - nread)
         if n == 0 || !all
             break
         end
@@ -385,7 +426,7 @@ const BUFFER_SIZE = 65536
 
 function Base.readavailable(fd::UnixFD)
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-    n = UnixIO.read(fd, pointer(buf), length(buf))
+    n = GC.@preserve buf UnixIO.read(fd, pointer(buf), length(buf))
     resize!(buf, n)
 end
 
@@ -404,4 +445,4 @@ end
 
 
 
-end # module
+end # module UnixIO

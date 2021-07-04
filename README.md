@@ -59,6 +59,15 @@ Shut down part of a full-duplex connection.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 
+## Polling.
+
+    poll(fds, nfds, timeout)
+    poll([fd => event_mask, ...], timeout)
+
+Wait for one of a set of file descriptors to become ready to perform I/O.
+See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
+
+
 ## Executing Unix Commands.
 
     system(command) -> exit status
