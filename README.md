@@ -3,10 +3,9 @@
 Unix IO Interface.
 
 
-## Opening and Closing File Descriptors
+## Opening and Closing Unix Files.
 
-
-    open(pathname, [flags = JL_O_RDWR]; [yield=true]) -> UnixFD
+    open(pathname, [flags = O_RDWR]; [yield=false]) -> UnixFD
 
 Open the file specified by pathname.
 
@@ -25,8 +24,7 @@ any file and may be reused.
 See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
 
 
-## Reading and Writing File Descriptors
-
+## Reading from Unix Files.
 
     read(fd, buf, count; [yield=true]) -> number of bytes read
 
@@ -35,38 +33,42 @@ into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 
-```
-write(fd, buf, count; [yield=true]) -> number of bytes written
-```
+## Writing to Unix Files.
 
-Write up to count bytes from `buf` to the file referred to by the file descriptor `fd`. See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
+    write(fd, buf, count; [yield=true]) -> number of bytes written
 
-
-## Unix Domain Sockets
-
-
-```
-socketpair() -> fd1, fd2
-```
-
-Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`). See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
+Write up to count bytes from `buf` to the file referred to by
+the file descriptor `fd`.
+See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 
 
-```
-shutdown(sockfd, how)
-```
+## Unix Domain Sockets.
 
-Shut down part of a full-duplex connection. See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
+    socketpair() -> fd1, fd2
+
+Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
+See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
+
+
+    shutdown(sockfd, how)
+    shutdown_read(sockfd)
+    shutdown_write(sockfd)
+
+Shut down part of a full-duplex connection.
+`how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
+See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 
 ## Executing Unix Commands.
 
-
-```
-system(command) -> exit status
-```
+    system(command) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
+
+
+    waitpid(pid) -> status
+
+See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 
 
     open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
@@ -82,9 +84,4 @@ Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
 
 
-```
-waitpid(pid) -> status
-```
-
-See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 

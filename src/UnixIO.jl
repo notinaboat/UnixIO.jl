@@ -7,28 +7,56 @@ module UnixIO
 
 export UnixFD
 
-struct UnixFD <: IO
+
+using ReadmeDocs
+
+
+
+# Unix File Descriptor wrapper.
+
+mutable struct UnixFD <: IO
     fd::Cint
+    read_buffer::IOBuffer
+    UnixFD(fd) = new(fd, PipeBuffer())
 end
 
 Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
+
+
+
+# Standard Streams.
+
 
 const STDIN = UnixFD(Base.STDIN_NO)
 const STDOUT = UnixFD(Base.STDOUT_NO)
 const STDERR = UnixFD(Base.STDERR_NO)
 
 
-# Opening and Closing Unix Files.
+
+# Errors.
 
 
-using Base.Filesystem:
-JL_O_APPEND,  JL_O_NOCTTY,  JL_O_RDWR,
-JL_O_CREAT,   JL_O_TRUNC,
-JL_O_EXCL,    JL_O_RDONLY,  JL_O_WRONLY
+fd_error(fd::UnixFD, call) =
+            Base.SystemError("UnixIO.$call($fd) failed", Base.Libc.errno())
 
 
-@doc (open_doc = """
-    open(pathname, [flags = JL_O_RDWR]; [yield=true]) -> UnixFD
+
+README"## Opening and Closing Unix Files."
+
+
+const O_RDONLY    = Base.Filesystem.JL_O_RDONLY
+const O_WRONLY    = Base.Filesystem.JL_O_WRONLY
+const O_RDWR      = Base.Filesystem.JL_O_RDWR
+const O_CREAT     = Base.Filesystem.JL_O_CREAT
+const O_RDWR      = Base.Filesystem.JL_O_RDWR
+const O_EXCL      = Base.Filesystem.JL_O_EXCL
+const O_NOCTTY    = Base.Filesystem.JL_O_NOCTTY
+const O_TRUNC     = Base.Filesystem.JL_O_TRUNC
+const O_APPEND    = Base.Filesystem.JL_O_APPEND
+
+
+README"""
+    open(pathname, [flags = O_RDWR]; [yield=false]) -> UnixFD
 
 Open the file specified by pathname.
 
@@ -38,39 +66,40 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc)
 
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
-""")
-function open(pathname::AbstractString, flags = JL_O_RDWR; yield=true)
+"""
+open(args...; kw...) = UnixFD(open_raw(args...; kw...))
+
+function open_raw(pathname::AbstractString, flags = O_RDWR; yield=false)
     if yield
-        fd = @threadcall(:open, Cint, (Cstring, Cint), pathname, flags)
+        @threadcall(:open, Cint, (Cstring, Cint), pathname, flags)
     else
-        fd = @ccall open(pathname::Cstring, flags::Cint)::Cint
+        @ccall open(pathname::Cstring, flags::Cint)::Cint
     end
-    UnixFD(fd)
 end
 
 
-@doc (close_doc = """
+README"""
     close(fd::UnixFD)
 
 Close a file descriptor, so that it no longer refers to
 any file and may be reused.
 See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
-""")
-Base.close(fd::UnixFD) = @ccall close(fd::Cint)::Cint
+"""
+close(fd) = @ccall close(fd::Cint)::Cint
 
 
 
-# Reading from Unix Files.
+README"## Reading from Unix Files."
 
 
-@doc (read_doc = """
+README"""
     read(fd, buf, count; [yield=true]) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
-""")
-function read(fd::UnixFD, buf, count; yield=true)
+"""
+function read(fd, buf, count; yield=true)
     if yield
         @threadcall(:read, Cint, (Cint, Ptr{Cvoid}, Csize_t), fd, buf, count)
     else
@@ -78,58 +107,26 @@ function read(fd::UnixFD, buf, count; yield=true)
     end
 end
 
-
-function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
-    nread = 0
-    while nread < nbytes
-        n = UnixIO.read(fd, buf + nread, nbytes - nread)
-        if n == -1
-            throw(Base.SystemError("read($fd) failed", Base.Libc.errno()))
-        elseif n == 0
-            throw(EOFError())
-        end
-        nread += n
+function read(fd::UnixFD, buf, count; kw...)
+    n = bytesavailable(fd.read_buffer)
+    if n > 0
+        n = min(n, count)
+        unsafe_read(fd.read_buffer, buf, n)
+        return n
     end
-    nothing
-end
-
-
-function Base.read(fd::UnixFD, ::Type{UInt8})
-    byte_ref = Ref{UInt8}(0)
-    unsafe_read(fd, byte_ref, 1)
-    return byte_ref[]
-end
-
-
-Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
-    readbytes!(fd, buf, UInt(nbytes); kw...)
-
-function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
-                         all::Bool=true)
-    lb = length(buf)
-    nread = 0
-    while nread < nbytes
-        @assert nread <= lb
-        if lb == nread
-            lb = min(lb * 2, nbytes)
-            resize!(buf, lb)
-        end
-        n = UnixIO.read(fd, pointer(buf) + nread, lb - nread)
-        if n == -1
-            throw(Base.SystemError("read($fd) failed", Base.Libc.errno()))
-        elseif n == 0 || !all
-            break
-        end
-        nread += n
+    n = read(fd.fd, buf, count; kw...)
+    if n == -1
+        throw(fd_error(fd, :read))
     end
-    return nread
+    return n
 end
 
 
-# Writing to Unix Files.
+
+README"## Writing to Unix Files."
 
 
-"""
+README"""
     write(fd, buf, count; [yield=true]) -> number of bytes written
 
 Write up to count bytes from `buf` to the file referred to by
@@ -145,27 +142,14 @@ function write(fd, buf, count; yield=true)
 end
 
 
-function Base.unsafe_write(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
-    nwritten = 0
-    while nwritten < nbytes
-        n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
-        if n == -1
-            throw(Base.SystemError("write($fd) failed", Base.Libc.errno()))
-        end
-        nwritten += n
-    end
-    return Int(nwritten)
-end
 
-
-
-# Unix Domain Sockets.
+README"## Unix Domain Sockets."
 
 
 const AF_UNIX = 1
 const SOCK_STREAM = 1
 
-"""
+README"""
     socketpair() -> fd1, fd2
 
 Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
@@ -176,28 +160,35 @@ function socketpair()
     r = ccall(:socketpair, Cint, (Cint, Cint, Cint, Ptr{Cint}),
                                    AF_UNIX, SOCK_STREAM, 0, v)
     if r == -1
-        throw(Base.SystemError("waitpid($pid) failed", Base.Libc.errno()))
+        throw(fd_error(fd, :socketpair))
     end
     (UnixFD(v[1]), UnixFD(v[2]))
 end
+
 
 const SHUT_RD = 0
 const SHUT_WR = 1
 const SHUT_RDWR = 2
 
-"""
+README"""
     shutdown(sockfd, how)
+    shutdown_read(sockfd)
+    shutdown_write(sockfd)
 
 Shut down part of a full-duplex connection.
+`how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 """
 shutdown(sockfd, how) = @ccall shutdown(sockfd::Cint, how::Cint)::Cint
+shutdown_read(sockfd) = shutdown(sockfd, SHUT_RD)
+shutdown_write(sockfd) =  shutdown(sockfd, SHUT_WR)
 
 
 
-# Executing Unix Commands.
+README"## Executing Unix Commands."
 
-"""
+
+README"""
     system(command) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
@@ -213,7 +204,7 @@ WIFSTOPPED(x) = (x & 0xff) == 0x7f
 WSTOPSIG(x) = WEXITSTATUS(x)
 
 
-"""
+README"""
     waitpid(pid) -> status
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
@@ -222,7 +213,7 @@ function waitpid(pid)
     status = Ref{Cint}(0)
     r = @ccall waitpid(pid::Cint, status::Ptr{Cint}, 0::Cint)::Cint
     if r == -1
-        throw(Base.SystemError("waitpid($pid) failed", Base.Libc.errno()))
+        throw(fd_error(fd, :waitpid))
     end
     @assert r == pid
     return status[]
@@ -262,12 +253,12 @@ execv(path, args) = @ccall execv(path::Ptr{UInt8}, args::Ptr{Ptr{UInt8}})::Cint
 _exit(status) = @ccall _exit(status::Cint)::Cvoid
 
 
-@doc (open_cmd_doc = """
+README"""
     open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
 Run `cmd` using `fork` and `execv`.
 Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
-""")
+"""
 function open(f::Function, cmd::Cmd; check_status=true,
                                      capture_stderr=false)
 
@@ -307,13 +298,13 @@ function open(f::Function, cmd::Cmd; check_status=true,
 end
 
 
-@doc (read_cmd_doc = """
+README"""
     read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
     read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
 
 Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
-""")
+"""
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 function read(cmd::Cmd; kw...)
@@ -325,26 +316,91 @@ end
 
 
 
+# Base.IO Interface
 
-# Documentation.
+function Base.close(fd::UnixFD)
+    if close(fd) == -1
+        throw(fd_error(fd, :close))
+    end
+    nothing
+end
 
-readme() = join([
-    Docs.doc(@__MODULE__),
-    "## Opening and Closing File Descriptors\n",
-    open_doc,
-    close_doc,
-    "## Reading and Writing File Descriptors\n",
-    read_doc,
-    Docs.doc(write),
-    "## Unix Domain Sockets\n",
-    Docs.doc(socketpair),
-    Docs.doc(shutdown),
-    "## Executing Unix Commands.\n",
-    Docs.doc(system),
-    open_cmd_doc,
-    read_cmd_doc,
-    Docs.doc(waitpid)
-    ], "\n\n")
+
+Base.bytesavailable(fd::UnixFD) = bytesavailable(fd.read_buffer)
+
+
+function Base.eof(fd::UnixFD)
+    if bytesavailable(fd.read_buffer) == 0
+        Base.write(fd.read_buffer, readavailable(fd))
+    end
+    return bytesavailable(fd.read_buffer) == 0
+end
+
+
+function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
+    nread = 0
+    while nread < nbytes
+        n = UnixIO.read(fd, buf + nread, nbytes - nread)
+        if n == 0
+            throw(EOFError())
+        end
+        nread += n
+    end
+    nothing
+end
+
+
+function Base.read(fd::UnixFD, ::Type{UInt8})
+    eof(fd) && throw(EOFError())
+    @assert bytesavailable(fd.read_buffer) > 0
+    Base.read(fd.read_buffer, UInt8)
+end
+
+
+Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
+    readbytes!(fd, buf, UInt(nbytes); kw...)
+
+function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
+                         all::Bool=true)
+    lb = length(buf)
+    nread = 0
+    while nread < nbytes
+        @assert nread <= lb
+        if (lb - nread) == 0
+            lb = lb == 0 ? nbytes : min(lb * 2, nbytes)
+            resize!(buf, lb)
+        end
+        @assert lb > nread
+        n = UnixIO.read(fd, pointer(buf) + nread, lb - nread)
+        if n == 0 || !all
+            break
+        end
+        nread += n
+    end
+    return nread
+end
+
+
+const BUFFER_SIZE = 65536
+
+function Base.readavailable(fd::UnixFD)
+    buf = Vector{UInt8}(undef, BUFFER_SIZE)
+    n = UnixIO.read(fd, pointer(buf), length(buf))
+    resize!(buf, n)
+end
+
+
+function Base.unsafe_write(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
+    nwritten = 0
+    while nwritten < nbytes
+        n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
+        if n == -1
+            throw(fd_error(fd, :write))
+        end
+        nwritten += n
+    end
+    return Int(nwritten)
+end
 
 
 
