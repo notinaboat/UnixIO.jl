@@ -14,6 +14,7 @@ using ReadmeDocs
 
 # Unix File Descriptor wrapper.
 
+
 struct UnixFD <: IO
     fd::Cint
     read_buffer::IOBuffer
@@ -21,6 +22,7 @@ struct UnixFD <: IO
 end
 
 Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
+Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
 
 
@@ -38,6 +40,28 @@ const STDERR = UnixFD(Base.STDERR_NO)
 
 fd_error(fd::UnixFD, call) =
             Base.SystemError("UnixIO.$call($fd) failed", Base.Libc.errno())
+
+
+
+# @ccall wrapper
+
+macro yieldccall(yield, f, rettype, argtypes, argvals...)
+    esc(:(if $yield
+        if threadcall_pool_is_busy()
+            @warn """
+                  @threadcall is blocked because libuv threadpool is busy.
+                  Consider increasing UV_THREADPOOL_SIZE.
+                  See also: https://github.com/JuliaLang/julia/issues/21045
+                  """
+        end
+        @threadcall($f, $rettype, $argtypes, $(argvals...))
+    else
+        ccall($f, $rettype, $argtypes, $(argvals...))
+    end))
+end
+
+threadcall_pool_is_busy() = Base.threadcall_restrictor.sem_size ==
+                            Base.threadcall_restrictor.curr_cnt
 
 
 
@@ -69,13 +93,8 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
 open(args...; kw...) = UnixFD(open_raw(args...; kw...))
 
-function open_raw(pathname::AbstractString, flags = O_RDWR; yield=false)
-    if yield
-        @threadcall(:open, Cint, (Cstring, Cint), pathname, flags)
-    else
-        @ccall open(pathname::Cstring, flags::Cint)::Cint
-    end
-end
+open_raw(pathname::AbstractString, flags = O_RDWR; yield=false) =
+    @yieldccall(yield, :open, Cint, (Cstring, Cint), pathname, flags)
 
 
 README"""
@@ -99,13 +118,9 @@ Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
-function read(fd, buf, count; yield=true)
-    if yield
-        @threadcall(:read, Cint, (Cint, Ptr{Cvoid}, Csize_t), fd, buf, count)
-    else
-        @ccall read(fd::Cint, buf::Ptr{Cvoid}, count::Csize_t)::Cint
-    end
-end
+read(fd, buf, count; yield=true) =
+    @yieldccall(yield, :read, Cint, (Cint, Ptr{Cvoid}, Csize_t),
+                                    fd, buf, count)
 
 function read(fd::UnixFD, buf, count; kw...)
     n = bytesavailable(fd.read_buffer)
@@ -133,13 +148,9 @@ Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 """
-function write(fd, buf, count; yield=true)
-    if yield
-        @threadcall(:write, Csize_t, (Cint, Ptr{Cvoid}, Csize_t), fd, buf, count)
-    else
-        @ccall write(fd::Csize_t, buf::Ptr{Cvoid}, count::Csize_t)::Cint
-    end
-end
+write(fd, buf, count; yield=true) =
+    @yieldccall(yield, :write, Csize_t, (Cint, Ptr{Cvoid}, Csize_t),
+                                        fd, buf, count)
 
 
 
@@ -207,9 +218,9 @@ README"""
 Wait for one of a set of file descriptors to become ready to perform I/O.
 See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
 """
-poll(fds, nfds, timeout) = @threadcall(:poll, Cint,
-                                       (Ptr{Cvoid}, Cint, Cint),
-                                       fds, nfds, timeout)
+poll(fds, nfds, timeout; yield=true) = @yieldccall(yield, :poll, Cint,
+                                                   (Ptr{Cvoid}, Cint, Cint),
+                                                   fds, nfds, timeout)
 
 function poll(fds, timeout)
     c_fds = [pollfd(fd.fd, events, 0) for (fd, events) in fds]
@@ -234,7 +245,15 @@ README"""
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
 """
-system(command) = @threadcall(:system, Cint, (Cstring,), command)
+function system(command; yield=true) 
+    r = @yieldccall(yield, :system, Cint, (Cstring,), command)
+    if r == -1
+        throw(fd_error(fd, :system))
+    elseif r != 0
+        throw(ErrorException("UnixIO.system termination status: $r"))
+    end
+    nothing
+end
 
 
 WIFSIGNALED(x) = (((x & 0x7f) + 1) >> 1) > 0

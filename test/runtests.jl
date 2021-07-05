@@ -44,3 +44,7 @@ end
 cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
 @test UnixIO.open(cmd) do io collect(eachline(io)) end == 
     open(cmd; read = true) do io collect(eachline(io)) end
+
+@sync for i in 1:Base.threadcall_restrictor.sem_size + 1
+    @async @test UnixIO.read(`bash -c "sleep 2; echo $i"`, String) == "$i\n"
+end
