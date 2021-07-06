@@ -87,8 +87,7 @@ Open the file specified by pathname.
 The `UnixFD` returned by `UnixIO.open` can be used with
 `UnixIO.read` and `UnixIO.write`. It can also be used with
 the standard `Base.IO` functions
-(`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc)
-
+(`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
 open(args...; kw...) = UnixFD(open_raw(args...; kw...))
@@ -105,6 +104,24 @@ any file and may be reused.
 See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
 """
 close(fd) = @ccall close(fd::Cint)::Cint
+
+
+const SHUT_RD = 0
+const SHUT_WR = 1
+const SHUT_RDWR = 2
+
+README"""
+    shutdown(sockfd, [how = SHUT_WR])
+
+Shut down part of a full-duplex connection.
+`how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
+See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
+"""
+shutdown(fd, how=SHUT_WR) = @ccall shutdown(fd::Cint, how::Cint)::Cint
+
+@static if isdefined(Base, :shutdown)
+    Base.shutdown(fd::UnixFD) = UnixIO.shutdown(fd)
+end
 
 
 
@@ -177,24 +194,6 @@ function socketpair()
 end
 
 
-const SHUT_RD = 0
-const SHUT_WR = 1
-const SHUT_RDWR = 2
-
-README"""
-    shutdown(sockfd, [how = SHUT_WR])
-
-Shut down part of a full-duplex connection.
-`how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
-See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
-"""
-shutdown(fd, how=SHUT_WR) = @ccall shutdown(fd::Cint, how::Cint)::Cint
-
-@static if isdefined(Base, :shutdown)
-    Base.shutdown(fd::UnixFD) = UnixIO.shutdown(fd)
-end
-
-
 
 README"## Polling."
 
@@ -262,30 +261,6 @@ function system(command; yield=true)
 end
 
 
-WIFSIGNALED(x) = (((x & 0x7f) + 1) >> 1) > 0
-WTERMSIG(x) = (x & 0x7f)
-WIFEXITED(x) = WTERMSIG(x) == 0
-WEXITSTATUS(x) = signed(UInt8((x >> 8) & 0xff))
-WIFSTOPPED(x) = (x & 0xff) == 0x7f
-WSTOPSIG(x) = WEXITSTATUS(x)
-
-
-README"""
-    waitpid(pid) -> status
-
-See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
-"""
-function waitpid(pid)
-    status = Ref{Cint}(0)
-    r = @ccall waitpid(pid::Cint, status::Ptr{Cint}, 0::Cint)::Cint
-    if r == -1
-        throw(fd_error(fd, :waitpid))
-    end
-    @assert r == pid
-    return status[]
-end
-
-
 function waitpid_error(cmd, status)
     @assert !WIFEXITED(status) || WEXITSTATUS(status) != 0
     if WIFSTOPPED(status)
@@ -318,6 +293,7 @@ dup2(oldfd, newfd) = @ccall dup2(oldfd::Cint, newfd::Cint)::Cint
 execv(path, args) = @ccall execv(path::Ptr{UInt8}, args::Ptr{Ptr{UInt8}})::Cint
 _exit(status) = @ccall _exit(status::Cint)::Cvoid
 
+README"---"
 
 README"""
     open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
@@ -374,7 +350,7 @@ function open(f::Function, cmd::Cmd; check_status=true,
     return status, result
 end
 
-
+README"---"
 README"""
     read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
     read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
@@ -395,6 +371,31 @@ function read(cmd::Cmd; kw...)
         shutdown(io)
         Base.read(io)
     end
+end
+
+
+WIFSIGNALED(x) = (((x & 0x7f) + 1) >> 1) > 0
+WTERMSIG(x) = (x & 0x7f)
+WIFEXITED(x) = WTERMSIG(x) == 0
+WEXITSTATUS(x) = signed(UInt8((x >> 8) & 0xff))
+WIFSTOPPED(x) = (x & 0xff) == 0x7f
+WSTOPSIG(x) = WEXITSTATUS(x)
+
+README"---"
+
+README"""
+    waitpid(pid) -> status
+
+See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
+"""
+function waitpid(pid)
+    status = Ref{Cint}(0)
+    r = @ccall waitpid(pid::Cint, status::Ptr{Cint}, 0::Cint)::Cint
+    if r == -1
+        throw(fd_error(fd, :waitpid))
+    end
+    @assert r == pid
+    return status[]
 end
 
 
