@@ -260,6 +260,8 @@ function system(command; yield=true)
     nothing
 end
 
+system(cmd::Cmd) = system(join(cmd.exec, " "))
+
 
 function waitpid_error(cmd, status)
     @assert !WIFEXITED(status) || WEXITSTATUS(status) != 0
@@ -408,6 +410,10 @@ function Base.close(fd::UnixFD)
     end
     nothing
 end
+
+Base.isopen(fd::UnixFD) =
+    bytesavailable(fd.read_buffer) > 0 ||
+    UnixIO.read(fd.fd, Base.C_NULL, 0) == 0
 
 
 Base.bytesavailable(fd::UnixFD) = bytesavailable(fd.read_buffer)

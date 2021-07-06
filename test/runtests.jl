@@ -21,7 +21,9 @@ readbytes!(jio, jv, 100)
 readbytes!(uio, uv, 100)
 @test jv == uv
 @test read(jio) == read(uio)
+@test isopen(jio) == isopen(uio)
 @test close(jio) == close(uio)
+@test isopen(jio) == isopen(uio)
 
 jio = open("runtests.jl")
 uio = UnixIO.open("runtests.jl")
