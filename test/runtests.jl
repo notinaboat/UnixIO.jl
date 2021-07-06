@@ -31,7 +31,7 @@ uio = UnixIO.open("runtests.jl")
 
 @test UnixIO.open(`hexdump`) do io
     write(io, read(UnixIO.open("runtests.jl")))
-    UnixIO.shutdown_write(io)
+    UnixIO.shutdown(io)
     read(io)
 end ==
 open(`hexdump`, open("runtests.jl"); read = true) do io

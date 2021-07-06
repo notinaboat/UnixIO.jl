@@ -182,17 +182,17 @@ const SHUT_WR = 1
 const SHUT_RDWR = 2
 
 README"""
-    shutdown(sockfd, how)
-    shutdown_read(sockfd)
-    shutdown_write(sockfd)
+    shutdown(sockfd, [how = SHUT_WR])
 
 Shut down part of a full-duplex connection.
 `how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 """
-shutdown(sockfd, how) = @ccall shutdown(sockfd::Cint, how::Cint)::Cint
-shutdown_read(sockfd) = shutdown(sockfd, SHUT_RD)
-shutdown_write(sockfd) =  shutdown(sockfd, SHUT_WR)
+shutdown(fd, how=SHUT_WR) = @ccall shutdown(fd::Cint, how::Cint)::Cint
+
+@static if isdefined(Base, :shutdown)
+    Base.shutdown(fd::UnixFD) = UnixIO.shutdown(fd)
+end
 
 
 
@@ -244,6 +244,12 @@ README"""
     system(command) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
+
+e.g.
+```
+julia> UnixIO.system("uname -srm")
+Darwin 20.3.0 x86_64
+```
 """
 function system(command; yield=true) 
     r = @yieldccall(yield, :system, Cint, (Cstring,), command)
@@ -318,6 +324,17 @@ README"""
 
 Run `cmd` using `fork` and `execv`.
 Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
+
+e.g.
+```
+julia> UnixIO.open(`hexdump -C`) do io
+           write(io, "Hello World!")
+           shutdown(io)
+           read(io, String)
+       end |> println
+00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 21              |Hello World!|
+0000000c
+```
 """
 function open(f::Function, cmd::Cmd; check_status=true,
                                      capture_stderr=false)
@@ -364,12 +381,18 @@ README"""
 
 Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
+
+e.g.
+```
+julia> UnixIO.read(`uname -srm`, String)
+"Darwin 20.3.0 x86_64\n"
+```
 """
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 function read(cmd::Cmd; kw...)
     open(cmd; kw...) do io
-        shutdown(io, SHUT_WR)
+        shutdown(io)
         Base.read(io)
     end
 end

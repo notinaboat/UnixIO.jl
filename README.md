@@ -50,9 +50,7 @@ Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 
 
-    shutdown(sockfd, how)
-    shutdown_read(sockfd)
-    shutdown_write(sockfd)
+    shutdown(sockfd, [how = SHUT_WR])
 
 Shut down part of a full-duplex connection.
 `how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
@@ -74,6 +72,12 @@ See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
 
+e.g.
+```
+julia> UnixIO.system("uname -srm")
+Darwin 20.3.0 x86_64
+```
+
 
     waitpid(pid) -> status
 
@@ -85,12 +89,29 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 Run `cmd` using `fork` and `execv`.
 Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
 
+e.g.
+```
+julia> UnixIO.open(`hexdump -C`) do io
+           write(io, "Hello World!")
+           shutdown(io)
+           read(io, String)
+       end |> println
+00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 21              |Hello World!|
+0000000c
+```
+
 
     read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
     read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
 
 Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
+
+e.g.
+```
+julia> UnixIO.read(`uname -srm`, String)
+"Darwin 20.3.0 x86_64\n"
+```
 
 
 
