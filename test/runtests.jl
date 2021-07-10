@@ -25,6 +25,9 @@ readbytes!(uio, uv, 100)
 @test close(jio) == close(uio)
 @test isopen(jio) == isopen(uio)
 
+UnixIO.system(`dd if=/dev/urandom of=testdata bs=1024 count=1000`)
+@test read(`hexdump testdata`) == UnixIO.read(`hexdump testdata`)
+
 jio = open("runtests.jl")
 uio = UnixIO.open("runtests.jl")
 
@@ -40,6 +43,9 @@ open(`hexdump`, open("runtests.jl"); read = true) do io
     read(io)
 end
         
+@test UnixIO.read(`hexdump runtests.jl`) ==
+             read(`hexdump runtests.jl`)
+
 @test UnixIO.read(`hexdump runtests.jl`) ==
              read(`hexdump runtests.jl`)
 

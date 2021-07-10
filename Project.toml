@@ -4,4 +4,5 @@ authors = ["notinaboat <notinaboat@icloud.com>"]
 version = "0.1.0"
 
 [deps]
+CInclude = "122a1be9-ad55-43c7-9e7c-9e9d38f5ac3b"
 ReadmeDocs = "c63066b3-de92-487d-9da7-7c375a07912b"

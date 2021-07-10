@@ -8,5 +8,7 @@ README.md: src/$(PACKAGE).jl
 
 .PHONY: test
 test: src/$(PACKAGE).jl
-	julia --project -e "using Pkg; \
-		                Pkg.test()"
+	julia --project \
+		  --threads 10 \
+		  -e "using Pkg; \
+              Pkg.test()"

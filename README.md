@@ -5,7 +5,7 @@ Unix IO Interface.
 
 ## Opening and Closing Unix Files.
 
-    open(pathname, [flags = O_RDWR]; [yield=false]) -> UnixFD
+    UnixIO.open(pathname, [flags = O_RDWR]; [yield=false]) -> UnixFD
 
 Open the file specified by pathname.
 
@@ -16,14 +16,28 @@ the standard `Base.IO` functions
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
 
-    close(fd::UnixFD)
+    UnixIO.tcsetattr(tty::UnixFD;
+                     [iflag=0], [oflag=0], [cflag=CS8], [lflag=0], [speed=0])
+
+Set terminal device options.
+
+See [tcsetattr(3)](https://man7.org/linux/man-pages/man3/tcsetattr.3.html)
+for flag descriptions.
+
+e.g.
+
+    io = UnixIO.open("/dev/ttyUSB0", UnixIO.O_RDWR | UnixIO.O_NOCTTY)
+    UnixIO.tcsetattr(io; speed=9600, lflag=UnixIO.ICANON)
+
+
+    UnixIO.close(fd::UnixFD)
 
 Close a file descriptor, so that it no longer refers to
 any file and may be reused.
 See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
 
 
-    shutdown(sockfd, [how = SHUT_WR])
+    UnixIO.shutdown(sockfd, [how = SHUT_WR])
 
 Shut down part of a full-duplex connection.
 `how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
@@ -32,7 +46,7 @@ See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 ## Reading from Unix Files.
 
-    read(fd, buf, count; [yield=true]) -> number of bytes read
+    UnixIO.read(fd, buf, count; [yield=true]) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
@@ -41,11 +55,18 @@ See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 ## Writing to Unix Files.
 
-    write(fd, buf, count; [yield=true]) -> number of bytes written
+    UnixIO.write(fd, buf, count; [yield=false]) -> number of bytes written
 
 Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
+
+
+    UnixIO.println(x...)
+    UnixIO.printerr(x...)
+
+Write directly to `STDOUT` or `STDERR`.
+Does not yield control from the current task.
 
 
 ## Unix Domain Sockets.
@@ -67,7 +88,7 @@ See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
 
 ## Executing Unix Commands.
 
-    system(command) -> exit status
+    UnixIO.system(command; [yield=true]) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
 
@@ -114,7 +135,7 @@ julia> UnixIO.read(`uname -srm`, String)
 
 ---
 
-    waitpid(pid) -> status
+    UnixIO.waitpid(pid) -> status
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 
