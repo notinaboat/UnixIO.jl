@@ -263,6 +263,8 @@ c_open(pathname::AbstractString, flags = O_RDWR) =
     @ccall open(pathname::Cstring, flags::Cint)::Cint
 
 
+README"---"
+
 README"""
     UnixIO.tcsetattr(tty::UnixFD;
                      [iflag=0], [oflag=0], [cflag=CS8], [lflag=0], [speed=0])
@@ -294,6 +296,8 @@ function tcsetattr(tty::UnixFD; iflag = 0,
     end
 end
 
+
+README"---"
 
 README"""
     UnixIO.close(fd::UnixFD)

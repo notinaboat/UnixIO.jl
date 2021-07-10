@@ -16,6 +16,8 @@ the standard `Base.IO` functions
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
 
+---
+
     UnixIO.tcsetattr(tty::UnixFD;
                      [iflag=0], [oflag=0], [cflag=CS8], [lflag=0], [speed=0])
 
@@ -29,6 +31,8 @@ e.g.
     io = UnixIO.open("/dev/ttyUSB0", UnixIO.O_RDWR | UnixIO.O_NOCTTY)
     UnixIO.tcsetattr(io; speed=9600, lflag=UnixIO.ICANON)
 
+
+---
 
     UnixIO.close(fd::UnixFD)
 
