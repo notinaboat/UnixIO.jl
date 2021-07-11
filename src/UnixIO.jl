@@ -1,5 +1,4 @@
 """
-                ishow ctx.force_name
 # UnixIO.jl
 
 Unix IO Interface.
@@ -58,7 +57,7 @@ function fcntl_setfl(fd, flag)
         return 0
     end
     flags |= flag
-    printerr("fd = ", fd, " flags = ", flags)
+#    printerr("fd = ", fd, " flags = ", flags)
     @ccall fcntl(fd::Cint, C.F_SETFL::Cint, flags::Cint)::Cint
 end
 
@@ -317,7 +316,7 @@ end
 
 
 c_open(pathname::AbstractString, flags = C.O_RDWR) =
-(@show pathname, flags;    @ccall open(pathname::Cstring, flags::Cint)::Cint)
+    @ccall open(pathname::Cstring, flags::Cint)::Cint
 
 
 README"---"
@@ -393,7 +392,7 @@ See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
 function read(fd::UnixFD, buf, count)
     n = bytesavailable(fd.read_buffer)
-    printerr("read($fd,$(typeof(buf)),$count), $n bytes in buffer t$(TID())")
+#    printerr("read($fd,$(typeof(buf)),$count), $n bytes in buffer t$(TID())")
     if n > 0
         n = min(n, count)
         unsafe_read(fd.read_buffer, buf, n)
@@ -401,7 +400,7 @@ function read(fd::UnixFD, buf, count)
     end
     n = c_read(fd, buf, count)
     n != -1 || throw(ccall_error(:read, fd, buf, count))
-    printerr("RX $fd: \"$(unsafe_string(buf, min(n, 40)))\" t$(TID())")
+#    printerr("RX $fd: \"$(unsafe_string(buf, min(n, 40)))\" t$(TID())")
     return n
 end
 
@@ -415,9 +414,9 @@ c_read(fd::ThreadedUnixFD, buf, count) =
 
 function c_read(fd::PolledUnixFD, buf, count)
     while true
-        printerr("x c_read buf = ", buf, " count = ", count)
+#        printerr("x c_read buf = ", buf, " count = ", count)
         n = c_read(fd.fd, buf, count)
-        printerr("c_read n = ", n)
+#        printerr("c_read n = ", n)
         if (n == -1 && Base.Libc.errno() in (C.EAGAIN, C.EINTR))
             poll_wait(fd, C.POLLIN)
         else
@@ -502,7 +501,7 @@ const poll_lock = Threads.SpinLock()
 function poll_wait(fd::PolledUnixFD, events)
     global poll_queue
 
-    printerr("poll_wait(", fd, ", ", events, ")")
+#    printerr("poll_wait(", fd, ", ", events, ")")
     lock(fd.ready)
     try
         lock(poll_lock)
@@ -510,7 +509,7 @@ function poll_wait(fd::PolledUnixFD, events)
         push!(poll_queue, PollFD(fd.fd, events, fd.ready))
         unlock(poll_lock)
         if isfirst == 1
-            printerr("fisrt!")
+#            printerr("fisrt!")
             @async poll_task(poll_queue, poll_lock)
         end
         wait(fd.ready)
@@ -523,11 +522,11 @@ end
 function poll_task(queue::Vector{PollFD}, queue_lock)
     while true
         try
-            printerr("poll_task()")
+#            printerr("poll_task()")
             poll(queue, queue_lock)
             lock(queue_lock)
             if isempty(queue)
-                printerr("poll_task() done")
+#                printerr("poll_task() done")
                 return
             end
         catch err
@@ -549,7 +548,7 @@ function poll(queue::Vector{PollFD}, queue_lock)
     v = [pollfd(fd.fd, fd.events) for fd in queue]
     unlock(queue_lock)
 
-    printerr("C.poll(", v, ")")
+#    printerr("C.poll(", v, ")")
 
     # Wait for events
     timeout_ms = 10
@@ -728,18 +727,10 @@ julia> UnixIO.read(`uname -srm`, String)
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 function read(cmd::Cmd; kw...)
-    @info "read($cmd)"
-    r = open(cmd; kw...) do io
+    open(cmd; kw...) do io
         shutdown(io)
-        @show io
-        r = IOBuffer()
-        while !eof(io)
-            Base.write(r, Base.readavailable(io))
-        end
-        take!(r)
+        Base.read(io)
     end
-    @info "read($cmd) done"
-    r
 end
 
 
@@ -792,18 +783,18 @@ Base.bytesavailable(fd::UnixFD) = bytesavailable(fd.read_buffer)
 
 
 function Base.eof(fd::UnixFD)
-    printerr("eof($fd), $(bytesavailable(fd.read_buffer)) bytes in buffer")
+#    printerr("eof($fd), $(bytesavailable(fd.read_buffer)) bytes in buffer")
     if bytesavailable(fd.read_buffer) == 0
-        printerr("eof($fd) reading into buffer... t$(TID())")
+#        printerr("eof($fd) reading into buffer... t$(TID())")
         Base.write(fd.read_buffer, readavailable(fd))
-        printerr("    eof($fd) read done ($(bytesavailable(fd.read_buffer))) t$(TID())")
+#        printerr("    eof($fd) read done ($(bytesavailable(fd.read_buffer))) t$(TID())")
     end
     return bytesavailable(fd.read_buffer) == 0
 end
 
 
 function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
-    printerr("unsafe_read($fd, buf, $nbytes)")
+#    printerr("unsafe_read($fd, buf, $nbytes)")
     nread = 0
     while nread < nbytes
         n = UnixIO.read(fd, buf + nread, nbytes - nread)
@@ -818,7 +809,7 @@ end
 
 
 function Base.read(fd::UnixFD, ::Type{UInt8})
-    printerr("read($fd, UInt8)")
+#    printerr("read($fd, UInt8)")
     eof(fd) && throw(EOFError())
     @assert bytesavailable(fd.read_buffer) > 0
     Base.read(fd.read_buffer, UInt8)
@@ -830,14 +821,14 @@ Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
 
 function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true)
-    printerr("readbytes!($fd, buf, $nbytes) t$(TID())")
+#    printerr("readbytes!($fd, buf, $nbytes) t$(TID())")
     lb = length(buf)
     nread = 0
     while nread < nbytes
         @assert nread <= lb
         if (lb - nread) == 0
             lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
-            printerr("resize to $lb t$(TID())")
+#            printerr("resize to $lb t$(TID())")
             resize!(buf, lb)
         end
         @assert lb > nread
@@ -855,9 +846,9 @@ const BUFFER_SIZE = 65536
 
 function Base.readavailable(fd::UnixFD)
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-    printerr("readavailable($fd), reading into $(length(buf)) byte buffer")
+#    printerr("readavailable($fd), reading into $(length(buf)) byte buffer")
     n = GC.@preserve buf UnixIO.read(fd, pointer(buf), length(buf))
-    printerr("readavailable($fd), got $n bytes")
+#    printerr("readavailable($fd), got $n bytes")
     resize!(buf, n)
 end
 
@@ -865,7 +856,7 @@ end
 function Base.unsafe_write(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
     nwritten = 0
     while nwritten < nbytes
-        printerr("TX: \"$(unsafe_string(buf + nwritten, nbytes - nwritten))\"")
+#        printerr("TX: \"$(unsafe_string(buf + nwritten, nbytes - nwritten))\"")
         n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
         if n == -1
             throw(ccall_error(:write, buf + nwritten, nbytes - nwritten))
