@@ -1,7 +1,15 @@
 """
+                ishow ctx.force_name
 # UnixIO.jl
 
 Unix IO Interface.
+
+e.g.
+
+    using UnixIO
+    const C = UnixIO.C
+
+
 """
 module UnixIO
 
@@ -10,44 +18,82 @@ export UnixFD
 
 using ReadmeDocs
 
-using CInclude
-@cinclude "termios.h" quiet
-@cinclude "fcntl.h" quiet
-@cinclude "poll.h" quiet
-@cinclude "sys/socket.h" quiet
+using UnixIOHeaders
+const C = UnixIOHeaders
 
 
 # Unix File Descriptor wrapper.
 
+abstract type UnixFD <: IO end
 
-struct UnixFD <: IO
+struct BlockingUnixFD <: UnixFD
     fd::Cint
     read_buffer::IOBuffer
-    UnixFD(fd) = new(fd, PipeBuffer())
+    BlockingUnixFD(fd) = new(fd, PipeBuffer())
+end
+
+struct ThreadedUnixFD <: UnixFD
+    fd::Cint
+    read_buffer::IOBuffer
+    ThreadedUnixFD(fd) = new(fd, PipeBuffer())
+end
+
+struct PolledUnixFD <: UnixFD
+    fd::Cint
+    read_buffer::IOBuffer
+    ready::Threads.Condition
+    function PolledUnixFD(fd)
+        r = fcntl_setfl(fd, C.O_NONBLOCK)
+        r != -1 || throw(ccall_error(:fcntl_setfl, :O_NONBLOCK))
+        new(fd, PipeBuffer(), Threads.Condition())
+    end
+end
+
+function fcntl_setfl(fd, flag)
+    flags = @ccall fcntl(fd::Cint, C.F_GETFL::Cint)::Cint
+    if flags == -1
+        return -1
+    end
+    if flags & flag == flag
+        return 0
+    end
+    flags |= flag
+    printerr("fd = ", fd, " flags = ", flags)
+    @ccall fcntl(fd::Cint, C.F_SETFL::Cint, flags::Cint)::Cint
+end
+
+const default_mode = Ref(:polled)
+
+function UnixFD(fd; mode = default_mode[])
+    if mode == :threaded
+        ThreadedUnixFD(fd)
+    elseif mode == :polled
+        PolledUnixFD(fd)
+    else
+        BlockingUnixFD(fd)
+    end
 end
 
 Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
 Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
-Base.show(io::IO, fd::UnixFD) = print(io, "UnixFD($(fd.fd))")
+Base.show(io::IO, fd::UnixFD) = print(io, "$(typeof(fd))($(fd.fd))")
 
 
 
 # Standard Streams.
 
 
-const STDIN = UnixFD(Base.STDIN_NO)
-const STDOUT = UnixFD(Base.STDOUT_NO)
-const STDERR = UnixFD(Base.STDERR_NO)
+const STDIN = Base.STDIN_NO
+const STDOUT = Base.STDOUT_NO
+const STDERR = Base.STDERR_NO
 
 
 
 # Errors.
 
-
-fd_error(fd::UnixFD, call) =
-            Base.SystemError("UnixIO.$call($fd) failed", Base.Libc.errno())
-
+ccall_error(call, args...) =
+            Base.SystemError("UnixIO.$call$args failed", Base.Libc.errno())
 
 
 # Threaded @ccall wrapper
@@ -149,7 +195,7 @@ const io_queue = Channel{Tuple{Function, Tuple, Channel}}(0)
 
 function io_thread(id::Int, state::IOThreadState)
     msg(x) = UnixIO.printerr("    io_thread($id): $x")
-    #msg("starting...")
+                                                            #msg("starting...")
     try
         @uassert TID() == id
         for (f, args, result) in io_queue
@@ -157,11 +203,11 @@ function io_thread(id::Int, state::IOThreadState)
             state.busy = true
             state.f = Symbol(f)
             state.args = args
-            #msg("🟢 $f($args)")
+                                                           #msg("🟢 $f($args)")
             @uassert TID() == id
             put!(result, f(args...))
             @uassert TID() == id
-            #msg("🔴 $f($args)")
+                                                           #msg("🔴 $f($args)")
             @uassert state.busy == true
             state.busy = false
             GC.safepoint()
@@ -169,7 +215,7 @@ function io_thread(id::Int, state::IOThreadState)
     catch err
         msg("error⁉️ : $err")
     end
-    #msg("exiting!")
+                                                               #msg("exiting!")
 end
 
 
@@ -212,6 +258,7 @@ macro yieldcall(expr)
     T = expr.args[2]
     esc(quote
         global io_queue
+
         if !io_thread_init_done[]
             io_thread_init_done[] = true
             io_thread_init()
@@ -238,9 +285,17 @@ README"## Opening and Closing Unix Files."
 
 
 README"""
-    UnixIO.open(pathname, [flags = O_RDWR]; [yield=false]) -> UnixFD
+    UnixIO.open(pathname, [flags = C.O_RDWR]; [mode=:blocking]) -> UnixFD
 
 Open the file specified by pathname.
+
+If `mode` is `:blocking` io operations may prevent other Julia tasks from
+running.
+
+If `mode` is `:threaded` blocking io operations are run on a sperate thread.
+
+If `mode` is `:polled` blocking io operations are multiplexed by
+[poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html).
 
 The `UnixFD` returned by `UnixIO.open` can be used with
 `UnixIO.read` and `UnixIO.write`. It can also be used with
@@ -248,26 +303,28 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
-function open(args...; yield=false)
-    fd = yield ? @yieldcall(c_open(args...)::Cint) :
-                            c_open(args...)
-    ufd = UnixFD(fd) 
-    if fd == -1
-        throw(fd_error(ufd, :open))
+function open(pathname, flags = C.O_RDWR; mode=default_mode[])
+    if mode == :threaded
+        fd = @yieldcall(c_open(pathname, flags)::Cint)
+    elseif mode == :polled
+        fd = c_open(pathname, flags)# FIXME | C.O_NONBLOCK)
+    else
+        fd = c_open(pathname, flags)
     end
-    ufd
+    fd != -1 || throw(ccall_error(:open, pathname))
+    UnixFD(fd; mode=mode)
 end
 
 
-c_open(pathname::AbstractString, flags = O_RDWR) =
-    @ccall open(pathname::Cstring, flags::Cint)::Cint
+c_open(pathname::AbstractString, flags = C.O_RDWR) =
+(@show pathname, flags;    @ccall open(pathname::Cstring, flags::Cint)::Cint)
 
 
 README"---"
 
 README"""
     UnixIO.tcsetattr(tty::UnixFD;
-                     [iflag=0], [oflag=0], [cflag=CS8], [lflag=0], [speed=0])
+                     [iflag=0], [oflag=0], [cflag=C.CS8], [lflag=0], [speed=0])
 
 Set terminal device options.
 
@@ -281,7 +338,7 @@ e.g.
 """
 function tcsetattr(tty::UnixFD; iflag = 0,
                                 oflag = 0,
-                                cflag = TERMIOS.CS8,
+                                cflag = C.CS8,
                                 lflag = 0,
                                 speed = 0)
 
@@ -310,16 +367,16 @@ close(fd) = @ccall close(fd::Cint)::Cint
 
 
 README"""
-    UnixIO.shutdown(sockfd, [how = SHUT_WR])
+    UnixIO.shutdown(sockfd, [how = C.SHUT_WR])
 
 Shut down part of a full-duplex connection.
-`how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
+`how` is one of `C.SHUT_RD`, `C.SHUT_WR` or `C.SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 """
-shutdown(fd, how=SHUT_WR) = @ccall shutdown(fd::Cint, how::Cint)::Cint
+shutdown(fd, how=C.SHUT_WR) = C.shutdown(fd, how)
 
 @static if isdefined(Base, :shutdown)
-    Base.shutdown(fd::UnixFD) = UnixIO.shutdown(fd)
+    Base.shutdown(fd::UnixFD) = shutdown(fd)
 end
 
 
@@ -328,33 +385,46 @@ README"## Reading from Unix Files."
 
 
 README"""
-    UnixIO.read(fd, buf, count; [yield=true]) -> number of bytes read
+    UnixIO.read(fd, buf, count) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
-function read(fd::UnixFD, buf, count; yield=true)
+function read(fd::UnixFD, buf, count)
     n = bytesavailable(fd.read_buffer)
-    #printerr("read($fd,buf,$count), $n bytes in buffer t$(TID())")
+    printerr("read($fd,$(typeof(buf)),$count), $n bytes in buffer t$(TID())")
     if n > 0
         n = min(n, count)
         unsafe_read(fd.read_buffer, buf, n)
-#@info "    returning $n from buffer"
         return n
     end
-    n = yield ? @yieldcall(c_read(fd.fd, buf, count)::Cint) :
-                           c_read(fd.fd, buf, count)
-#@info "    returning $n from fd"
-    if n == -1
-        throw(fd_error(fd, :read))
-    end
-    #printerr("RX $fd: \"$(unsafe_string(buf, min(n, 40)))\" t$(TID())")
+    n = c_read(fd, buf, count)
+    n != -1 || throw(ccall_error(:read, fd, buf, count))
+    printerr("RX $fd: \"$(unsafe_string(buf, min(n, 40)))\" t$(TID())")
     return n
 end
 
-c_read(fd, buf, count) =
+c_read(fd::Cint, buf, count) =
     @ccall read(fd::Cint, buf::Ptr{Cvoid}, count::Csize_t)::Cint
+
+c_read(fd::BlockingUnixFD, buf, count) = c_read(fd.fd, buf, count)
+
+c_read(fd::ThreadedUnixFD, buf, count) =
+    @yieldcall(c_read(fd.fd, buf, count)::Cint)
+
+function c_read(fd::PolledUnixFD, buf, count)
+    while true
+        printerr("x c_read buf = ", buf, " count = ", count)
+        n = c_read(fd.fd, buf, count)
+        printerr("c_read n = ", n)
+        if (n == -1 && Base.Libc.errno() in (C.EAGAIN, C.EINTR))
+            poll_wait(fd, C.POLLIN)
+        else
+            return n
+        end
+    end
+end
 
 
 README"## Writing to Unix Files."
@@ -388,7 +458,8 @@ function raw_println(fd, x...)
     io = IOBuffer()
     Base.println(io, x...) 
     buf = take!(io)
-    UnixIO.write(fd, buf, length(buf); yield=false)
+    GC.@preserve buf c_write(fd, buf, length(buf))
+    nothing
 end
 
 
@@ -405,44 +476,108 @@ See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 function socketpair()
     v = fill(Cint(-1), 2)
     r = ccall(:socketpair, Cint, (Cint, Cint, Cint, Ptr{Cint}),
-                                   AF_UNIX, SOCK_STREAM, 0, v)
-    if r == -1
-        throw(fd_error(fd, :socketpair))
-    end
-    (UnixFD(v[1]), UnixFD(v[2]))
+                                   C.AF_UNIX, C.SOCK_STREAM, 0, v)
+    r != -1 || throw(ccall_error(socketpair))
+    (v[1], v[2])
 end
 
 
 
-README"## Polling."
+# Polling
 
-mutable struct pollfd
+
+pollfd(fd, events) = convert(Tuple{fieldtypes(C.pollfd)...},
+                             (fd, events, 0))
+
+struct PollFD
     fd::Cint
     events::Cshort
-    revents::Cshort
+    ready::Threads.Condition
 end
 
-README"""
-    poll(fds, nfds, timeout)
-    poll([fd => event_mask, ...], timeout)
+const poll_queue = PollFD[]
+const poll_lock = Threads.SpinLock()
 
-Wait for one of a set of file descriptors to become ready to perform I/O.
-See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
-"""
-poll(fds, nfds, timeout) =
-    @ccall poll(fds::Ptr{Cvoid}, nfds::Cint, timeout::Cint)::Cint
 
-function poll(fds, timeout)
-    c_fds = [pollfd(fd.fd, events, 0) for (fd, events) in fds]
-    n = GC.@preserve c_fds poll(pointer(c_fds), length(c_fds), timeout)
-    if n == -1
-        throw(Base.SystemError("UnixIO.poll($fds) failed", Base.Libc.errno()))
+function poll_wait(fd::PolledUnixFD, events)
+    global poll_queue
+
+    printerr("poll_wait(", fd, ", ", events, ")")
+    lock(fd.ready)
+    try
+        lock(poll_lock)
+        isfirst = isempty(poll_queue)
+        push!(poll_queue, PollFD(fd.fd, events, fd.ready))
+        unlock(poll_lock)
+        if isfirst == 1
+            printerr("fisrt!")
+            @async poll_task(poll_queue, poll_lock)
+        end
+        wait(fd.ready)
+    finally
+        unlock(fd.ready)
     end
-    result = typeof(fds)()
-    for (i, (fd, events)) in enumerate(fds)
-        push!(result, fd => c_fds[i].revents )
+end
+
+
+function poll_task(queue::Vector{PollFD}, queue_lock)
+    while true
+        try
+            printerr("poll_task()")
+            poll(queue, queue_lock)
+            lock(queue_lock)
+            if isempty(queue)
+                printerr("poll_task() done")
+                return
+            end
+        catch err
+            exception=(err, catch_backtrace())
+            @error "Error in poll_task()" exception
+        finally
+            unlock(queue_lock)
+        end
+        sleep(0.1)
     end
-    return result
+end
+
+
+function poll(queue::Vector{PollFD}, queue_lock)
+
+    # Build vector of `struct pollfd`.
+    lock(queue_lock)
+    @assert !isempty(queue)
+    v = [pollfd(fd.fd, fd.events) for fd in queue]
+    unlock(queue_lock)
+
+    printerr("C.poll(", v, ")")
+
+    # Wait for events
+    timeout_ms = 10
+    n = C.poll(v, length(v), timeout_ms)
+    if n == -1 && Base.Libc.errno() != C.EINTR
+        throw(ccall_error(:poll, v, queuelen, timeout_ms))
+    end
+
+    # Check poll vector for events.
+    for (fd, events, revents) in v
+        if revents == 0
+            continue
+        end
+
+        # Remote from queue.
+        lock(queue_lock)
+        i = findfirst(x->x.fd == fd && x.events == events, queue)
+        ready = queue[i].ready
+        deleteat!(queue, i)
+        unlock(queue_lock)
+
+        # Notify waiting task.
+        lock(ready)
+        notify(ready)
+        unlock(ready)
+    end
+
+    nothing
 end
 
 
@@ -469,7 +604,7 @@ function system(command; yield=false)
     r = yield ? @yieldcall(c_system(command)::Cint) :
                            c_system(command)
     if r == -1
-        throw(fd_error(fd, :system))
+        throw(ccall_error(:system, command))
     elseif r != 0
         throw(ErrorException("UnixIO.system termination status: $r"))
     end
@@ -501,14 +636,6 @@ function cmd_bin(cmd::Cmd)
 end
 
 
-function execv_args(bin, cmd)
-    path = pointer(bin)
-    args = [pointer(arg) for arg in cmd.exec]
-    push!(args, Base.C_NULL)
-    path, args
-end
-
-
 dup2(oldfd, newfd) = @ccall dup2(oldfd::Cint, newfd::Cint)::Cint
 execv(path, args) = @ccall execv(path::Ptr{UInt8}, args::Ptr{Ptr{UInt8}})::Cint
 _exit(status) = @ccall _exit(status::Cint)::Cvoid
@@ -535,30 +662,44 @@ julia> UnixIO.open(`hexdump -C`) do io
 function open(f::Function, cmd::Cmd; check_status=true,
                                      capture_stderr=false)
 
-    bin = cmd_bin(cmd)
-    path, args = execv_args(bin, cmd)
-    parent_io, child_io = socketpair()
-    stderr_io = capture_stderr ? child_io : STDERR
+#    Base.sigatomic_begin()
+#    GC.enable(false)
 
-    pid = GC.@preserve bin cmd ccall(:fork, Cint, ())
-    if pid == 0
-        close(parent_io)
-        dup2(child_io, STDIN)
-        dup2(child_io, STDOUT)
-        dup2(stderr_io, STDERR)
-        execv(path, args)
-        _exit(-1) # Only reached if execv() fails.
+    bin = cmd_bin(cmd)
+
+    parent_io, child_io = socketpair()
+    #fcntl_setfl(parent_io, C.O_CLOEXEC)
+    child_in = child_io
+    child_out = child_io
+    child_err = capture_stderr ? child_out : STDERR
+
+    args = pointer.(cmd.exec)
+    push!(args, Ptr{UInt8}(0))
+
+    GC.@preserve cmd begin
+        pid = ccall(:fork, Cint, ())
+        if pid == 0
+            close(parent_io)
+            dup2(child_in, STDIN)
+            dup2(child_out, STDOUT)
+            dup2(child_err, STDERR)
+            execv(bin, args)
+            _exit(-1) # Only reached if execv() fails.
+        end
     end
     close(child_io)
 
+#    Base.sigatomic_end()
+#    GC.enable(true)
+
     status = 0
     result = try
-        f(parent_io)
+        f(UnixFD(parent_io))
     catch
         @ccall kill(pid::Cint, 9::Cint)::Cint
         rethrow()
     finally
-        close(parent_io)
+        UnixIO.close(parent_io)
         status = waitpid(pid)
     end
     if check_status
@@ -587,10 +728,18 @@ julia> UnixIO.read(`uname -srm`, String)
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 function read(cmd::Cmd; kw...)
-    open(cmd; kw...) do io
+    @info "read($cmd)"
+    r = open(cmd; kw...) do io
         shutdown(io)
-        Base.read(io)
+        @show io
+        r = IOBuffer()
+        while !eof(io)
+            Base.write(r, Base.readavailable(io))
+        end
+        take!(r)
     end
+    @info "read($cmd) done"
+    r
 end
 
 
@@ -610,12 +759,17 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 """
 function waitpid(pid)
     status = Ref{Cint}(0)
-    r = @ccall waitpid(pid::Cint, status::Ptr{Cint}, 0::Cint)::Cint
-    if r == -1
-        throw(fd_error(fd, :waitpid))
+    while true
+        r = @ccall waitpid(pid::Cint, status::Ptr{Cint}, 0::Cint)::Cint
+        if r == -1
+            if Base.Libc.errno() == C.EINTR
+                continue
+            end
+            throw(ccall_error(:waitpid, pid))
+        end
+        @assert r == pid
+        return status[]
     end
-    @assert r == pid
-    return status[]
 end
 
 
@@ -623,33 +777,33 @@ end
 # Base.IO Interface
 
 function Base.close(fd::UnixFD)
-    if close(fd) == -1
-        throw(fd_error(fd, :close))
+    if UnixIO.close(fd) == -1
+        throw(ccall_error(:close, fd))
     end
     nothing
 end
 
 Base.isopen(fd::UnixFD) =
     bytesavailable(fd.read_buffer) > 0 ||
-    @yieldcall(c_read(fd, Base.C_NULL, 0)::Cint) == 0
+    (@ccall fcntl(fd::Cint, C.F_GETFL::Cint)::Cint) != -1
 
 
 Base.bytesavailable(fd::UnixFD) = bytesavailable(fd.read_buffer)
 
 
 function Base.eof(fd::UnixFD)
-# DEBUG    @info "eof($fd), $(bytesavailable(fd.read_buffer)) bytes in buffer"
+    printerr("eof($fd), $(bytesavailable(fd.read_buffer)) bytes in buffer")
     if bytesavailable(fd.read_buffer) == 0
-        #printerr("eof($fd) reading into buffer... t$(TID())")
+        printerr("eof($fd) reading into buffer... t$(TID())")
         Base.write(fd.read_buffer, readavailable(fd))
-        #printerr("    eof($fd) read done ($(bytesavailable(fd.read_buffer))) t$(TID())")
+        printerr("    eof($fd) read done ($(bytesavailable(fd.read_buffer))) t$(TID())")
     end
     return bytesavailable(fd.read_buffer) == 0
 end
 
 
 function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
-# DEBUG    @info "unsafe_read($fd, buf, $nbytes)"
+    printerr("unsafe_read($fd, buf, $nbytes)")
     nread = 0
     while nread < nbytes
         n = UnixIO.read(fd, buf + nread, nbytes - nread)
@@ -664,7 +818,7 @@ end
 
 
 function Base.read(fd::UnixFD, ::Type{UInt8})
-# DEBUG    @info "read($fd, UInt8)"
+    printerr("read($fd, UInt8)")
     eof(fd) && throw(EOFError())
     @assert bytesavailable(fd.read_buffer) > 0
     Base.read(fd.read_buffer, UInt8)
@@ -676,14 +830,14 @@ Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
 
 function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true)
-    #printerr("readbytes!($fd, buf, $nbytes) t$(TID())")
+    printerr("readbytes!($fd, buf, $nbytes) t$(TID())")
     lb = length(buf)
     nread = 0
     while nread < nbytes
         @assert nread <= lb
         if (lb - nread) == 0
-            lb = lb == 0 ? nbytes : min(lb * 2, nbytes)
-            #printerr("resize to $lb t$(TID())")
+            lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
+            printerr("resize to $lb t$(TID())")
             resize!(buf, lb)
         end
         @assert lb > nread
@@ -701,9 +855,9 @@ const BUFFER_SIZE = 65536
 
 function Base.readavailable(fd::UnixFD)
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-# DEBUG    @info "readavailable($fd), reading into $(length(buf)) byte buffer"
+    printerr("readavailable($fd), reading into $(length(buf)) byte buffer")
     n = GC.@preserve buf UnixIO.read(fd, pointer(buf), length(buf))
-# DEBUG    @info "readavailable($fd), got $n bytes"
+    printerr("readavailable($fd), got $n bytes")
     resize!(buf, n)
 end
 
@@ -711,10 +865,10 @@ end
 function Base.unsafe_write(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
     nwritten = 0
     while nwritten < nbytes
-        #printerr("TX: \"$(unsafe_string(buf + nwritten, nbytes - nwritten))\"")
+        printerr("TX: \"$(unsafe_string(buf + nwritten, nbytes - nwritten))\"")
         n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
         if n == -1
-            throw(fd_error(fd, :write))
+            throw(ccall_error(:write, buf + nwritten, nbytes - nwritten))
         end
         nwritten += n
     end

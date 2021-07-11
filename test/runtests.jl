@@ -1,8 +1,11 @@
 using Test
 using UnixIO
 
+cd(@__DIR__)
+
 @test UnixIO.read(`uname -a`) ==
              read(`uname -a`)
+
 
 jio = open("runtests.jl")
 uio = UnixIO.open("runtests.jl")
