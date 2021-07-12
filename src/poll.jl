@@ -74,7 +74,7 @@ function poll_task(queue::Vector{PollFD}, queue_lock)
         finally
             unlock(queue_lock)
         end
-        sleep(0.1)
+        sleep(0.01)
     end
 end
 

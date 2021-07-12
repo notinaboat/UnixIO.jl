@@ -1,5 +1,14 @@
 module UnixIOHeaders
 
+open(pathname::AbstractString, flags) =
+    @ccall open(pathname::Cstring, flags::Cint)::Cint
+
+open(pathname::AbstractString, flags, mode) =
+    @ccall open(pathname::Cstring, flags::Cint, mode::Cint)::Cint
+
+close(fd) = @ccall close(fd::Cint)::Cint
+
+
 using CInclude
 
 @cinclude "stdlib.h"     quiet
@@ -10,12 +19,6 @@ using CInclude
 @cinclude "unistd.h"     quiet
 @cinclude "sys/socket.h" quiet
 
-open(pathname::AbstractString, flags) =
-    @ccall open(pathname::Cstring, flags::Cint)::Cint
 
-open(pathname::AbstractString, flags, mode) =
-    @ccall open(pathname::Cstring, flags::Cint, mode::Cint)::Cint
-
-close(fd) = @ccall close(fd::Cint)::Cint
 
 end # module
