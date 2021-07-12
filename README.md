@@ -2,12 +2,36 @@
 
 Unix IO Interface.
 
+For Julia programs that need to interact with Unix-specific IO interfaces.
+
+e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
+
+```
+using UnixIO
+const C = UnixIO.C
+
+io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
+UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
+
+fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
+C.write(fd, "Hello!", 7)
+C.close(fd)
+```
+
 
 ## Opening and Closing Unix Files.
 
-    UnixIO.open(pathname, [flags = O_RDWR]; [yield=false]) -> UnixFD
+    UnixIO.open(pathname, [flags = C.O_RDWR]; [mode=:blocking]) -> UnixFD
 
 Open the file specified by pathname.
+
+If `mode` is `:blocking` io operations may prevent other Julia tasks from
+running.
+
+If `mode` is `:threaded` blocking io operations are run on a sperate thread.
+
+If `mode` is `:polled` blocking io operations are multiplexed by
+[poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html).
 
 The `UnixFD` returned by `UnixIO.open` can be used with
 `UnixIO.read` and `UnixIO.write`. It can also be used with
@@ -18,8 +42,17 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
 ---
 
+    UnixIO.fcntl_setfl(fd::UnixFD, flag)
+
+Set `flag` in the file status flags. 
+Uses `F_GETFL` to read the current flags and `F_SETFL` to store the new flag.
+See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
+
+
+---
+
     UnixIO.tcsetattr(tty::UnixFD;
-                     [iflag=0], [oflag=0], [cflag=CS8], [lflag=0], [speed=0])
+                     [iflag=0], [oflag=0], [cflag=C.CS8], [lflag=0], [speed=0])
 
 Set terminal device options.
 
@@ -28,8 +61,8 @@ for flag descriptions.
 
 e.g.
 
-    io = UnixIO.open("/dev/ttyUSB0", UnixIO.O_RDWR | UnixIO.O_NOCTTY)
-    UnixIO.tcsetattr(io; speed=9600, lflag=UnixIO.ICANON)
+    io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
+    UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 
 
 ---
@@ -41,16 +74,16 @@ any file and may be reused.
 See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
 
 
-    UnixIO.shutdown(sockfd, [how = SHUT_WR])
+    UnixIO.shutdown(sockfd, [how = C.SHUT_WR])
 
 Shut down part of a full-duplex connection.
-`how` is one of `SHUT_RD`, `SHUT_WR` or `SHUT_RDWR`.
+`how` is one of `C.SHUT_RD`, `C.SHUT_WR` or `C.SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 
 ## Reading from Unix Files.
 
-    UnixIO.read(fd, buf, count; [yield=true]) -> number of bytes read
+    UnixIO.read(fd, buf, count) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
@@ -59,7 +92,7 @@ See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 ## Writing to Unix Files.
 
-    UnixIO.write(fd, buf, count; [yield=false]) -> number of bytes written
+    UnixIO.write(fd, buf, count) -> number of bytes written
 
 Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
@@ -79,15 +112,6 @@ Does not yield control from the current task.
 
 Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
-
-
-## Polling.
-
-    poll(fds, nfds, timeout)
-    poll([fd => event_mask, ...], timeout)
-
-Wait for one of a set of file descriptors to become ready to perform I/O.
-See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
 
 
 ## Executing Unix Commands.
