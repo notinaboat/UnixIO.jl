@@ -44,13 +44,6 @@ function Base.read(fd::UnixFD, ::Type{UInt8}; kw...)
 end
 
 
-function Base.read(fd::UnixFD, nbytes::Integer = typemax(Int); kw...)
-    buf = Vector{UInt8}(undef, nbytes == typemax(Int) ? BUFFER_SIZE : nbytes)
-    nread = readbytes!(fd, buf, nbytes; kw...)
-    return resize!(buf, nread)
-end
-
-
 Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
     readbytes!(fd, buf, UInt(nbytes); kw...)
 
@@ -85,15 +78,27 @@ function Base.readavailable(fd::UnixFD; kw...)
 end
 
 
-function Base.readline(fd::UnixFD; keep::Bool=false, timeout=Inf)
+function invoke_with_timeout(fd, timeout, f, types, args...; kw...)
     old_timeout = fd.timeout
     fd.timeout = timeout
     try
-        invoke(readline, Tuple{IO}, fd; keep=keep)
+        invoke(f, types, fd, args...; kw...)
     finally
         fd.timeout = old_timeout
     end
 end
+
+Base.readline(fd::UnixFD; timeout=Inf, kw...) =
+    invoke_with_timeout(fd, timeout, readline, Tuple{IO}; kw...)
+
+Base.readuntil(fd::UnixFD, d::AbstractChar; timeout=Inf, kw...) =
+    invoke_with_timeout(fd, timeout, readuntil, Tuple{IO, AbstractChar}, d;
+                        kw...)
+
+Base.read(fd::UnixFD, n::Integer=typemax(Int); timeout=Inf, kw...) = 
+    invoke_with_timeout(fd, timeout, Base.read, Tuple{IO, Integer}, n; kw...)
+
+Base.read(fd::UnixFD, x::Type{String}; kw...) = String(Base.read(fd; kw...))
 
 
 function Base.unsafe_write(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)

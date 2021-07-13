@@ -112,11 +112,13 @@ function poll_task(q)
             yield()
 
         catch err
+            for fd in q.queue
+                lock(fd.ready)
+                Base.notify_error(fd.ready, err)
+                unlock(fd.ready)
+            end
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
-            for fd in q.queue
-                Base.notify_error(fd.ready, err)
-            end
         end
     end
 end

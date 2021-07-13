@@ -100,6 +100,16 @@ function open(pathname, flags = C.O_RDWR; timeout=Inf)
 end
 
 
+README"---"
+
+README"""
+    UnixIO.set_timeout(fd::UnixFD, timeout)
+
+Configure `fd` to throw `UnixIO.ReadTimeoutError` when read operations take
+longer than `timeout` seconds.
+"""
+set_timeout(fd::UnixFD, timeout) = fd.timeout = timeout
+
 
 README"---"
 
