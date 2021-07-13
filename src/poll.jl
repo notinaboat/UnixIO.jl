@@ -21,11 +21,23 @@ Base.show(io::IO, fd::PollFD) = print(io, "PollFD($(fd.fd), $(fd.events))")
 
 """
 Global queue of file descriptors to poll.
+
+`poll_wait()` puts new FDs in `channel`.
+
+`poll_task()` takes FDs from the `channel` and puts them in the `queue`
+and calls `poll(::PollQueue)`.
+
+`poll(::PollQueue)` passes `cvector` (containing C `struct pollfd`s) to
+[`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html) to wait
+for IO activity.
+
+`poll_wait()` uses `wakeup_pipe` to wake `poll(2)` early when there is
+a new FD to wait for.
 """
 mutable struct PollQueue
     channel::Channel{PollFD}
     queue::Vector{PollFD}
-    vector::Vector{PollFDTuple}
+    cvector::Vector{PollFDTuple}
     wakeup_pipe::Vector{Cint}
     task::Union{Nothing,Task}
 end
@@ -34,14 +46,20 @@ end
 const poll_queue = PollQueue(Channel{PollFD}(0),[], [], [], nothing)
 
 function __init__()
+
+    # Global Task to run `poll(2)`.
     poll_queue.task = Threads.@spawn poll_task(poll_queue)
 
+    # Pipe for asking `poll(2)` to return before timeout.
     poll_queue.wakeup_pipe = fill(Cint(-1), 2)
     r = C.pipe(poll_queue.wakeup_pipe)
     r != -1 || throw(ccall_error(:pipe))
 end
 
 
+"""
+Write a byte to the pipe to wake up `poll(2)` before its timeout.
+"""
 wakeup(q::PollQueue) = C.write(q.wakeup_pipe[2], Ref(0), 1)
 
 
@@ -112,38 +130,35 @@ function poll(q::PollQueue, timeout_ms)
 
     # Build vector of `struct pollfd`.
     vector_length = length(q.queue) + 1
-    resize!(q.vector, vector_length)
+    resize!(q.cvector, vector_length)
     for (i, fd) in enumerate(q.queue)
-        q.vector[i] = (fd.fd, fd.events, 0)
+        q.cvector[i] = (fd.fd, fd.events, 0)
     end
-    q.vector[vector_length] = (q.wakeup_pipe[1], C.POLLIN, 0)
+    q.cvector[end] = (q.wakeup_pipe[1], C.POLLIN, 0)
 
     # Wait for events
-    n = C.poll(q.vector, vector_length, timeout_ms)
+    n = C.poll(q.cvector, vector_length, timeout_ms)
     if n == -1 && Base.Libc.errno() != C.EINTR
-        throw(ccall_error(:poll, q.vector, vector_length, timeout_ms))
+        throw(ccall_error(:poll, q.cvector, vector_length, timeout_ms))
     end
 
     # Check for write to wakeup pipe.
-    fd, events, revents = q.vector[vector_length]
+    fd, events, revents = q.cvector[end]
     if revents != 0
         @assert fd == q.wakeup_pipe[1]
         C.read(fd, Ref(0), 1)
-        return
     end
 
 
     # Check poll vector for events.
-    for (fd, events, revents) in q.vector
+    for (fd, events, revents) in q.cvector[1:end-1]
         if revents != 0
 
-            # Remove from queue.
+            # Remove fd from queue and notify task waiting in `poll_wait()`.
             i = findfirst(x->x.fd == fd #=&& x.events == events=#, q.queue)
             ready = q.queue[i].ready    # ^^ FIXME reconsider if poll is used
-            deleteat!(q.queue, i)       #          for writes as well as reads.
-
-            # Notify waiting task.
-            lock(ready)
+            lock(ready)                 #          for writes as well as reads.
+            deleteat!(q.queue, i)
             notify(ready)
             unlock(ready)
         end
