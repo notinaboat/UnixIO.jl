@@ -1,15 +1,6 @@
 # Threaded @ccall wrapper
 
 
-mutable struct IOThreadState
-    id::Int
-    busy::Bool
-    f::Symbol
-    args::Tuple
-    IOThreadState(id) = new(id, false, :nothing, ())
-end
-
-
 const io_thread_init_done = Ref(false)
 
 function io_thread_init()
