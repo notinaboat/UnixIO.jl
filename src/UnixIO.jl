@@ -16,6 +16,15 @@ e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
     fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
     C.write(fd, "Hello!", 7)
     C.close(fd)
+
+    io = UnixIO.open("file.txt", C.O_CREAT | C.O_WRONLY)
+    write(io, "Hello!")
+    close(io)
+
+Blocking IO is multiplexed by running 
+[`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)
+under a task started by `Threads.@spawn`.
+See [`src/poll.jl`](src/poll.jl)
 """
 module UnixIO
 
@@ -30,47 +39,16 @@ const C = UnixIOHeaders
 
 # Unix File Descriptor wrapper.
 
-abstract type UnixFD <: IO end
-
-struct BlockingUnixFD <: UnixFD
-    fd::Cint
-    read_buffer::IOBuffer
-    BlockingUnixFD(fd) = new(fd, PipeBuffer())
-end
-
-struct ThreadedUnixFD <: UnixFD
-    fd::Cint
-    read_buffer::IOBuffer
-    ThreadedUnixFD(fd) = new(fd, PipeBuffer())
-end
-
-include("threads.jl")
-
-
-struct PolledUnixFD <: UnixFD
+struct UnixFD <: IO
     fd::Cint
     read_buffer::IOBuffer
     ready::Threads.Condition
-    function PolledUnixFD(fd)
+    function UnixFD(fd)
         fcntl_setfl(fd, C.O_NONBLOCK)
         new(fd, PipeBuffer(), Threads.Condition())
     end
 end
 
-include("poll.jl")
-
-
-const default_mode = Ref(:polled)
-
-function UnixFD(fd; mode = default_mode[])
-    if mode == :threaded
-        ThreadedUnixFD(fd)
-    elseif mode == :polled
-        PolledUnixFD(fd)
-    else
-        BlockingUnixFD(fd)
-    end
-end
 
 Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
 Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
@@ -78,15 +56,6 @@ Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 Base.show(io::IO, fd::UnixFD) = print(io, "$(typeof(fd))($(fd.fd))")
 
 include("baseio.jl")
-
-
-
-# Standard Streams.
-
-
-const STDIN = Base.STDIN_NO
-const STDOUT = Base.STDOUT_NO
-const STDERR = Base.STDERR_NO
 
 
 
@@ -101,17 +70,9 @@ README"## Opening and Closing Unix Files."
 
 
 README"""
-    UnixIO.open(pathname, [flags = C.O_RDWR]; [mode=:blocking]) -> UnixFD
+    UnixIO.open(pathname, [flags = C.O_RDWR]) -> UnixFD <: IO
 
 Open the file specified by pathname.
-
-If `mode` is `:blocking` io operations may prevent other Julia tasks from
-running.
-
-If `mode` is `:threaded` blocking io operations are run on a sperate thread.
-
-If `mode` is `:polled` blocking io operations are multiplexed by
-[poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html).
 
 The `UnixFD` returned by `UnixIO.open` can be used with
 `UnixIO.read` and `UnixIO.write`. It can also be used with
@@ -119,16 +80,10 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
-function open(pathname, flags = C.O_RDWR; mode=default_mode[])
-    if mode == :threaded
-        fd = @yieldcall(C.open(pathname, flags)::Cint)
-    elseif mode == :polled
-        fd = C.open(pathname, flags | C.O_NONBLOCK)
-    else
-        fd = C.open(pathname, flags)
-    end
+function open(pathname, flags = C.O_RDWR)
+    fd = C.open(pathname, flags)
     fd != -1 || throw(ccall_error(:open, pathname))
-    UnixFD(fd; mode=mode)
+    UnixFD(fd)
 end
 
 
@@ -236,24 +191,22 @@ function read(fd::UnixFD, buf, count)
         unsafe_read(fd.read_buffer, buf, n)
         return n
     end
-    n = C.read(fd, buf, count)
-    n != -1 || throw(ccall_error(:read, fd, buf, count))
-    return n
-end
-
-C.read(fd::ThreadedUnixFD, buf, count) =
-    @yieldcall(C.read(fd.fd, buf, count)::Cint)
-
-function C.read(fd::PolledUnixFD, buf, count)
     while true
         n = C.read(fd.fd, buf, count)
-        if (n == -1 && Base.Libc.errno() in (C.EAGAIN, C.EINTR))
-            poll_wait(fd, C.POLLIN)
-        else
+        if n != -1
             return n
         end
+        if !(Base.Libc.errno() in (C.EAGAIN, C.EINTR))
+            throw(ccall_error(:read, fd, buf, count))
+        end
+        poll_wait(fd, C.POLLIN)
     end
 end
+
+function C.read(fd::UnixFD, buf, count)
+end
+
+include("poll.jl")
 
 
 
@@ -268,8 +221,6 @@ the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 """
 write(fd, buf, count) = C.write(fd, buf, count)
-write(fd::ThreadedUnixFD, buf, count) =
-    @yieldcall(C.write(fd, buf, count)::Csize_t)
 
 
 
@@ -286,7 +237,7 @@ function raw_println(fd, x...)
     io = IOBuffer()
     Base.println(io, x...) 
     buf = take!(io)
-    GC.@preserve buf C.write(fd, buf, length(buf))
+    C.write(fd, buf, length(buf))
     nothing
 end
 
@@ -319,7 +270,7 @@ macro sh_str(s)
 end
 
 README"""
-    UnixIO.system(command; [yield=true]) -> exit status
+    UnixIO.system(command) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
 
@@ -329,15 +280,14 @@ julia> UnixIO.system("uname -srm")
 Darwin 20.3.0 x86_64
 ```
 """
-function system(command; yield=false)
-    r = yield ? @yieldcall(C.system(command)::Cint) :
-                           C.system(command)
+function system(command)
+    r = C.system(command)
     if r == -1
         throw(ccall_error(:system, command))
     elseif r != 0
         throw(ErrorException("UnixIO.system termination status: $r"))
     end
-    nothing
+    r
 end
 
 system(cmd::Cmd) = system(join(cmd.exec, " "))
@@ -393,7 +343,7 @@ function open(f::Function, cmd::Cmd; check_status=true,
     fcntl_setfd(parent_io, C.O_CLOEXEC)
     child_in = child_io
     child_out = child_io
-    child_err = capture_stderr ? child_out : STDERR
+    child_err = capture_stderr ? child_out : Base.STDERR_NO
 
     GC.enable(false)
     Base.sigatomic_begin()
@@ -405,9 +355,9 @@ function open(f::Function, cmd::Cmd; check_status=true,
 #    GC.@preserve cmd begin
         pid = ccall(:fork, Cint, ())
         if pid == 0
-            dup2(child_in, STDIN)
-            dup2(child_out, STDOUT)
-            dup2(child_err, STDERR)
+            dup2(child_in, Base.STDIN_NO)
+            dup2(child_out, Base.STDOUT_NO)
+            dup2(child_err, Base.STDERR_NO)
             execv(bin, args)
             _exit(-1) # Only reached if execv() fails.
         end

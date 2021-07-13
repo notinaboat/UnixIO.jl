@@ -52,7 +52,7 @@ Wait for `events` to occur on `fd`.
 See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
 for event types.
 """
-function poll_wait(fd::PolledUnixFD, events)
+function poll_wait(fd::UnixFD, events)
     lock(fd.ready)
     try
         push!(poll_queue.channel, PollFD(fd.fd, events, fd.ready))

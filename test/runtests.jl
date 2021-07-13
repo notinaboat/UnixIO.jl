@@ -5,11 +5,6 @@ cd(@__DIR__)
 
 @testset "UnixIO" begin
 
-for mode in [:polled, :threaded]
-
-@testset "UnixIO.$mode" begin
-
-UnixIO.default_mode[] = mode
 
 @test UnixIO.read(`uname -a`) ==
              read(`uname -a`)
@@ -67,9 +62,5 @@ cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
 @sync for i in 1:Base.threadcall_restrictor.sem_size + 1
     @async @test UnixIO.read(`bash -c "sleep 2; echo $i"`, String) == "$i\n"
 end
-
-end #testset
-
-end #mode
 
 end #testset

@@ -72,7 +72,7 @@ const BUFFER_SIZE = 65536
 
 function Base.readavailable(fd::UnixFD)
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-    n = GC.@preserve buf UnixIO.read(fd, pointer(buf), length(buf))
+    n = UnixIO.read(fd, buf, length(buf))
     resize!(buf, n)
 end
 
