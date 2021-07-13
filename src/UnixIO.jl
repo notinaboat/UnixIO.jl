@@ -99,13 +99,13 @@ See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
 """
 function fcntl_setfl(fd, flag; getset=(C.F_GETFL, C.F_SETFL))
     get, set = getset
-    flags = @ccall fcntl(fd::Cint, get::Cint)::Cint
+    flags = C.fcntl(fd, get)
     flags != -1 || throw(ccall_error(:fcntl_setfl, flag))
     if flags & flag == flag
         return nothing
     end
     flags |= flag
-    r = @ccall fcntl(fd::Cint, set::Cint, flags::Cint)::Cint
+    r = C.fcntl(fd, set, flags)::Cint
     r != -1 || throw(ccall_error(:fcntl_setfl, flag))
     nothing
 end
@@ -254,8 +254,7 @@ See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 """
 function socketpair()
     v = fill(Cint(-1), 2)
-    r = ccall(:socketpair, Cint, (Cint, Cint, Cint, Ptr{Cint}),
-                                   C.AF_UNIX, C.SOCK_STREAM, 0, v)
+    r = C.socketpair(C.AF_UNIX, C.SOCK_STREAM, 0, v)
     r != -1 || throw(ccall_error(socketpair))
     (v[1], v[2])
 end
@@ -313,10 +312,6 @@ function cmd_bin(cmd::Cmd)
 end
 
 
-dup2(oldfd, newfd) = @ccall dup2(oldfd::Cint, newfd::Cint)::Cint
-execv(path, args) = @ccall execv(path::Ptr{UInt8}, args::Ptr{Ptr{UInt8}})::Cint
-_exit(status) = @ccall _exit(status::Cint)::Cvoid
-
 README"---"
 
 README"""
@@ -353,13 +348,13 @@ function open(f::Function, cmd::Cmd; check_status=true,
     push!(args, Ptr{UInt8}(0))
 
 #    GC.@preserve cmd begin
-        pid = ccall(:fork, Cint, ())
+    pid = C.fork()
         if pid == 0
-            dup2(child_in, Base.STDIN_NO)
-            dup2(child_out, Base.STDOUT_NO)
-            dup2(child_err, Base.STDERR_NO)
-            execv(bin, args)
-            _exit(-1) # Only reached if execv() fails.
+            C.dup2(child_in, Base.STDIN_NO)
+            C.dup2(child_out, Base.STDOUT_NO)
+            C.dup2(child_err, Base.STDERR_NO)
+            C.execv(bin, args)
+            C._exit(-1) # Only reached if execv() fails.
         end
 #    end
     close(child_io)
@@ -371,7 +366,7 @@ function open(f::Function, cmd::Cmd; check_status=true,
     result = try
         f(UnixFD(parent_io))
     catch
-        @ccall kill(pid::Cint, 9::Cint)::Cint
+        C.kill(pid, C.SIGTERM)
         rethrow()
     finally
         C.close(parent_io)
@@ -427,7 +422,7 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 function waitpid(pid)
     status = Ref{Cint}(0)
     while true
-        r = @ccall waitpid(pid::Cint, status::Ptr{Cint}, 0::Cint)::Cint
+        r = C.waitpid(pid, status, 0)
         if r == -1
             if Base.Libc.errno() == C.EINTR
                 continue
