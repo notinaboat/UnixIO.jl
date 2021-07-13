@@ -14,6 +14,7 @@ struct PollFD
     fd::Cint
     events::Cshort
     ready::Threads.Condition
+    deadline::Float64
 end
 
 Base.show(io::IO, fd::PollFD) = print(io, "PollFD($(fd.fd), $(fd.events))")
@@ -45,7 +46,7 @@ end
 
 const poll_queue = PollQueue(Channel{PollFD}(0),[], [], [], nothing)
 
-function __init__()
+function poll_queue_init()
 
     # Global Task to run `poll(2)`.
     poll_queue.task = Threads.@spawn poll_task(poll_queue)
@@ -64,16 +65,16 @@ wakeup(q::PollQueue) = C.write(q.wakeup_pipe[2], Ref(0), 1)
 
 
 """
-    poll_wait(fd, events)
+    poll_wait(fd, events, deadline)
 
 Wait for `events` to occur on `fd`.
 See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
 for event types.
 """
-function poll_wait(fd::UnixFD, events)
+function poll_wait(fd::UnixFD, events, deadline)
     lock(fd.ready)
     try
-        push!(poll_queue.channel, PollFD(fd.fd, events, fd.ready))
+        push!(poll_queue.channel, PollFD(fd.fd, events, fd.ready, deadline))
         wakeup(poll_queue)
         wait(fd.ready)
     finally
@@ -128,13 +129,24 @@ Return false if the queue is empty.
 """
 function poll(q::PollQueue, timeout_ms)
 
+    deadline = Inf
+
     # Build vector of `struct pollfd`.
     vector_length = length(q.queue) + 1
     resize!(q.cvector, vector_length)
     for (i, fd) in enumerate(q.queue)
         q.cvector[i] = (fd.fd, fd.events, 0)
+        deadline = min(deadline, fd.deadline)
     end
     q.cvector[end] = (q.wakeup_pipe[1], C.POLLIN, 0)
+
+    # Adjust timeout to nearest deadline.
+    dt = deadline - time()
+    check_timeout = false
+    if dt < (timeout_ms/1000)
+        timeout_ms = max(0, round(Int, dt * 1000))
+        check_timeout = true
+    end
 
     # Wait for events
     n = C.poll(q.cvector, vector_length, timeout_ms)
@@ -149,7 +161,6 @@ function poll(q::PollQueue, timeout_ms)
         C.read(fd, Ref(0), 1)
     end
 
-
     # Check poll vector for events.
     for (fd, events, revents) in q.cvector[1:end-1]
         if revents != 0
@@ -162,6 +173,23 @@ function poll(q::PollQueue, timeout_ms)
             notify(ready)
             unlock(ready)
         end
+    end
+
+    # Check for timeouts.
+    now = time()
+    if check_timeout
+        timedout = Threads.Condition[]
+        filter!(q.queue) do fd
+            if now > fd.deadline
+                push!(timedout, fd.ready)
+                false
+            else
+                true
+            end
+        end
+        lock.(timedout)
+        notify.(timedout)
+        unlock.(timedout)
     end
 
     nothing

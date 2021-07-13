@@ -59,8 +59,30 @@ cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
 @test UnixIO.open(cmd) do io collect(eachline(io)) end == 
     open(cmd; read = true) do io collect(eachline(io)) end
 
-@sync for i in 1:Base.threadcall_restrictor.sem_size + 1
+@sync for i in 1:5
     @async @test UnixIO.read(`bash -c "sleep 2; echo $i"`, String) == "$i\n"
 end
+
+@test_throws UnixIO.ReadTimeoutError begin
+    UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
+end
+t0 = time()
+try
+    UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
+catch
+end
+@test abs((time() - t0) - 2.4) < 0.1
+
+sleep(1)
+@test isempty(UnixIO.child_pids)
+io = UnixIO.open(`bash -c "while true; do date ; sleep 1; done"`)
+@test !isempty(UnixIO.child_pids)
+@test readline(io) != ""
+@test readline(io) != ""
+@test readline(io) != ""
+close(io)
+sleep(1)
+@test isempty(UnixIO.child_pids)
+
 
 end #testset

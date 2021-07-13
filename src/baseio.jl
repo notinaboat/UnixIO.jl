@@ -1,5 +1,6 @@
 # Base.IO Interface
 
+
 function Base.close(fd::UnixFD)
     if C.close(fd) == -1
         throw(ccall_error(:close, fd))
@@ -9,24 +10,24 @@ end
 
 Base.isopen(fd::UnixFD) =
     bytesavailable(fd.read_buffer) > 0 ||
-    (@ccall fcntl(fd::Cint, C.F_GETFL::Cint)::Cint) != -1
+    C.fcntl(fd, C.F_GETFL) != -1
 
 
 Base.bytesavailable(fd::UnixFD) = bytesavailable(fd.read_buffer)
 
 
-function Base.eof(fd::UnixFD)
+function Base.eof(fd::UnixFD; kw...)
     if bytesavailable(fd.read_buffer) == 0
-        Base.write(fd.read_buffer, readavailable(fd))
+        Base.write(fd.read_buffer, readavailable(fd; kw...))
     end
     return bytesavailable(fd.read_buffer) == 0
 end
 
 
-function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
+function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt; kw...)
     nread = 0
     while nread < nbytes
-        n = UnixIO.read(fd, buf + nread, nbytes - nread)
+        n = UnixIO.read(fd, buf + nread, nbytes - nread; kw...)
         if n == 0
             throw(EOFError())
         end
@@ -36,11 +37,17 @@ function Base.unsafe_read(fd::UnixFD, buf::Ptr{UInt8}, nbytes::UInt)
 end
 
 
-
-function Base.read(fd::UnixFD, ::Type{UInt8})
-    eof(fd) && throw(EOFError())
+function Base.read(fd::UnixFD, ::Type{UInt8}; kw...)
+    eof(fd; kw...) && throw(EOFError())
     @assert bytesavailable(fd.read_buffer) > 0
     Base.read(fd.read_buffer, UInt8)
+end
+
+
+function Base.read(fd::UnixFD, nbytes::Integer = typemax(Int); kw...)
+    buf = Vector{UInt8}(undef, nbytes == typemax(Int) ? BUFFER_SIZE : nbytes)
+    nread = readbytes!(fd, buf, nbytes; kw...)
+    return resize!(buf, nread)
 end
 
 
@@ -48,7 +55,7 @@ Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
     readbytes!(fd, buf, UInt(nbytes); kw...)
 
 function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
-                         all::Bool=true)
+                         all::Bool=true, kw...)
     lb = length(buf)
     nread = 0
     while nread < nbytes
@@ -58,7 +65,8 @@ function Base.readbytes!(fd::UnixFD, buf::Vector{UInt8}, nbytes::UInt;
             resize!(buf, lb)
         end
         @assert lb > nread
-        n = GC.@preserve buf UnixIO.read(fd, pointer(buf) + nread, lb - nread)
+        n = GC.@preserve buf UnixIO.read(fd, pointer(buf) + nread, lb - nread;
+                                         kw...)
         if n == 0 || !all
             break
         end
@@ -70,10 +78,21 @@ end
 
 const BUFFER_SIZE = 65536
 
-function Base.readavailable(fd::UnixFD)
+function Base.readavailable(fd::UnixFD; kw...)
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-    n = UnixIO.read(fd, buf, length(buf))
+    n = UnixIO.read(fd, buf, length(buf); kw...)
     resize!(buf, n)
+end
+
+
+function Base.readline(fd::UnixFD; keep::Bool=false, timeout=Inf)
+    old_timeout = fd.timeout
+    fd.timeout = timeout
+    try
+        invoke(readline, Tuple{IO}, fd; keep=keep)
+    finally
+        fd.timeout = old_timeout
+    end
 end
 
 

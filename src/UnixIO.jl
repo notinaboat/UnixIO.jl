@@ -10,8 +10,11 @@ e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
     using UnixIO
     const C = UnixIO.C
 
+    UnixIO.read(`curl https://julialang.org`, String; timeout=5)
+
     io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
+    readline(io; timeout=5)
 
     fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
     C.write(fd, "Hello!", 7)
@@ -36,16 +39,22 @@ using ReadmeDocs
 using UnixIOHeaders
 const C = UnixIOHeaders
 
+function __init__()
+    poll_queue_init()
+    atexit(terminate_child_pids)
+end
+
 
 # Unix File Descriptor wrapper.
 
-struct UnixFD <: IO
+mutable struct UnixFD <: IO
     fd::Cint
     read_buffer::IOBuffer
     ready::Threads.Condition
-    function UnixFD(fd)
+    timeout::Float64
+    function UnixFD(fd; timeout=Inf)
         fcntl_setfl(fd, C.O_NONBLOCK)
-        new(fd, PipeBuffer(), Threads.Condition())
+        new(fd, PipeBuffer(), Threads.Condition(), timeout)
     end
 end
 
@@ -62,7 +71,11 @@ include("baseio.jl")
 # Errors.
 
 ccall_error(call, args...) =
-            Base.SystemError("UnixIO.$call$args failed", Base.Libc.errno())
+    Base.SystemError("UnixIO.$call$args failed", Base.Libc.errno())
+
+struct ReadTimeoutError <: Exception
+    fd::UnixFD
+end
 
 
 
@@ -70,7 +83,7 @@ README"## Opening and Closing Unix Files."
 
 
 README"""
-    UnixIO.open(pathname, [flags = C.O_RDWR]) -> UnixFD <: IO
+    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> UnixFD <: IO
 
 Open the file specified by pathname.
 
@@ -80,10 +93,10 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
-function open(pathname, flags = C.O_RDWR)
-    fd = C.open(pathname, flags)
+function open(pathname, flags = C.O_RDWR; timeout=Inf)
+    fd = C.open(pathname, flags | C.O_NONBLOCK)
     fd != -1 || throw(ccall_error(:open, pathname))
-    UnixFD(fd)
+    UnixFD(fd; timeout=timeout)
 end
 
 
@@ -178,33 +191,39 @@ README"## Reading from Unix Files."
 
 
 README"""
-    UnixIO.read(fd, buf, count) -> number of bytes read
+    UnixIO.read(fd, buf, count; [timeout=Inf] ) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
-function read(fd::UnixFD, buf, count)
+function read(fd::UnixFD, buf, count; timeout=fd.timeout)
+
+    # First read from buffer.
     n = bytesavailable(fd.read_buffer)
     if n > 0
         n = min(n, count)
         unsafe_read(fd.read_buffer, buf, n)
         return n
     end
+
+    # Then read from file.
+    deadline = time() + timeout
     while true
         n = C.read(fd.fd, buf, count)
         if n != -1
             return n
         end
         if !(Base.Libc.errno() in (C.EAGAIN, C.EINTR))
-            throw(ccall_error(:read, fd, buf, count))
+            throw(ccall_error(:read, fd, typeof(buf), count))
         end
-        poll_wait(fd, C.POLLIN)
+        if time() > deadline 
+            throw(ReadTimeoutError(fd))
+        end
+        poll_wait(fd, C.POLLIN, deadline)
     end
 end
 
-function C.read(fd::UnixFD, buf, count)
-end
 
 include("poll.jl")
 
@@ -305,7 +324,7 @@ function waitpid_error(cmd, status)
 end
 
 
-function cmd_bin(cmd::Cmd)
+function find_cmd_bin(cmd::Cmd)
     bin = Base.Sys.which(cmd.exec[1])
     bin != nothing || throw(ArgumentError("Command not found: $(cmd.exec[1])"))
     bin
@@ -334,6 +353,7 @@ julia> UnixIO.open(`hexdump -C`) do io
 function open(f::Function, cmd::Cmd; check_status=true,
                                      capture_stderr=false)
 
+    # Create Unix Domain Socket to communicate with Child Process.
     parent_io, child_io = socketpair()
     fcntl_setfd(parent_io, C.O_CLOEXEC)
     child_in = child_io
@@ -341,50 +361,103 @@ function open(f::Function, cmd::Cmd; check_status=true,
     child_err = capture_stderr ? child_out : Base.STDERR_NO
 
     GC.enable(false)
-    Base.sigatomic_begin()
+    Base.sigatomic_begin(); 
 
-    bin = cmd_bin(cmd)
-    args = pointer.(cmd.exec)
-    push!(args, Ptr{UInt8}(0))
+        # Prepare arguments for `C.execv`.
+        cmd_bin = find_cmd_bin(cmd)
+        args = pointer.(cmd.exec)
+        push!(args, Ptr{UInt8}(0))
 
-#    GC.@preserve cmd begin
-    pid = C.fork()
-        if pid == 0
-            C.dup2(child_in, Base.STDIN_NO)
-            C.dup2(child_out, Base.STDOUT_NO)
-            C.dup2(child_err, Base.STDERR_NO)
-            C.execv(bin, args)
-            C._exit(-1) # Only reached if execv() fails.
-        end
-#    end
-    close(child_io)
+        pid = C.fork()                  # Child process:
+                                        if pid == 0
+                                            # Connect STDIN/OUT to socket.
+                                            C.dup2(child_in, Base.STDIN_NO)
+                                            C.dup2(child_out, Base.STDOUT_NO)
+                                            C.dup2(child_err, Base.STDERR_NO)
 
+                                            # Execute command.
+                                            C.execv(cmd_bin, args)
+                                            C._exit(-1)
+                                        end
     Base.sigatomic_end()
     GC.enable(true)
 
-    status = 0
+    register_child(pid)
+    C.close(child_io)
+
+    # Run the IO handling function `f`.
     result = try
         f(UnixFD(parent_io))
     catch
-        C.kill(pid, C.SIGTERM)
+        @async waitpid(pid)
         rethrow()
     finally
         C.close(parent_io)
-        status = waitpid(pid)
+        terminate_child(pid)
     end
+
+    # Get child process exit status.
+    status = waitpid(pid)
     if check_status
         if !WIFEXITED(status) || WEXITSTATUS(status) != 0
             throw(waitpid_error(cmd, status))
         end
         return result
     end
+
     return status, result
 end
 
+
+const child_pids_lock = Threads.SpinLock()
+const child_pids = Set{Cint}()
+
+function register_child(pid)
+    lock(child_pids_lock)
+    try
+        push!(child_pids, pid)
+    finally
+        unlock(child_pids_lock)
+    end
+end
+
+function terminate_child(pid)
+    lock(child_pids_lock)
+    try
+        delete!(child_pids, pid)
+    finally
+        unlock(child_pids_lock)
+    end
+    C.kill(pid, C.SIGKILL)
+end
+
+function terminate_child_pids()
+    @sync for pid in child_pids
+        C.kill(pid, C.SIGKILL)
+        @async waitpid(pid)
+    end
+end
+
+
+function open(cmd::Cmd; kw...)
+    c = Channel{UnixFD}(0)
+    @async open(cmd; kw...) do fd
+        put!(c, fd)
+        while C.fcntl(fd, C.F_GETFL) != -1
+            sleep(1)
+        end
+    end
+    take!(c)
+end
+
+
 README"---"
+
 README"""
-    read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
-    read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
+    read(cmd::Cmd; [timeout=Inf,
+                    check_status=true,
+                    capture_stderr=false]) -> Vector{UInt8}
+    read(cmd::Cmd, String; kw...) -> String
 
 Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
@@ -397,10 +470,10 @@ julia> UnixIO.read(`uname -srm`, String)
 """
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
-function read(cmd::Cmd; kw...)
+function read(cmd::Cmd; timeout=Inf, kw...)
     open(cmd; kw...) do io
         shutdown(io)
-        Base.read(io)
+        Base.read(io; timeout=timeout)
     end
 end
 
@@ -422,15 +495,17 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 function waitpid(pid)
     status = Ref{Cint}(0)
     while true
-        r = C.waitpid(pid, status, 0)
+        r = C.waitpid(pid, status, C.WNOHANG | C.WUNTRACED)
         if r == -1
             if Base.Libc.errno() == C.EINTR
                 continue
             end
             throw(ccall_error(:waitpid, pid))
         end
-        @assert r == pid
-        return status[]
+        if r == pid
+            return status[]
+        end
+        sleep(0.1)
     end
 end
 

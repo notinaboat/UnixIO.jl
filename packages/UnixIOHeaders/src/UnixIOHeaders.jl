@@ -24,8 +24,8 @@ using CInclude
 @cinclude "poll.h"       quiet
 @cinclude "unistd.h"     quiet
 @cinclude "sys/socket.h" quiet
-@cinclude "signal.h"     quiet exclude=r"sigcontext_struct|sv_onstack"
-@cinclude "sys/wait.h"   quiet exclude=r"sigcontext_struct|sv_onstack"
+@cinclude "signal.h"     quiet exclude=r"^_|sigcontext_struct|sv_onstack"
+@cinclude "sys/wait.h"   quiet exclude=r"^_|ru_first|ru_last|sigcontext_struct|sv_onstack"
 
 
 
