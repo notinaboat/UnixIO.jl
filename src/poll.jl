@@ -26,15 +26,23 @@ mutable struct PollQueue
     channel::Channel{PollFD}
     queue::Vector{PollFD}
     vector::Vector{PollFDTuple}
+    wakeup_pipe::Vector{Cint}
     task::Union{Nothing,Task}
 end
 
 
-const poll_queue = PollQueue(Channel{PollFD}(0),[], [], nothing)
+const poll_queue = PollQueue(Channel{PollFD}(0),[], [], [], nothing)
 
 function __init__()
-    poll_queue.task = @async poll_task(q)
+    poll_queue.task = Threads.@spawn poll_task(poll_queue)
+
+    poll_queue.wakeup_pipe = fill(Cint(-1), 2)
+    r = C.pipe(poll_queue.wakeup_pipe)
+    r != -1 || throw(ccall_error(:pipe))
 end
+
+
+wakeup(q::PollQueue) = C.write(q.wakeup_pipe[2], Ref(0), 1)
 
 
 """
@@ -48,6 +56,7 @@ function poll_wait(fd::PolledUnixFD, events)
     lock(fd.ready)
     try
         push!(poll_queue.channel, PollFD(fd.fd, events, fd.ready))
+        wakeup(poll_queue)
         wait(fd.ready)
     finally
         unlock(fd.ready)
@@ -59,9 +68,19 @@ end
 Run `poll(queue)` while there are entries in the `queue`.
 """
 function poll_task(q)
+    if Threads.threadid() == 1
+        @warn """
+              UnixIO.poll_task() is running on thread No. 1!
+              Other Tasks on thread 1 may be blocked for up to 100ms while
+              poll_task() is waiting for IO.
+              Consider increasing JULIA_NUM_THREADS (`julia --threads N`).
+              """
+        timeout_ms = 100
+    else
+        timeout_ms = 1000
+    end
     while true
         try
-            printerr("poll_task")
             while isready(q.channel) || isempty(q.queue)
                 fd = take!(q.channel)
                 @assert findfirst(x->x.fd == fd.fd, q.queue) == nothing
@@ -69,13 +88,16 @@ function poll_task(q)
                                         #       for writes as well as reads.
                 push!(q.queue, fd)
             end
-
-            printerr("poll_task poll")
-            poll(q)
+            @assert !isempty(q.queue)
+            poll(q, timeout_ms)
+            yield()
 
         catch err
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
+            for fd in q.queue
+                Base.notify_error(fd.ready, err)
+            end
         end
     end
 end
@@ -86,25 +108,30 @@ Wait for events.
 When events occur, notify waiters and remove entries from queue.
 Return false if the queue is empty.
 """
-function poll(q::PollQueue)
-
-    queue_length = length(q.queue)
-    if queue_length == 0
-        return
-    end
+function poll(q::PollQueue, timeout_ms)
 
     # Build vector of `struct pollfd`.
-    resize!(q.vector, queue_length)
+    vector_length = length(q.queue) + 1
+    resize!(q.vector, vector_length)
     for (i, fd) in enumerate(q.queue)
         q.vector[i] = (fd.fd, fd.events, 0)
     end
+    q.vector[vector_length] = (q.wakeup_pipe[1], C.POLLIN, 0)
 
     # Wait for events
-    timeout_ms = 10
-    n = C.poll(q.vector, queue_length, timeout_ms)
+    n = C.poll(q.vector, vector_length, timeout_ms)
     if n == -1 && Base.Libc.errno() != C.EINTR
-        throw(ccall_error(:poll, q.vector, queue_length, timeout_ms))
+        throw(ccall_error(:poll, q.vector, vector_length, timeout_ms))
     end
+
+    # Check for write to wakeup pipe.
+    fd, events, revents = q.vector[vector_length]
+    if revents != 0
+        @assert fd == q.wakeup_pipe[1]
+        C.read(fd, Ref(0), 1)
+        return
+    end
+
 
     # Check poll vector for events.
     for (fd, events, revents) in q.vector

@@ -8,10 +8,11 @@ open(pathname::AbstractString, flags, mode) =
 
 close(fd) = @ccall close(fd::Cint)::Cint
 
+system(command) = @ccall system(command::Cstring)::Cint
 
 using CInclude
 
-@cinclude "stdlib.h"     quiet
+#@cinclude "pthread.h"    quiet
 @cinclude "errno.h"      quiet
 @cinclude "termios.h"    quiet
 @cinclude "fcntl.h"      quiet
