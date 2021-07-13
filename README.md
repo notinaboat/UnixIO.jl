@@ -16,22 +16,20 @@ UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
 C.write(fd, "Hello!", 7)
 C.close(fd)
+
+io = UnixIO.open("file.txt", C.O_CREAT | C.O_WRONLY)
+write(io, "Hello!")
+close(io)
 ```
+
+Blocking IO is multiplexed by running  [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html) under a task started by `Threads.@spawn`. See [`src/poll.jl`](src/poll.jl)
 
 
 ## Opening and Closing Unix Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR]; [mode=:blocking]) -> UnixFD
+    UnixIO.open(pathname, [flags = C.O_RDWR]) -> UnixFD <: IO
 
 Open the file specified by pathname.
-
-If `mode` is `:blocking` io operations may prevent other Julia tasks from
-running.
-
-If `mode` is `:threaded` blocking io operations are run on a sperate thread.
-
-If `mode` is `:polled` blocking io operations are multiplexed by
-[poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html).
 
 The `UnixFD` returned by `UnixIO.open` can be used with
 `UnixIO.read` and `UnixIO.write`. It can also be used with
@@ -116,7 +114,7 @@ See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 
 ## Executing Unix Commands.
 
-    UnixIO.system(command; [yield=true]) -> exit status
+    UnixIO.system(command) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
 
