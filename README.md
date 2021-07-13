@@ -10,8 +10,11 @@ e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
 using UnixIO
 const C = UnixIO.C
 
+UnixIO.read(`curl https://julialang.org`, String; timeout=5)
+
 io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
 UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
+readline(io; timeout=5)
 
 fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
 C.write(fd, "Hello!", 7)
@@ -27,7 +30,7 @@ Blocking IO is multiplexed by running  [`poll(2)`](https://man7.org/linux/man-pa
 
 ## Opening and Closing Unix Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR]) -> UnixFD <: IO
+    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> UnixFD <: IO
 
 Open the file specified by pathname.
 
@@ -36,6 +39,14 @@ The `UnixFD` returned by `UnixIO.open` can be used with
 the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
+
+
+---
+
+    UnixIO.set_timeout(fd::UnixFD, timeout)
+
+Configure `fd` to throw `UnixIO.ReadTimeoutError` when read operations take
+longer than `timeout` seconds.
 
 
 ---
@@ -81,7 +92,7 @@ See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 ## Reading from Unix Files.
 
-    UnixIO.read(fd, buf, count) -> number of bytes read
+    UnixIO.read(fd, buf, count; [timeout=Inf] ) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
@@ -146,8 +157,10 @@ julia> UnixIO.open(`hexdump -C`) do io
 
 ---
 
-    read(cmd::Cmd, String; [check_status=true, capture_stderr=false]) -> String
-    read(cmd::Cmd; [check_status=true, capture_stderr=false]) -> Vector{UInt8}
+    read(cmd::Cmd; [timeout=Inf,
+                    check_status=true,
+                    capture_stderr=false]) -> Vector{UInt8}
+    read(cmd::Cmd, String; kw...) -> String
 
 Run `cmd` using `fork` and `execv`.
 Return byes written to stdout by `cmd`.
