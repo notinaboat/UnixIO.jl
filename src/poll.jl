@@ -63,7 +63,6 @@ Write a byte to the pipe to wake up `poll(2)` before its timeout.
 """
 wakeup(q::PollQueue) = C.write(q.wakeup_pipe[2], Ref(0), 1)
 
-
 """
     poll_wait(fd, events, deadline)
 
@@ -72,6 +71,12 @@ See [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html)
 for event types.
 """
 function poll_wait(fd::UnixFD, events, deadline)
+
+    if enable_dumb_polling[]
+        sleep(0.1)
+        return
+    end
+
     lock(fd.ready)
     try
         push!(poll_queue.channel, PollFD(fd.fd, events, fd.ready, deadline))
@@ -81,6 +86,9 @@ function poll_wait(fd::UnixFD, events, deadline)
         unlock(fd.ready)
     end
 end
+const enable_dumb_polling = Ref(false)
+wait_for_read_event(fd, timeout) = poll_wait(fd, C.POLLIN, timeout)
+wait_for_write_event(fd, timeout) = poll_wait(fd, C.POLLOUT, timeout)
 
 
 """
@@ -102,9 +110,7 @@ function poll_task(q)
         try
             while isready(q.channel) || isempty(q.queue)
                 fd = take!(q.channel)
-                @assert findfirst(x->x.fd == fd.fd, q.queue) == nothing
-                                        # FIXME reconsider if/when poll is used
-                                        #       for writes as well as reads.
+                @assert find_poll_fd(q.queue, fd.fd, fd.events) == nothing
                 push!(q.queue, fd)
             end
             @assert !isempty(q.queue)
@@ -166,11 +172,10 @@ function poll(q::PollQueue, timeout_ms)
     # Check poll vector for events.
     for (fd, events, revents) in q.cvector[1:end-1]
         if revents != 0
-
             # Remove fd from queue and notify task waiting in `poll_wait()`.
-            i = findfirst(x->x.fd == fd #=&& x.events == events=#, q.queue)
-            ready = q.queue[i].ready    # ^^ FIXME reconsider if poll is used
-            lock(ready)                 #          for writes as well as reads.
+            i::Int = find_poll_fd(q.queue, fd, revents)
+            ready = q.queue[i].ready
+            lock(ready)
             deleteat!(q.queue, i)
             notify(ready)
             unlock(ready)
@@ -197,6 +202,13 @@ function poll(q::PollQueue, timeout_ms)
     nothing
 end
 
+
+find_poll_fd(queue, fd, events) = findfirst(queue) do x
+    x.fd == fd && (                                # fd matches and...
+      ((events & x.events) != 0) ||                # events match or...
+      ((events & ~(C.POLLIN | C.POLLOUT)) != 0)    # unexpected event type
+    )
+end
 
 
 # End of file: poll.h

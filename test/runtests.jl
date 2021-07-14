@@ -5,6 +5,11 @@ cd(@__DIR__)
 
 @testset "UnixIO" begin
 
+for mode in ["poll(2)", "sleep(0.1)"]
+
+@testset "UnixIO $mode" begin
+
+UnixIO.enable_dumb_polling[] = mode == "sleep(0.1)"
 
 @test UnixIO.read(`uname -a`) ==
              read(`uname -a`)
@@ -71,7 +76,7 @@ try
     UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
 catch
 end
-@test abs((time() - t0) - 2.4) < 0.1
+@test abs((time() - t0) - 2.4) < 0.2
 
 sleep(1)
 @test isempty(UnixIO.child_pids)
@@ -84,5 +89,9 @@ close(io)
 sleep(1)
 @test isempty(UnixIO.child_pids)
 
+
+end #testset
+
+end #for mode
 
 end #testset

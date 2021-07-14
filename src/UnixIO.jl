@@ -24,10 +24,15 @@ e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
     write(io, "Hello!")
     close(io)
 
-Blocking IO is multiplexed by running 
+Blocking IO is multiplexed by running
 [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)
 under a task started by `Threads.@spawn`.
 See [`src/poll.jl`](src/poll.jl)
+
+If `UnixIO.enable_dumb_polling[]` is set to `true` IO polling is done by
+a dumb loop with a 100ms delay. This may be more efficient for small
+systems with simple IO requirements (e.g. communicating with a few
+serial ports and sub-processes on a Raspberry Pi).
 """
 module UnixIO
 
@@ -77,6 +82,10 @@ struct ReadTimeoutError <: Exception
     fd::UnixFD
 end
 
+struct WriteTimeoutError <: Exception
+    fd::UnixFD
+end
+
 
 
 README"## Opening and Closing Unix Files."
@@ -116,7 +125,7 @@ README"---"
 README"""
     UnixIO.fcntl_setfl(fd::UnixFD, flag)
 
-Set `flag` in the file status flags. 
+Set `flag` in the file status flags.
 Uses `F_GETFL` to read the current flags and `F_SETFL` to store the new flag.
 See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
 """
@@ -163,10 +172,8 @@ function tcsetattr(tty::UnixFD; iflag = 0,
     conf.c_oflag = oflag
     conf.c_cflag = cflag
     conf.c_lflag = lflag
-    @GC.preserve conf begin
-        cfsetspeed(Ref(conf), eval(Symbol("B$speed")))
-        tcsetattr(tty, TCSANOW, Ref(conf))
-    end
+    cfsetspeed(Ref(conf), eval(Symbol("B$speed")))
+    tcsetattr(tty, TCSANOW, Ref(conf))
 end
 
 
@@ -201,19 +208,22 @@ README"## Reading from Unix Files."
 
 
 README"""
-    UnixIO.read(fd, buf, count; [timeout=Inf] ) -> number of bytes read
+    UnixIO.read(fd, buf, [count=length(buf)];
+                [timeout=Inf] ) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
+
+Throw `UnixIO.ReadTimeoutError` if read takes longer than `timeout` seconds.
 """
-function read(fd::UnixFD, buf, count; timeout=fd.timeout)
+function read(fd::UnixFD, buf, count=length(buf); timeout=fd.timeout)
 
     # First read from buffer.
     n = bytesavailable(fd.read_buffer)
     if n > 0
         n = min(n, count)
-        unsafe_read(fd.read_buffer, buf, n)
+        read_from_buffer(fd, buf, n)
         return n
     end
 
@@ -227,12 +237,15 @@ function read(fd::UnixFD, buf, count; timeout=fd.timeout)
         if !(Base.Libc.errno() in (C.EAGAIN, C.EINTR))
             throw(ccall_error(:read, fd, typeof(buf), count))
         end
-        if time() > deadline 
+        if time() > deadline
             throw(ReadTimeoutError(fd))
         end
-        poll_wait(fd, C.POLLIN, deadline)
+        wait_for_read_event(fd, deadline)
     end
 end
+
+read_from_buffer(fd::UnixFD, buf, n) = readbytes!(fd.read_buffer, buf, n)
+read_from_buffer(fd::UnixFD, buf::Ptr, n) = unsafe_read(fd.read_buffer, buf, n)
 
 
 include("poll.jl")
@@ -243,14 +256,31 @@ README"## Writing to Unix Files."
 
 
 README"""
-    UnixIO.write(fd, buf, count) -> number of bytes written
+    UnixIO.write(fd, buf, [count=length(buf)];
+                 [timeout=Inf] ) -> number of bytes written
 
 Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
-"""
-write(fd, buf, count) = C.write(fd, buf, count)
 
+Throw `UnixIO.WriteTimeoutError` if write takes longer than `timeout` seconds.
+"""
+function write(fd, buf, count=length(buf); timeout=Inf)
+    deadline = time() + timeout
+    while true
+        n = C.write(fd, buf, count)
+        if n != -1
+            return n
+        end
+        if !(Base.Libc.errno() in (C.EAGAIN, C.EINTR))
+            throw(ccall_error(:read, fd, typeof(buf), count))
+        end
+        if time() > deadline
+            throw(WriteTimeoutError(fd))
+        end
+        wait_for_write_event(fd, deadline)
+    end
+end
 
 
 README"""
@@ -264,7 +294,7 @@ println(x...) = raw_println(STDERR, x...)
 printerr(x...) = raw_println(STDERR, x...)
 function raw_println(fd, x...)
     io = IOBuffer()
-    Base.println(io, x...) 
+    Base.println(io, x...)
     buf = take!(io)
     C.write(fd, buf, length(buf))
     nothing
@@ -371,7 +401,7 @@ function open(f::Function, cmd::Cmd; check_status=true,
     child_err = capture_stderr ? child_out : Base.STDERR_NO
 
     GC.enable(false)
-    Base.sigatomic_begin(); 
+    Base.sigatomic_begin();
 
         # Prepare arguments for `C.execv`.
         cmd_bin = find_cmd_bin(cmd)

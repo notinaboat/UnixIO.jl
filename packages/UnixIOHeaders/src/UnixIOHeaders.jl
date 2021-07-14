@@ -22,6 +22,7 @@ using CInclude
 @cinclude "termios.h"    quiet
 @cinclude "fcntl.h"      quiet
 @cinclude "poll.h"       quiet
+@cinclude "sys/epoll.h"  quiet
 @cinclude "unistd.h"     quiet
 @cinclude "sys/socket.h" quiet
 @cinclude "signal.h"     quiet exclude=r"^_|sigcontext_struct|sv_onstack"
