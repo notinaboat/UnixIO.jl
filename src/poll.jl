@@ -1,5 +1,34 @@
 # Polling
 
+#FIXME
+# - consider @noinline and @noslcialise
+#
+# - epoll not faster if most file descriptors are active?
+# 
+# - need a lock around epoll_set ?
+# - remove Channel from poll implementation?
+#    - use the same wakeup method as epoll
+# - Share set and wakeup pipe
+# - Share task, run one or the other poll function.
+#
+# - Sort poll set in timeout order?
+#
+# - Split into in/out file handles using dup2?
+#
+# - keep poll request active for duration of multi-call read
+#    - or keep poll request active for some brief time, 
+#
+# - keep partial results on timeout ? 
+#    - timeout should be like temporary eof?
+#       - timeout should be like temporary eof?
+#
+# - Separate timeouts from polling?
+#    - Provide a generic cancel method
+#    - Use timer to cancel
+#
+# - Check poll_wait() returns events added after start of wait.
+#    - If so, then don't abort the wait when adding new fds
+
 
 """
 Tuple that matches the memory layout of C `struct pollfd`."
@@ -120,6 +149,7 @@ function poll_task(q)
             while isready(q.channel) || isempty(q.set)
                 fd = take!(q.channel)
                 push!(q.set, fd)
+                empty!(q.cvector)
             end
             @assert !isempty(q.set)
             poll(q, timeout_ms)
@@ -166,18 +196,19 @@ Return false if the queue is empty.
 function poll(q::PollQueue, default_timeout_ms)
 
     # Build vector of `struct pollfd`.
-    vector_length = length(q.set) + 1
-    resize!(q.cvector, vector_length)
-    for (i, fd) in enumerate(q.set)
-        q.cvector[i] = (fd.fd, fd.events, 0)
+    if isempty(q.cvector)
+        resize!(q.cvector, length(q.set) + 1)
+        for (i, fd) in enumerate(q.set)
+            q.cvector[i] = (fd.fd, fd.events, 0)
+        end
+        q.cvector[end] = (q.wakeup_pipe[1], C.POLLIN, 0)
     end
-    q.cvector[end] = (q.wakeup_pipe[1], C.POLLIN, 0)
 
     # Wait for events
     timeout_ms = deadline_timeout_ms(q.set, default_timeout_ms)
-    n = C.poll(q.cvector, vector_length, timeout_ms)
+    n = C.poll(q.cvector, length(q.cvector), timeout_ms)
     if n == -1 && Base.Libc.errno() != C.EINTR
-        throw(ccall_error(:poll, q.cvector, vector_length, timeout_ms))
+        throw(ccall_error(:poll, q.cvector, length(q.cvector), timeout_ms))
     end
 
     # Check for write to wakeup pipe.
@@ -195,6 +226,7 @@ function poll(q::PollQueue, default_timeout_ms)
             lock(x.ready)
             x.events &= ~events
             delete!(q.set, x)
+            empty!(q.cvector)
             notify(x.ready)          #FIXME same notification for read/write
             unlock(x.ready)
         end
@@ -316,6 +348,9 @@ function epoll_register(fd::UnixFD, event)
         @assert fd in epoll_set
         epoll_mod(fd)
     end
+    # FIXME wakeup only needed for timeouts 
+    # check if fd.deadline is after next wakeup?
+    # or just make cancellation separate !!!!
     epoll_wakeup()
 end
 
@@ -330,7 +365,7 @@ epoll_wakeup() = C.write(epoll_wakeup_pipe[2], Ref(0), 1)
 Call `epoll_wait(7)` to wait for events.
 Call `f(events, fd)` for each event.
 """
-function epoll_wait(timeout_ms, f::Function)
+function epoll_wait(f::Function, timeout_ms)
     v = Vector{epoll_event}(undef, 10)
     while true
         n = C.epoll_wait(epoll_fd, v, length(v), timeout_ms)
@@ -361,17 +396,16 @@ function epoll_task()
               poll_task() is waiting for IO.
               Consider increasing JULIA_NUM_THREADS (`julia --threads N`).
               """
-        timeout_ms = 100
+        default_timeout_ms = 100
     else
-        timeout_ms = 10000
+        default_timeout_ms = 10000
     end
 
     while true
         try
             timeout_ms = deadline_timeout_ms(epoll_set, default_timeout_ms)
 
-            epoll_wait(timeout_ms, (events, fd) -> begin
-
+            epoll_wait(timeout_ms) do events, fd
                 lock(fd.ready)
                 fd.events &= ~events
                 if fd.events == 0
@@ -382,7 +416,7 @@ function epoll_task()
                 end
                 notify(fd.ready)
                 unlock(fd.ready)
-            end)
+            end
 
             # Check for timeouts.
             if timeout_ms < default_timeout_ms

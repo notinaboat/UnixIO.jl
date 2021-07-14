@@ -65,6 +65,33 @@ mutable struct UnixFD <: IO
     end
 end
 
+Base.lock(fd::UnixFD) = lock(fd.ready)
+Base.unlock(fd::UnixFD) = lock(fd.ready)
+Base.notify(fd::UnixFD) = notify(fd.ready)
+
+#= FIXME
+abstract type UnixFD <: IO end
+
+mutable struct ReadFD{T} <: UnixFD
+    fd::Cint 
+    buffer::IOBuffer
+    ready::Threads.Condition
+    timeout::Float64
+end
+
+Base.iswriteable(::ReadFD) = false
+
+
+mutable struct WriteFD{T} <: UnixFD
+    fd::Cint 
+    ready::Threads.Condition
+    timeout::Float64
+end
+
+Base.isreadable(::WriteFD) = false
+=#
+
+
 
 Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
 Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
