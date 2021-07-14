@@ -25,7 +25,9 @@ write(io, "Hello!")
 close(io)
 ```
 
-Blocking IO is multiplexed by running  [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html) under a task started by `Threads.@spawn`. See [`src/poll.jl`](src/poll.jl)
+Blocking IO is multiplexed by running [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html) under a task started by `Threads.@spawn`. See [`src/poll.jl`](src/poll.jl)
+
+If `UnixIO.enable_dumb_polling[]` is set to `true` IO polling is done by a dumb loop with a 10ms delay. This may be more efficient for small systems with simple IO requirements (e.g. communicating with a few serial ports and sub-processes on a Raspberry Pi).
 
 
 ## Opening and Closing Unix Files.
@@ -53,7 +55,7 @@ longer than `timeout` seconds.
 
     UnixIO.fcntl_setfl(fd::UnixFD, flag)
 
-Set `flag` in the file status flags. 
+Set `flag` in the file status flags.
 Uses `F_GETFL` to read the current flags and `F_SETFL` to store the new flag.
 See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
 
@@ -92,20 +94,26 @@ See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 ## Reading from Unix Files.
 
-    UnixIO.read(fd, buf, count; [timeout=Inf] ) -> number of bytes read
+    UnixIO.read(fd, buf, [count=length(buf)];
+                [timeout=Inf] ) -> number of bytes read
 
 Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
+Throw `UnixIO.ReadTimeoutError` if read takes longer than `timeout` seconds.
+
 
 ## Writing to Unix Files.
 
-    UnixIO.write(fd, buf, count) -> number of bytes written
+    UnixIO.write(fd, buf, [count=length(buf)];
+                 [timeout=Inf] ) -> number of bytes written
 
 Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
+
+Throw `UnixIO.WriteTimeoutError` if write takes longer than `timeout` seconds.
 
 
     UnixIO.println(x...)

@@ -5,11 +5,15 @@ cd(@__DIR__)
 
 @testset "UnixIO" begin
 
-for mode in ["poll(2)", "sleep(0.1)"]
+for mode in ["poll(2)", "epoll(7)", "sleep(0.1)"]
 
 @testset "UnixIO $mode" begin
 
+if (!Sys.islinux()) && mode == "epoll(7)"
+    continue
+end
 UnixIO.enable_dumb_polling[] = mode == "sleep(0.1)"
+UnixIO.enable_epoll[] = mode == "epoll(7)"
 
 @test UnixIO.read(`uname -a`) ==
              read(`uname -a`)

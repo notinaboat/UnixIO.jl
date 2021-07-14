@@ -30,7 +30,7 @@ under a task started by `Threads.@spawn`.
 See [`src/poll.jl`](src/poll.jl)
 
 If `UnixIO.enable_dumb_polling[]` is set to `true` IO polling is done by
-a dumb loop with a 100ms delay. This may be more efficient for small
+a dumb loop with a 10ms delay. This may be more efficient for small
 systems with simple IO requirements (e.g. communicating with a few
 serial ports and sub-processes on a Raspberry Pi).
 """
@@ -47,6 +47,9 @@ const C = UnixIOHeaders
 function __init__()
     poll_queue_init()
     atexit(terminate_child_pids)
+    if Sys.islinux()
+        epoll_init()
+    end
 end
 
 
@@ -56,10 +59,12 @@ mutable struct UnixFD <: IO
     fd::Cint
     read_buffer::IOBuffer
     ready::Threads.Condition
+    events::Cint
     timeout::Float64
+    deadline::Float64
     function UnixFD(fd; timeout=Inf)
         fcntl_setfl(fd, C.O_NONBLOCK)
-        new(fd, PipeBuffer(), Threads.Condition(), timeout)
+        new(fd, PipeBuffer(), Threads.Condition(), 0, timeout)
     end
 end
 
@@ -67,7 +72,23 @@ end
 Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
 Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
-Base.show(io::IO, fd::UnixFD) = print(io, "$(typeof(fd))($(fd.fd))")
+function Base.show(io::IO, fd::UnixFD)
+    print(io, "$(typeof(fd))($(fd.fd)")
+    events = []
+    fd.events & C.POLLIN != 0 && push!(events, "C.POLLIN")
+    fd.events & C.POLLOUT != 0 && push!(events, "C.POLLOUT")
+    if !isempty(events)
+        print(io, ", ", join(events, "|"))
+    end
+    if fd.timeout != Inf
+        print(io, ", timeout=", fd.timeout)
+    end
+    n = bytesavailable(fd.read_buffer)
+    if n > 0
+        print(io, ", $n byte buf")
+    end
+    print(io, ")")
+end
 
 include("baseio.jl")
 
@@ -228,7 +249,7 @@ function read(fd::UnixFD, buf, count=length(buf); timeout=fd.timeout)
     end
 
     # Then read from file.
-    deadline = time() + timeout
+    fd.deadline = time() + timeout
     while true
         n = C.read(fd.fd, buf, count)
         if n != -1
@@ -237,10 +258,10 @@ function read(fd::UnixFD, buf, count=length(buf); timeout=fd.timeout)
         if !(Base.Libc.errno() in (C.EAGAIN, C.EINTR))
             throw(ccall_error(:read, fd, typeof(buf), count))
         end
-        if time() > deadline
+        if time() > fd.deadline
             throw(ReadTimeoutError(fd))
         end
-        wait_for_read_event(fd, deadline)
+        wait_for_read_event(fd)
     end
 end
 
@@ -266,7 +287,7 @@ See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 Throw `UnixIO.WriteTimeoutError` if write takes longer than `timeout` seconds.
 """
 function write(fd, buf, count=length(buf); timeout=Inf)
-    deadline = time() + timeout
+    fd.deadline = time() + timeout
     while true
         n = C.write(fd, buf, count)
         if n != -1
@@ -275,10 +296,10 @@ function write(fd, buf, count=length(buf); timeout=Inf)
         if !(Base.Libc.errno() in (C.EAGAIN, C.EINTR))
             throw(ccall_error(:read, fd, typeof(buf), count))
         end
-        if time() > deadline
+        if time() > fd.deadline
             throw(WriteTimeoutError(fd))
         end
-        wait_for_write_event(fd, deadline)
+        wait_for_write_event(fd)
     end
 end
 
