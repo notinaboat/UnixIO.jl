@@ -1,33 +1,32 @@
+"""
 # Polling
 
-#FIXME
-# - consider @noinline and @noslcialise
-#
-# - epoll not faster if most file descriptors are active?
-# 
-# - need a lock around epoll_set ?
-# - remove Channel from poll implementation?
-#    - use the same wakeup method as epoll
-# - Share set and wakeup pipe
-# - Share task, run one or the other poll function.
-#
-# - Sort poll set in timeout order?
-#
-# - Split into in/out file handles using dup2?
-#
-# - keep poll request active for duration of multi-call read
-#    - or keep poll request active for some brief time, 
-#
-# - keep partial results on timeout ? 
-#    - timeout should be like temporary eof?
-#       - timeout should be like temporary eof?
-#
-# - Separate timeouts from polling?
-#    - Provide a generic cancel method
-#    - Use timer to cancel
-#
-# - Check poll_wait() returns events added after start of wait.
-#    - If so, then don't abort the wait when adding new fds
+1) Seperate read/write FDs.
+
+2) Separate timeouts from polling?
+ - Provide a generic cancel method
+ - Use timer to cancel
+
+3) Share task / wakeup pipe between poll/epoll
+ - Share task, run one or the other poll function.
+ - use the same wakeup method as epoll
+ - need a lock around epoll_set ?
+ - remove Channel from poll implementation?
+ - Sort poll set in timeout order?
+
+3) keep partial results on timeout ? 
+ - timeout should be like temporary eof?
+
+4) keep poll request active for duration of multi-call read
+ - or keep poll request active for some brief time, 
+
+5) Later...
+
+ - consider @noinline and @nospecialize
+ - specify types on kw args? check compiler log of methods generated
+ - epoll not faster if most file descriptors are active?
+
+"""
 
 
 """
@@ -165,7 +164,7 @@ end
 
 function notify_error(cs, err)
     for c in cs
-        @async begin
+        @asynclog "UnixIO.notify_error()" begin
             lock(c)
             Base.notify_error(c, err)
             unlock(c)

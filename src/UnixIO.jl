@@ -40,6 +40,7 @@ export UnixFD
 
 
 using ReadmeDocs
+using AsyncLog
 
 using UnixIOHeaders
 const C = UnixIOHeaders
@@ -437,6 +438,7 @@ julia> UnixIO.open(`hexdump -C`) do io
 """
 function open(f::Function, cmd::Cmd; check_status=true,
                                      capture_stderr=false)
+    @nospecialize f
 
     # Create Unix Domain Socket to communicate with Child Process.
     parent_io, child_io = socketpair()
@@ -470,27 +472,32 @@ function open(f::Function, cmd::Cmd; check_status=true,
     register_child(pid)
     C.close(child_io)
 
-    # Run the IO handling function `f`.
-    result = try
-        f(UnixFD(parent_io))
+    try
+        # Run the IO handling function `f`.
+        io = UnixFD(parent_io)
+        result = f(io)
+
+        # Get child process exit status.
+        while isopen(io)
+            status = waitpid(pid; timeout=1) #FIXME add a close notification?
+            if status != nothing
+                if check_status
+                    if !WIFEXITED(status) || WEXITSTATUS(status) != 0
+                        throw(waitpid_error(cmd, status))
+                    end
+                    return result
+                else
+                    return status, result
+                end
+            end
+        end
     catch
-        @async waitpid(pid)
+        @asynclog "UnixIO.open(::Cmd)" waitpid(pid)
         rethrow()
     finally
         C.close(parent_io)
         terminate_child(pid)
     end
-
-    # Get child process exit status.
-    status = waitpid(pid)
-    if check_status
-        if !WIFEXITED(status) || WEXITSTATUS(status) != 0
-            throw(waitpid_error(cmd, status))
-        end
-        return result
-    end
-
-    return status, result
 end
 
 
@@ -526,7 +533,7 @@ end
 
 function open(cmd::Cmd; kw...)
     c = Channel{UnixFD}(0)
-    @async open(cmd; kw...) do fd
+    @asynclog "UnixIO.open(::Cmd)" open(cmd; kw...) do fd
         put!(c, fd)
         while C.fcntl(fd, C.F_GETFL) != -1
             sleep(1)
@@ -577,8 +584,9 @@ README"""
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 """
-function waitpid(pid)
+function waitpid(pid; timeout=Inf)
     status = Ref{Cint}(0)
+    deadline = time() + timeout
     while true
         r = C.waitpid(pid, status, C.WNOHANG | C.WUNTRACED)
         if r == -1
@@ -589,6 +597,9 @@ function waitpid(pid)
         end
         if r == pid
             return status[]
+        end
+        if time() >= deadline
+            return nothing
         end
         sleep(0.1)
     end
