@@ -8,19 +8,6 @@ const PollFDTuple = Tuple{fieldtypes(C.pollfd)...}
 
 
 """
-PollFD: an `fd` to poll, `events` to wait for and a `Condition` to notify.
-"""
-mutable struct PollFD
-    fd::Cint
-    events::Cshort
-    ready::Threads.Condition
-    deadline::Float64
-end
-
-Base.show(io::IO, fd::PollFD) = print(io, "PollFD($(fd.fd), $(fd.events))")
-
-
-"""
 Global queue of file descriptors to poll.
 
 `poll_wait()` puts new FDs in `channel`.
@@ -36,15 +23,15 @@ for IO activity.
 a new FD to wait for.
 """
 mutable struct PollQueue
-    channel::Channel{PollFD}
-    queue::Vector{PollFD}
+    channel::Channel{UnixFD}
+    set::Set{UnixFD}
     cvector::Vector{PollFDTuple}
     wakeup_pipe::Vector{Cint}
     task::Union{Nothing,Task}
 end
 
 
-const poll_queue = PollQueue(Channel{PollFD}(0),[], [], [], nothing)
+const poll_queue = PollQueue(Channel{UnixFD}(0),Set{UnixFD}(), [], [], nothing)
 
 function poll_queue_init()
 
@@ -53,6 +40,10 @@ function poll_queue_init()
 
     # Pipe for asking `poll(2)` to return before timeout.
     poll_queue.wakeup_pipe = wakeup_pipe()
+
+    if Sys.islinux()
+        epoll_init()
+    end
 end
 
 function wakeup_pipe()
@@ -87,16 +78,10 @@ function poll_wait(fd::UnixFD, event)
 
     lock(fd.ready)
     try
-        if enable_epoll[]
-            epoll_register(fd, event)
-            wait(fd.ready)
-            @assert (fd.events & event) == 0
-        else
-            pfd = PollFD(fd.fd, event, fd.ready, fd.deadline)
-            push!(poll_queue.channel, pfd)
-            wakeup(poll_queue)
-            wait(fd.ready)
-        end
+        enable_epoll[] ? epoll_register(fd, event) :
+                         poll_register(fd, event)
+        wait(fd.ready)
+        @assert (fd.events & event) == 0
     finally
         unlock(fd.ready)
     end
@@ -107,12 +92,17 @@ wait_for_read_event(fd) = poll_wait(fd, C.POLLIN)
 wait_for_write_event(fd) = poll_wait(fd, C.POLLOUT)
 
 
+function poll_register(fd::UnixFD, event)
+    fd.events |= event
+    push!(poll_queue.channel, fd)
+    wakeup(poll_queue)
+end
+
+
 """
 Run `poll(queue)` while there are entries in the `queue`.
 """
 function poll_task(q)
-
-    @info "UnixIO.poll_task() on thread $(Threads.threadid())"
 
     if Threads.threadid() == 1
         @warn """
@@ -123,28 +113,33 @@ function poll_task(q)
               """
         timeout_ms = 100
     else
-        timeout_ms = 1000
+        timeout_ms = 10000
     end
     while true
         try
-            while isready(q.channel) || isempty(q.queue)
+            while isready(q.channel) || isempty(q.set)
                 fd = take!(q.channel)
-                @assert find_poll_fd(q.queue, fd.fd, fd.events) == nothing
-                push!(q.queue, fd)
+                push!(q.set, fd)
             end
-            @assert !isempty(q.queue)
+            @assert !isempty(q.set)
             poll(q, timeout_ms)
 
         catch err
-            for fd in q.queue
-                lock(fd.ready)
-                Base.notify_error(fd.ready, err)
-                unlock(fd.ready)
-            end
+            notify_error(q.set, err)
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
         end
         yield()
+    end
+end
+
+function notify_error(cs, err)
+    for c in cs
+        @async begin
+            lock(c)
+            Base.notify_error(c, err)
+            unlock(c)
+        end
     end
 end
 
@@ -171,15 +166,15 @@ Return false if the queue is empty.
 function poll(q::PollQueue, default_timeout_ms)
 
     # Build vector of `struct pollfd`.
-    vector_length = length(q.queue) + 1
+    vector_length = length(q.set) + 1
     resize!(q.cvector, vector_length)
-    for (i, fd) in enumerate(q.queue)
+    for (i, fd) in enumerate(q.set)
         q.cvector[i] = (fd.fd, fd.events, 0)
     end
     q.cvector[end] = (q.wakeup_pipe[1], C.POLLIN, 0)
 
     # Wait for events
-    timeout_ms = deadline_timeout_ms(q.queue, default_timeout_ms)
+    timeout_ms = deadline_timeout_ms(q.set, default_timeout_ms)
     n = C.poll(q.cvector, vector_length, timeout_ms)
     if n == -1 && Base.Libc.errno() != C.EINTR
         throw(ccall_error(:poll, q.cvector, vector_length, timeout_ms))
@@ -196,18 +191,18 @@ function poll(q::PollQueue, default_timeout_ms)
     for (fd, events, revents) in q.cvector[1:end-1]
         if revents != 0
             # Remove fd from queue and notify task waiting in `poll_wait()`.
-            i::Int = find_poll_fd(q.queue, fd, revents)
-            ready = q.queue[i].ready #FIXME same notification for read/write
-            lock(ready)
-            deleteat!(q.queue, i)
-            notify(ready)
-            unlock(ready)
+            x = find_poll_fd(q.set, fd, revents)
+            lock(x.ready)
+            x.events &= ~events
+            delete!(q.set, x)
+            notify(x.ready)          #FIXME same notification for read/write
+            unlock(x.ready)
         end
     end
 
     # Check for timeouts.
     if timeout_ms < default_timeout_ms
-        poll_check_timeouts(q.queue)
+        poll_check_timeouts(q.set)
     end
 
     nothing
@@ -231,11 +226,15 @@ function poll_check_timeouts(fds)
 end
 
 
-find_poll_fd(queue, fd, events) = findfirst(queue) do x
-    x.fd == fd && (                                # fd matches and...
-      ((events & x.events) != 0) ||                # events match or...
-      ((events & ~(C.POLLIN | C.POLLOUT)) != 0)    # unexpected event type
-    )
+function find_poll_fd(set, fd, events)
+    for x in set
+        if x.fd == fd && (                             # fd matches and...
+           ((events & x.events) != 0) ||               # events match or...
+           ((events & ~(C.POLLIN | C.POLLOUT)) != 0))  # unexpected event type
+            return x
+        end
+    end
+    nothing
 end
 
 
@@ -253,10 +252,16 @@ function epoll_init()
     @assert C.EPOLLIN == C.POLLIN
     @assert C.EPOLLOUT == C.POLLOUT
 
+    # Global FD interface to Linux epoll(7).
     global epoll_fd
     epoll_fd = C.epoll_create1(C.EPOLL_CLOEXEC)
     epoll_fd != -1 || throw(ccall_error(:epoll_create1))
 
+    # Set of UnixFDs for epoll_wait(7) to watch.
+    global epoll_set
+    epoll_set = Set{UnixFD}()
+
+    # Pipe for asking `epoll_wait(7)` to return before timeout.
     global epoll_wakeup_pipe
     epoll_wakeup_pipe = wakeup_pipe()
     epoll_add(epoll_wakeup_pipe[1], C.EPOLLIN)
@@ -267,62 +272,75 @@ end
 
 
 """
-Write a byte to the pipe to wake up `poll(2)` before its timeout.
+See `struct epoll_event` in "sys/epoll.h"
 """
-epoll_wakeup() = C.write(epoll_wakeup_pipe[2], Ref(0), 1)
-
-
 struct epoll_event
     events::UInt32
     data::UInt64
 end
 
-epoll_ctl(fd::UnixFD, op, events) =
-    epoll_ctl(fd.fd, op, events, pointer_from_objref(fd))
 
+"""
+Add, modify or delete epoll target FDs.
+See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
+"""
 function epoll_ctl(fd, op, events, data=fd)
-    #@info "epoll_ctl($fd, $op, $events, $data)"
     global epoll_fd
     e = [epoll_event(events, data)]
     r = GC.@preserve e C.epoll_ctl(epoll_fd, op, fd, pointer(e))
     r != -1 || throw(ccall_error(:epoll_ctl, op, fd))
 end
 
+epoll_ctl(fd::UnixFD, op, events) =
+    epoll_ctl(fd.fd, op, events, pointer_from_objref(fd))
+
 epoll_add(fd, events=fd.events) = epoll_ctl(fd, C.EPOLL_CTL_ADD, events)
 epoll_mod(fd, events=fd.events) = epoll_ctl(fd, C.EPOLL_CTL_MOD, events)
 epoll_del(fd)                   = epoll_ctl(fd, C.EPOLL_CTL_DEL,      0)
 
 
-function epoll_register(fd, events) 
-    #@info "epoll_register($fd, $events)"
+"""
+Register `fd` to wake up `epoll_wait(7)` on `event`:
+ - Add the `event` to the `UnixFD.events` mask.
+ - Call `epoll_add` or `epoll_mod` to register the event.
+ - wake the currently waiting `epoll_wait(7)` call (in `epoll_task()`).
+"""
+function epoll_register(fd::UnixFD, event) 
     if fd.events == 0
-        fd.events = events
+        fd.events = event
         @assert !(fd in epoll_set)
         push!(epoll_set, fd)
         epoll_add(fd)
     else
-        fd.events |= events
+        fd.events |= event
         @assert fd in epoll_set
         epoll_mod(fd)
     end
     epoll_wakeup()
-    #@info "epoll_wakeup!"
 end
 
 
-function epoll_wait(f::Function, timeout_ms)
+"""
+Write a byte to the pipe to wake up `poll(2)` before its timeout.
+"""
+epoll_wakeup() = C.write(epoll_wakeup_pipe[2], Ref(0), 1)
+
+
+"""
+Call `epoll_wait(7)` to wait for events.
+Call `f(events, fd)` for each event.
+"""
+function epoll_wait(timeout_ms, f::Function)
     v = Vector{epoll_event}(undef, 10)
     while true
         n = C.epoll_wait(epoll_fd, v, length(v), timeout_ms)
-        #@info "epoll n = $n"
         if n >= 0
             for i in 1:n
                 if v[i].data == epoll_wakeup_pipe[1]
-                    #@info "epoll_woken!"
                     C.read(epoll_wakeup_pipe[1], Ref(0), 1)
                 else
                     p = Ptr{Cvoid}(UInt(v[i].data))
-                    f((v[i].events, unsafe_pointer_to_objref(p)))
+                    f(v[i].events, unsafe_pointer_to_objref(p))
                 end
             end
             return
@@ -333,24 +351,27 @@ function epoll_wait(f::Function, timeout_ms)
     end
 end
 
-const epoll_set = Set{UnixFD}()
 
 function epoll_task()
 
-    @info "UnixIO.epoll_task() on thread $(Threads.threadid())"
-
-    default_timeout_ms = 10000
+    if Threads.threadid() == 1
+        @warn """
+              UnixIO.epoll_task() is running on thread No. 1!
+              Other Tasks on thread 1 may be blocked for up to 100ms while
+              poll_task() is waiting for IO.
+              Consider increasing JULIA_NUM_THREADS (`julia --threads N`).
+              """
+        timeout_ms = 100
+    else
+        timeout_ms = 10000
+    end
 
     while true
         try
             timeout_ms = deadline_timeout_ms(epoll_set, default_timeout_ms)
 
-            #@info "epoll_wait..."
-            epoll_wait(timeout_ms) do x
+            epoll_wait(timeout_ms, (events, fd) -> begin
 
-               events, fd = x
-
-                #@info "epoll found $events, $fd"
                 lock(fd.ready)
                 fd.events &= ~events
                 if fd.events == 0
@@ -361,8 +382,7 @@ function epoll_task()
                 end
                 notify(fd.ready)
                 unlock(fd.ready)
-            end
-            #@info "epoll done"
+            end)
 
             # Check for timeouts.
             if timeout_ms < default_timeout_ms
@@ -370,11 +390,7 @@ function epoll_task()
             end
 
         catch err
-            for fd in epoll_set
-                lock(fd.ready)
-                Base.notify_error(fd.ready, err)
-                unlock(fd.ready)
-            end
+            notify_error(epoll_set, err)
             exception=(err, catch_backtrace())
             @error "Error in epoll_task()" exception
         end

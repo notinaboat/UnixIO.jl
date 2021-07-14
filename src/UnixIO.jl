@@ -47,9 +47,6 @@ const C = UnixIOHeaders
 function __init__()
     poll_queue_init()
     atexit(terminate_child_pids)
-    if Sys.islinux()
-        epoll_init()
-    end
 end
 
 
