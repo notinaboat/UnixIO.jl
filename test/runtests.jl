@@ -49,10 +49,10 @@ uio = UnixIO.open("runtests.jl")
 @test [x for x in eachline(jio)] ==
       [x for x in eachline(uio)]
 
-@test UnixIO.open(`hexdump`) do io
-    write(io, read(UnixIO.open("runtests.jl")))
-    UnixIO.shutdown(io)
-    read(io)
+@test UnixIO.open(`hexdump`) do cmdin, cmdout
+    write(cmdin, read(UnixIO.open("runtests.jl")))
+    UnixIO.shutdown(cmdin)
+    read(cmdout)
 end ==
 open(`hexdump`, open("runtests.jl"); read = true) do io
     read(io)
@@ -65,7 +65,7 @@ end
              read(`hexdump runtests.jl`)
 
 cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
-@test UnixIO.open(cmd) do io collect(eachline(io)) end == 
+@test UnixIO.open(cmd) do i, o collect(eachline(o)) end == 
     open(cmd; read = true) do io collect(eachline(io)) end
 
 @sync for i in 1:5
@@ -84,13 +84,14 @@ end
 
 sleep(1)
 @test isempty(UnixIO.child_pids)
-io = UnixIO.open(`bash -c "while true; do date ; sleep 1; done"`)
+cmdin, cmdout = UnixIO.open(`bash -c "while true; do date ; sleep 1; done"`)
+close(cmdin)
 @test !isempty(UnixIO.child_pids)
-@test readline(io) != ""
-@test readline(io) != ""
-@test readline(io) != ""
-close(io)
-sleep(1)
+@test readline(cmdout) != ""
+@test readline(cmdout) != ""
+@test readline(cmdout) != ""
+close(cmdout)
+sleep(5)
 @test isempty(UnixIO.child_pids)
 
 

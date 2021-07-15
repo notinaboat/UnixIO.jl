@@ -40,8 +40,10 @@ export UnixFD
 
 
 using ReadmeDocs
+using Preconditions
 using AsyncLog
 
+using DuplexIOs
 using UnixIOHeaders
 const C = UnixIOHeaders
 
@@ -51,85 +53,71 @@ function __init__()
 end
 
 
+
 # Unix File Descriptor wrapper.
 
-mutable struct UnixFD <: IO
-    fd::Cint
-    read_buffer::IOBuffer
-    ready::Threads.Condition
-    events::Cint
-    timeout::Float64
-    deadline::Float64
-    function UnixFD(fd; timeout=Inf)
-        fcntl_setfl(fd, C.O_NONBLOCK)
-        new(fd, PipeBuffer(), Threads.Condition(), 0, timeout)
-    end
-end
+abstract type UnixFD <: IO end
+
+include("ReadFD.jl")
+include("WriteFD.jl")
+
 
 Base.lock(fd::UnixFD) = lock(fd.ready)
 Base.unlock(fd::UnixFD) = lock(fd.ready)
 Base.notify(fd::UnixFD) = notify(fd.ready)
-
-#= FIXME
-abstract type UnixFD <: IO end
-
-mutable struct ReadFD{T} <: UnixFD
-    fd::Cint 
-    buffer::IOBuffer
-    ready::Threads.Condition
-    timeout::Float64
-end
-
-Base.iswriteable(::ReadFD) = false
-
-
-mutable struct WriteFD{T} <: UnixFD
-    fd::Cint 
-    ready::Threads.Condition
-    timeout::Float64
-end
-
-Base.isreadable(::WriteFD) = false
-=#
-
-
+Base.islocked(fd::UnixFD) = islocked(fd.ready)
 
 Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
 Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
+
 function Base.show(io::IO, fd::UnixFD)
     print(io, "$(typeof(fd))($(fd.fd)")
-    events = []
-    fd.events & C.POLLIN != 0 && push!(events, "C.POLLIN")
-    fd.events & C.POLLOUT != 0 && push!(events, "C.POLLOUT")
-    if !isempty(events)
-        print(io, ", ", join(events, "|"))
-    end
-    if fd.timeout != Inf
-        print(io, ", timeout=", fd.timeout)
-    end
-    n = bytesavailable(fd.read_buffer)
-    if n > 0
-        print(io, ", $n byte buf")
+    isopen(fd) || print(io, "☠️")
+    fd.iswaiting && print(io, "⏳")
+    islocked(fd) && print(io, "🔒")
+    fd.timeout == Inf || print(io, ", ⏱", fd.timeout)
+    if fd isa ReadFD
+        n = bytesavailable(fd.buffer)
+        if n > 0
+            print(io, ", $n-byte buf")
+        end
     end
     print(io, ")")
 end
-
-include("baseio.jl")
 
 
 
 # Errors.
 
-ccall_error(call, args...) =
-    Base.SystemError("UnixIO.$call$args failed", Base.Libc.errno())
+
+"""
+Look up name for a C-constant `n`.
+"""
+function constant_name(n; prefix="")
+    filter(names(C; all=true)) do name
+        try 
+            startswith(String(name), prefix) &&
+            eval(:(C.$name)) == n
+        catch
+            false
+        end
+    end
+end
+
+
+function ccall_error(call, args...)
+    errno = Base.Libc.errno()
+    name = join(constant_name(errno; prefix="E"), "?")
+    Base.SystemError("UnixIO.$call$args failed ($name)", errno)
+end
 
 struct ReadTimeoutError <: Exception
-    fd::UnixFD
+    fd::ReadFD
 end
 
 struct WriteTimeoutError <: Exception
-    fd::UnixFD
+    fd::WriteFD
 end
 
 
@@ -138,20 +126,28 @@ README"## Opening and Closing Unix Files."
 
 
 README"""
-    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> UnixFD <: IO
+    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
 
-The `UnixFD` returned by `UnixIO.open` can be used with
+The `IO` returned by `UnixIO.open` can be used with
 `UnixIO.read` and `UnixIO.write`. It can also be used with
 the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
 function open(pathname, flags = C.O_RDWR; timeout=Inf)
+
     fd = C.open(pathname, flags | C.O_NONBLOCK)
     fd != -1 || throw(ccall_error(:open, pathname))
-    UnixFD(fd; timeout=timeout)
+
+    if flags & C.O_RDWR != 0
+        DuplexIO(ReadFD(fd, timeout), WriteFD(C.dup(fd), timeout))
+    elseif flags & C.O_RDONLY != 0
+        ReadFD(fd, timeout)
+    elseif flags & C.O_WRONLY != 0
+        WriteFD(C.dup(fd), timeout)
+    end
 end
 
 
@@ -242,10 +238,11 @@ Shut down part of a full-duplex connection.
 `how` is one of `C.SHUT_RD`, `C.SHUT_WR` or `C.SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 """
-shutdown(fd, how=C.SHUT_WR) = C.shutdown(fd, how)
-
-@static if isdefined(Base, :shutdown)
-    Base.shutdown(fd::UnixFD) = shutdown(fd)
+function shutdown(fd, how=C.SHUT_WR)
+    if C.shutdown(fd, how) == -1 && Base.Libc.errno() != C.ENOTCONN
+        throw(ccall_error(:shutdown, fd, how))
+    end
+    nothing
 end
 
 
@@ -263,10 +260,10 @@ See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 Throw `UnixIO.ReadTimeoutError` if read takes longer than `timeout` seconds.
 """
-function read(fd::UnixFD, buf, count=length(buf); timeout=fd.timeout)
+function read(fd::ReadFD, buf, count=length(buf); timeout=fd.timeout)
 
     # First read from buffer.
-    n = bytesavailable(fd.read_buffer)
+    n = bytesavailable(fd.buffer)
     if n > 0
         n = min(n, count)
         read_from_buffer(fd, buf, n)
@@ -290,8 +287,8 @@ function read(fd::UnixFD, buf, count=length(buf); timeout=fd.timeout)
     end
 end
 
-read_from_buffer(fd::UnixFD, buf, n) = readbytes!(fd.read_buffer, buf, n)
-read_from_buffer(fd::UnixFD, buf::Ptr, n) = unsafe_read(fd.read_buffer, buf, n)
+read_from_buffer(fd::ReadFD, buf, n) = readbytes!(fd.buffer, buf, n)
+read_from_buffer(fd::ReadFD, buf::Ptr, n) = unsafe_read(fd.buffer, buf, n)
 
 
 include("poll.jl")
@@ -311,7 +308,7 @@ See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 
 Throw `UnixIO.WriteTimeoutError` if write takes longer than `timeout` seconds.
 """
-function write(fd, buf, count=length(buf); timeout=Inf)
+function write(fd::WriteFD, buf, count=length(buf); timeout=Inf)
     fd.deadline = time() + timeout
     while true
         n = C.write(fd, buf, count)
@@ -423,14 +420,14 @@ README"""
     open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
 Run `cmd` using `fork` and `execv`.
-Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
+Call `f(cmdin, cmdout)`.
 
 e.g.
 ```
-julia> UnixIO.open(`hexdump -C`) do io
-           write(io, "Hello World!")
-           shutdown(io)
-           read(io, String)
+julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
+           write(cmdin, "Hello World!")
+           shutdown(cmdin)
+           read(cmdout, String)
        end |> println
 00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 21              |Hello World!|
 0000000c
@@ -442,7 +439,11 @@ function open(f::Function, cmd::Cmd; check_status=true,
 
     # Create Unix Domain Socket to communicate with Child Process.
     parent_io, child_io = socketpair()
+
     fcntl_setfd(parent_io, C.O_CLOEXEC)
+    cmdin = WriteFD(parent_io)
+    cmdout = ReadFD(C.dup(parent_io))
+
     child_in = child_io
     child_out = child_io
     child_err = capture_stderr ? child_out : Base.STDERR_NO
@@ -472,13 +473,14 @@ function open(f::Function, cmd::Cmd; check_status=true,
     register_child(pid)
     C.close(child_io)
 
+
     try
         # Run the IO handling function `f`.
-        io = UnixFD(parent_io)
-        result = f(io)
+        result = f(cmdin, cmdout)
+        C.close(cmdin.fd)
 
         # Get child process exit status.
-        while isopen(io)
+        while true
             status = waitpid(pid; timeout=1) #FIXME add a close notification?
             if status != nothing
                 if check_status
@@ -490,12 +492,16 @@ function open(f::Function, cmd::Cmd; check_status=true,
                     return status, result
                 end
             end
+            if !isopen(cmdout)
+                return result
+            end
         end
     catch
         @asynclog "UnixIO.open(::Cmd)" waitpid(pid)
         rethrow()
     finally
-        C.close(parent_io)
+        C.close(cmdin.fd)
+        C.close(cmdout.fd)
         terminate_child(pid)
     end
 end
@@ -521,6 +527,7 @@ function terminate_child(pid)
         unlock(child_pids_lock)
     end
     C.kill(pid, C.SIGKILL)
+    @async waitpid(pid)
 end
 
 function terminate_child_pids()
@@ -532,10 +539,10 @@ end
 
 
 function open(cmd::Cmd; kw...)
-    c = Channel{UnixFD}(0)
-    @asynclog "UnixIO.open(::Cmd)" open(cmd; kw...) do fd
-        put!(c, fd)
-        while C.fcntl(fd, C.F_GETFL) != -1
+    c = Channel{Tuple{WriteFD,ReadFD}}(0)
+    @asynclog "UnixIO.open(::Cmd)" open(cmd; kw...) do cmdin, cmdout
+        put!(c, (cmdin, cmdout))
+        while isopen(cmdin) || isopen(cmdout) # FIXME close notify?
             sleep(1)
         end
     end
@@ -563,9 +570,9 @@ julia> UnixIO.read(`uname -srm`, String)
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 function read(cmd::Cmd; timeout=Inf, kw...)
-    open(cmd; kw...) do io
-        shutdown(io)
-        Base.read(io; timeout=timeout)
+    open(cmd; kw...) do cmdin, cmdout
+        shutdown(cmdin)
+        Base.read(cmdout; timeout=timeout)
     end
 end
 
@@ -601,7 +608,7 @@ function waitpid(pid; timeout=Inf)
         if time() >= deadline
             return nothing
         end
-        sleep(0.1)
+        sleep(1)
     end
 end
 

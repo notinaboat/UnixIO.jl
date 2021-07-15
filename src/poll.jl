@@ -3,6 +3,8 @@
 
 1) Seperate read/write FDs.
 
+^^^ done ^^^
+
 2) Separate timeouts from polling?
  - Provide a generic cancel method
  - Use timer to cancel
@@ -122,8 +124,10 @@ wait_for_write_event(fd) = poll_wait(fd, C.POLLOUT)
 
 function poll_register(fd::UnixFD, event)
     fd.events |= event
-    push!(poll_queue.channel, fd)
+    lock(poll_queue.channel)
     wakeup(poll_queue)
+    put!(poll_queue.channel, fd)
+    unlock(poll_queue.channel)
 end
 
 

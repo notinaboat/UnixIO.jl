@@ -1,0 +1,4 @@
+name = "DuplexIOs"
+uuid = "c20a4678-4bba-4df2-bd7d-5c4d76fa7d4b"
+authors = ["notinaboat <notinaboat@icloud.com>"]
+version = "0.1.0"
