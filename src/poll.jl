@@ -2,7 +2,6 @@
 # Polling
 
 FIXME
- - dblock macro
  - consider @noinline and @nospecialize, @noinline
  - specify types on kw args? check compiler log of methods generated
 """
@@ -90,13 +89,12 @@ function wait_for_event(fd::UnixFD)                  ;@dbf 3 :wait_for_event fd
     nothing
 end
 
-wait_for_event(::UnixFD{SleepEvents}) = sleep(0.01)
+wait_for_event(::UnixFD{SleepEvents}) = Base.sleep(0.01)
 
 
 function register_for_events(fd::UnixFD{PollEvents})
                                                  @dbf 3 :register_for_events fd
-                                                      @dblock 1 poll_queue.lock
-    @lock poll_queue.lock begin
+    @dblock poll_queue.lock begin
         push!(poll_queue.set, fd)
         poll_queue.cvector_is_stale = true
         wakeup_poll(poll_queue)
@@ -126,9 +124,9 @@ function poll_task(q)                                         @dbf 1 :poll_task
         try
             poll_wait(q, timeout_ms) do events, fd
                 if events & (C.POLLHUP | C.POLLNVAL) != 0 
-                    fd.isdead = true   ;@db 2 "💥$(db_c(events,"POLL")) -> $fd"
-                end                                           ;@dblock 1 q.lock
-                @lock q.lock delete!(q.set, fd)                   ;@dblock 1 fd
+                    fd.isdead = true   ;@db 1 "💥$(db_c(events,"POLL")) -> $fd"
+                end
+                @dblock q.lock delete!(q.set, fd)
                 if fd.nwaiting <= 0
                     @db 0 "$(db_c(events,"POLL")) -> $fd None Waiting!"
                 else
@@ -277,8 +275,7 @@ epoll_ctl(fd::UnixFD, op, events) =
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
 function register_for_events(fd::UnixFD{EPollEvents})
-                                                     @dblock 1 epoll_queue.lock
-    @lock epoll_queue.lock begin
+    @dblock epoll_queue.lock begin
         push!(epoll_queue.set, fd)
         epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
     end

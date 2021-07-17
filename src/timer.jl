@@ -22,9 +22,9 @@ const sleep_condition = Base.ThreadSynchronizer()
 Block the current task for a specified number of seconds.
 (Waits for a timer based on `UnixIO.poll_wait()`).
 """
-function sleep(seconds)                             ;@dbf 3 :sleep "💤$seconds"
+function sleep(seconds)                             ;@dbf 1 :sleep "💤$seconds"
     deadline = time() + seconds
-    t = register_timer(deadline, sleep_condition)    ;@dblock 2 sleep_condition
+    t = register_timer(deadline, sleep_condition)
     lock(sleep_condition)
     try
         while time() < deadline;                             @db 5 "waiting..."
@@ -33,7 +33,7 @@ function sleep(seconds)                             ;@dbf 3 :sleep "💤$seconds
     finally
         unlock(sleep_condition)
         cancel_timer(t)
-    end                                                                 ;@dbr 3
+    end                                                                 ;@dbr 1
 end
 
 
@@ -53,8 +53,8 @@ restart_timer_clock() = wakeup_poll(poll_queue)
 Time from now to the next timer deadline in ms.
 If no timers due before `timeout_ms` return `timeout_ms`.
 """
-function next_timer_deadline_ms(timeout_ms)               ;@dblock 2 timer_lock
-    @lock timer_lock begin
+function next_timer_deadline_ms(timeout_ms)
+    @dblock timer_lock begin
         deadline = next_timer_deadline()
         dt = deadline - time()
         if dt < (timeout_ms/1000)
@@ -86,8 +86,7 @@ end
 
 function register_timer(t::Timer)
     i = 0                             ;@dbf 3 :register_timer "⏱$(db_t(t[1]))"
-                                                           @dblock 2 timer_lock
-    @lock timer_lock begin
+    @dblock timer_lock begin
         i = searchsortedfirst(timer_vector, t;
                               lt=((a,_),(b,_)) -> a < b)
         insert!(timer_vector, i, t)
@@ -105,9 +104,7 @@ Cancel a timer `(deadline, condition)` without notifying `condition`.
 function cancel_timer(x::Timer)         ;@dbf 5 :cancel_timer "⏱$(db_t(x[1]))"
     deadline, _ = x
     if deadline < Inf
-                                                           @dblock 2 timer_lock
-        @lock timer_lock begin
-                                                               @db 5 "unlocked"
+        @dblock timer_lock begin
             if deadline >= next_timer_deadline()
                 i = searchsortedfirst(timer_vector, x;
                                       lt=((a,_),(b,_)) -> a < b)
@@ -125,9 +122,8 @@ end
 Notify timers whos `deadline` has passed and remove from vector.
 """
 function notify_timers(now = time())                     ;@dbf 6 :notify_timers
-    ready=Base.ThreadSynchronizer[]                       ;@dblock 2 timer_lock
-    @lock timer_lock begin
-                                                               @db 6 "unlocked"
+    ready=Base.ThreadSynchronizer[]
+    @dblock timer_lock begin
         expired = 0
         for (i, (deadline, condition)) in enumerate(timer_vector)
             if deadline > now
@@ -138,8 +134,8 @@ function notify_timers(now = time())                     ;@dbf 6 :notify_timers
         end
         deleteat!(timer_vector, 1:expired)
     end
-    for c in ready                                                 ;@dblock 2 c
-        @lock c notify(c)
+    for c in ready
+        @dblock c notify(c)
     end                                                                 ;@dbr 6
     nothing
 end

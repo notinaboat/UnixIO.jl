@@ -68,7 +68,7 @@ end
 #FIXME set deadline at outer call
 
 function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt; kw...)
-                                          @dbf 3 :unsafe_read (fd, buf, nbytes)
+                                          @dbf 1 :unsafe_read (fd, buf, nbytes)
     @require !fd.isclosed
     nread = 0
     while nread < nbytes
@@ -78,7 +78,7 @@ function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt; kw...)
         end
         nread += n
     end
-    @ensure nread == nbytes                                       ;@dbr 3 nread
+    @ensure nread == nbytes                                       ;@dbr 1 nread
     nothing
 end
 
@@ -97,7 +97,7 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
 
 function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true, kw...)
-                                                @dbf 5 :readbytes! (fd, nbytes)
+                                                @dbf 1 :readbytes! (fd, nbytes)
     @require !fd.isclosed
     lb::Int = length(buf)
     nread = 0
@@ -114,7 +114,7 @@ function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
         end
         nread += n
     end
-    @ensure nread <= nbytes                                       ;@dbr 5 nread
+    @ensure nread <= nbytes                                       ;@dbr 1 nread
     return nread
 end
 

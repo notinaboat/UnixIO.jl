@@ -143,7 +143,7 @@ end
 """
 Debug message.
 """
-macro db(n::Int, s, prefix=" │ ", line=nothing)
+macro db(n::Int, s, prefix="", line=nothing)
     if DEBUG_LEVEL < n
         return :()
     end
@@ -175,6 +175,9 @@ macro db(n::Int, s, prefix=" │ ", line=nothing)
             db.task = task
             indent = db_indent(task)[task_switched ? 1 : 2]
         end
+        if prefix  == ""
+            prefix = " │ "
+        end
         if indent == ""
             prefix = ""
         end
@@ -197,19 +200,28 @@ macro db(n::Int, s, prefix=" │ ", line=nothing)
     end
 end
 
-macro dblock(n::Int, l)
-    if DEBUG_LEVEL < n
-        return :()
-    end
-    esc(quote
-        islocked($l) && @db $n "Waiting for lock ⁉️" $(__source__)
-    end)
-end
-
 
 sprintcompact(x) = sprint(show, x; context=:compact => true)
 printerrcompact(x) = printerr(sprintcompact(x))
 
+
+macro dblock(l, expr)
+    if DEBUG_LEVEL < 1
+        return esc(:(@lock $l $expr))
+    end
+    quote
+        l = $(esc(l))
+        warn = islocked(l)
+        warn && @db 1 "🔒 Waiting $(string(l)) ⁉️ ..." "" $(__source__)
+        lock(l)
+        warn && @db 1 "🔓 Unlocked." "" $(__source__)
+        try
+            $(esc(expr))
+        finally
+            unlock(l)
+        end
+    end
+end
 
 
 # End of file: debug.jl
