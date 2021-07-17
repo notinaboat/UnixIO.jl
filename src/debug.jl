@@ -1,7 +1,7 @@
 # Debug.
 
 
-const DEBUG_LEVEL = 1
+const DEBUG_LEVEL = 6
 
 
 mutable struct DebugState 
