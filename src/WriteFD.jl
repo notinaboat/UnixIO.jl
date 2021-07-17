@@ -1,29 +1,24 @@
 """
 Write-only Unix File Descriptor.
 """
-mutable struct WriteFD <: UnixFD
+mutable struct WriteFD{EventSource} <: UnixFD{EventSource}
     fd::Cint 
-    iswaiting::Bool
-    ready::Threads.Condition
+    isclosed::Bool
+    isdead::Bool
+    nwaiting::Int
+    ready::Base.ThreadSynchronizer
     timeout::Float64
-    deadline::Float64 # FIXME
-    events::Cint # FIXME
-    function WriteFD(fd, timeout=Inf)
+    function WriteFD{T}(fd, timeout=Inf) where T
         fcntl_setfl(fd, C.O_NONBLOCK)
-        new(fd, false, Threads.Condition(), timeout, 0)
+        fd = new{T}(fd, false, false, 0, Base.ThreadSynchronizer(), timeout)
+        register_unix_fd(fd)
+        fd
     end
+    WriteFD(a...) = WriteFD{DefaultEvents}(a...)
 end
 
 
-function Base.close(fd::WriteFD)
-    if C.close(fd) == -1
-        throw(ccall_error(:close, fd))
-    end
-    nothing
-end
-
-
-Base.isopen(fd::WriteFD) = C.fcntl(fd, C.F_GETFL) != -1
+transfer(fd::WriteFD, buf, count) = C.write(fd, buf, count)
 
 
 @static if isdefined(Base, :shutdown)
@@ -38,15 +33,14 @@ Base.isreadable(::WriteFD) = false
 
 
 function Base.unsafe_write(fd::WriteFD, buf::Ptr{UInt8}, nbytes::UInt)
+                                         @dbf 4 :unsafe_write (fd, buf, nbytes)
+    @require !fd.isclosed
     nwritten = 0
     while nwritten < nbytes
         n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
-        if n == -1
-            throw(ccall_error(:write, buf + nwritten, nbytes - nwritten))
-        end
-        @assert n > 0
         nwritten += n
     end
+    @ensure nwritten == nbytes                                 ;@dbr 4 nwritten
     return Int(nwritten)
 end
 

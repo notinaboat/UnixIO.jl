@@ -1,33 +1,44 @@
 """
 Read-only Unix File Descriptor.
 """
-mutable struct ReadFD <: UnixFD
-    fd::Cint 
-    iswaiting::Bool
-    ready::Threads.Condition
+mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
+    fd::Cint
+    isclosed::Bool
+    isdead::Bool
+    nwaiting::Int
+    ready::Base.ThreadSynchronizer
     timeout::Float64
-    deadline::Float64 # FIXME
-    events::Cint # FIXME
     buffer::IOBuffer
-    function ReadFD(fd, timeout=Inf)
+    function ReadFD{T}(fd, timeout=Inf) where T
         fcntl_setfl(fd, C.O_NONBLOCK)
-        new(fd, false, Threads.Condition(), timeout, 0, 0, PipeBuffer())
+        fd = new{T}(fd,
+               false,
+               false,
+               0,
+               Base.ThreadSynchronizer(),
+               timeout,
+               PipeBuffer())
+        register_unix_fd(fd)
+        fd
     end
+    ReadFD(a...) = ReadFD{DefaultEvents}(a...)
 end
 
 
-function Base.close(fd::ReadFD)
+function transfer(fd::ReadFD, buf, count)         ;@dbf 4 :transfer (fd, count)
+    n = C.read(fd.fd, buf, count)                                     ;@dbr 4 n
+    return n
+end
+
+
+function Base.close(fd::ReadFD)                             ;@db 2 "close($fd)"
     take!(fd.buffer)
-    if C.close(fd) == -1
-        throw(ccall_error(:close, fd))
-    end
-    nothing
+    invoke(Base.close, Tuple{UnixFD}, fd)
 end
 
 
-Base.isopen(fd::ReadFD) =
-    bytesavailable(fd.buffer) > 0 ||
-    C.fcntl(fd, C.F_GETFL) != -1
+# FIXME can be !isopen() but not yet eof().
+#Base.isopen(fd::ReadFD) = !eof(fd) || !isclosed(fd)
 
 
 @static if isdefined(Base, :shutdown)
@@ -42,17 +53,23 @@ Base.iswritable(::ReadFD) = false
 
 
 Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
+#FIXME getsockopt - SO_NREAD ?
+#FIXME ioctl FIONREAD ?
 
 
-function Base.eof(fd::ReadFD; kw...)
-    if bytesavailable(fd.buffer) == 0
-        Base.write(fd.buffer, readavailable(fd; kw...))
+function Base.eof(fd::ReadFD; timeout=Inf)                      ;@dbf 4 :eof fd
+    if bytesavailable(fd.buffer) == 0 && isopen(fd)
+        Base.write(fd.buffer, readavailable(fd; timeout=timeout))
     end
-    return bytesavailable(fd.buffer) == 0
+    r = bytesavailable(fd.buffer) == 0                                ;@dbr 4 r
+    return r
 end
 
+#FIXME set deadline at outer call
 
 function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt; kw...)
+                                          @dbf 3 :unsafe_read (fd, buf, nbytes)
+    @require !fd.isclosed
     nread = 0
     while nread < nbytes
         n = UnixIO.read(fd, buf + nread, nbytes - nread; kw...)
@@ -61,11 +78,13 @@ function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt; kw...)
         end
         nread += n
     end
+    @ensure nread == nbytes                                       ;@dbr 3 nread
     nothing
 end
 
 
-function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)
+function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)  ;@db 3 "read($fd, UInt8)"
+    @require !fd.isclosed
     eof(fd; kw...) && throw(EOFError())
     @assert bytesavailable(fd.buffer) > 0
     Base.read(fd.buffer, UInt8)
@@ -78,13 +97,15 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
 
 function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true, kw...)
+                                                @dbf 5 :readbytes! (fd, nbytes)
+    @require !fd.isclosed
     lb::Int = length(buf)
     nread = 0
     while nread < nbytes
         @assert nread <= lb
         if (lb - nread) == 0
             lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
-            resize!(buf, lb)
+            resize!(buf, lb)                             ;@db 5 "resize -> $lb"
         end
         @assert lb > nread
         n = UnixIO.read(fd, view(buf, nread+1:lb); kw...)
@@ -93,15 +114,17 @@ function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
         end
         nread += n
     end
+    @ensure nread <= nbytes                                       ;@dbr 5 nread
     return nread
 end
 
 
 const BUFFER_SIZE = 65536
 
-function Base.readavailable(fd::ReadFD; kw...)
+function Base.readavailable(fd::ReadFD; timeout=0)    ;@dbf 5 :readavailable fd
+    @require !fd.isclosed
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-    n = UnixIO.read(fd, buf; kw...)
+    n = UnixIO.read(fd, buf; timeout=timeout)                         ;@dbr 5 n
     resize!(buf, n)
 end
 

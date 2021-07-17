@@ -5,15 +5,15 @@ cd(@__DIR__)
 
 @testset "UnixIO" begin
 
-for mode in ["poll(2)", "epoll(7)", "sleep(0.1)"]
+#for mode in ["poll(2)", "epoll(7)", "sleep(0.1)"]
 
-@testset "UnixIO $mode" begin
+#@testset "UnixIO $mode" begin
 
-if (!Sys.islinux()) && mode == "epoll(7)"
-    continue
-end
-UnixIO.enable_dumb_polling[] = mode == "sleep(0.1)"
-UnixIO.enable_epoll[] = mode == "epoll(7)"
+#if (!Sys.islinux()) && mode == "epoll(7)"
+#    continue
+#end
+#UnixIO.enable_dumb_polling[] = mode == "sleep(0.1)"
+#UnixIO.enable_epoll[] = mode == "epoll(7)"
 
 @test UnixIO.read(`uname -a`) ==
              read(`uname -a`)
@@ -36,9 +36,12 @@ readbytes!(jio, jv, 100)
 readbytes!(uio, uv, 100)
 @test jv == uv
 @test read(jio) == read(uio)
+@test eof(jio) == eof(uio)
 @test isopen(jio) == isopen(uio)
 @test close(jio) == close(uio)
+@test eof(jio) == eof(uio)
 @test isopen(jio) == isopen(uio)
+
 
 UnixIO.system(`dd if=/dev/urandom of=testdata bs=1024 count=1000`)
 @test read(`hexdump testdata`) == UnixIO.read(`hexdump testdata`)
@@ -72,9 +75,8 @@ cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
     @async @test UnixIO.read(`bash -c "sleep 2; echo $i"`, String) == "$i\n"
 end
 
-@test_throws UnixIO.ReadTimeoutError begin
-    UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
-end
+@test UnixIO.read(`bash -c "ECHO FOO; sleep 4; echo FOO"`,
+                  String; timeout=2.4) == "FOO\n"
 t0 = time()
 try
     UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
@@ -95,8 +97,8 @@ sleep(5)
 @test isempty(UnixIO.child_pids)
 
 
-end #testset
+#end #testset
 
-end #for mode
+#end #for mode
 
 end #testset
