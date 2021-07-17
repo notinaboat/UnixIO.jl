@@ -54,6 +54,8 @@ include("debug.jl")
 function __init__()
     global debug_t0
     debug_t0 = time()
+    @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
+
     poll_queue_init()
     atexit(terminate_child_pids)
 

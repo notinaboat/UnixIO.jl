@@ -77,22 +77,30 @@ using Crayons
 const db_bg =
     Iterators.Stateful(
     Iterators.Cycle([
+    crayon"bg:16",
+    crayon"bg:52",
+    crayon"bg:233",
     crayon"bg:234",
+    crayon"bg:235",
     crayon"bg:236",
     crayon"bg:237",
     crayon"bg:238",
     crayon"bg:239",
     crayon"bg:240",
+    crayon"bg:241",
+    crayon"bg:242",
     crayon"bg:17",
     crayon"bg:18",
     crayon"bg:19",
+    crayon"bg:20",
+    crayon"bg:21",
     crayon"bg:22",
     crayon"bg:23",
     crayon"bg:24",
-    crayon"bg:52",
-    crayon"bg:53",
+    crayon"bg:25",
     crayon"bg:58",
-    crayon"bg:59"]))
+    crayon"bg:59",
+    crayon"bg:60",]))
 
 function db_taskbg()
     s = current_task().storage
