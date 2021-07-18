@@ -42,13 +42,13 @@ const poll_queue = PollQueue(Set{UnixFD}(),
                              [],
                              Threads.SpinLock())
 
-function poll_queue_init()
+@db function poll_queue_init()
 
     # Pipe for asking `poll(2)` to return before timeout.
     poll_queue.wakeup_pipe = wakeup_pipe()
 
     # Global Task to run `poll(2)`.
-    Threads.@spawn poll_task(poll_queue)
+    Threads.@spawn poll_task(poll_queue)              ;@db "@spawn poll_task()"
 
     if Sys.islinux()
         epoll_queue_init()
@@ -60,15 +60,15 @@ function wakeup_pipe()
     @cerr C.pipe(wakeup_pipe)
     for fd in wakeup_pipe
         fcntl_setfl(fd, C.O_NONBLOCK)
-    end                                  ;@db 3 "wakeup_pipe() -> $wakeup_pipe"
-    wakeup_pipe
+    end
+    return wakeup_pipe
 end
 
 
 """
 Write a byte to the pipe to wake up `poll(2)` before its timeout.
 """
-function wakeup_poll(q::PollQueue)                       ;@db 3 "wakeup_poll()"
+@db 3 function wakeup_poll(q::PollQueue)
     @cerr C.write(q.wakeup_pipe[2], Ref(0), 1)
 end
 
@@ -76,7 +76,7 @@ end
 """
 Wait for an event to occur on `fd`. 
 """
-function wait_for_event(fd::UnixFD)                  ;@dbf 3 :wait_for_event fd
+@db 3 function wait_for_event(fd::UnixFD)
     Base.assert_havelock(fd)
 
     fd.nwaiting += 1
@@ -85,20 +85,19 @@ function wait_for_event(fd::UnixFD)                  ;@dbf 3 :wait_for_event fd
         wait(fd)
     finally 
         fd.nwaiting -= 1
-    end                                                                 ;@dbr 3
+    end
     nothing
 end
 
 wait_for_event(::UnixFD{SleepEvents}) = Base.sleep(0.01)
 
 
-function register_for_events(fd::UnixFD{PollEvents})
-                                                 @dbf 3 :register_for_events fd
+@db 3 function register_for_events(fd::UnixFD{PollEvents})
     @dblock poll_queue.lock begin
         push!(poll_queue.set, fd)
         poll_queue.cvector_is_stale = true
         wakeup_poll(poll_queue)
-    end                                                                 ;@dbr 3
+    end
     nothing
 end
 
@@ -106,7 +105,7 @@ end
 """
 Run `poll_wait()` in a loop.
 """
-function poll_task(q)                                         @dbf 1 :poll_task
+@db 1 function poll_task(q)
 
     if Threads.threadid() == 1
         @warn """
@@ -128,9 +127,10 @@ function poll_task(q)                                         @dbf 1 :poll_task
                 end
                 @dblock q.lock delete!(q.set, fd)
                 if fd.nwaiting <= 0
-                    @db 0 "$(db_c(events,"POLL")) -> $fd None Waiting!"
+                    @db 1 "$(db_c(events,"POLL")) -> $fd None Waiting!"
                 else
-                    @lock fd notify(fd)  ;@db 3 "$(db_c(events,"POLL")) -> $fd"
+                    @db 3 "$(db_c(events,"POLL")) -> $fd"
+                    @dblock fd notify(fd);
                 end
             end
         catch err
@@ -163,8 +163,8 @@ Wait for events.
 When events occur, notify waiters and remove entries from queue.
 Return false if the queue is empty.
 """
-function poll_wait(f::Function, q::PollQueue, default_timeout_ms)
-                                                              @dbf 6 :poll_wait
+@db 6 function poll_wait(f::Function, q::PollQueue, default_timeout_ms)
+
     # Build vector of `struct pollfd`.
     v = q.cvector
     if q.cvector_is_stale;
@@ -185,7 +185,7 @@ function poll_wait(f::Function, q::PollQueue, default_timeout_ms)
 
     # Check for write to wakeup pipe.
     fd, events, revents = v[end]
-    if revents != 0                            ;@db 5 "poll_wait() got wakeup!"
+    if revents != 0                                        ;@db 5 "got wakeup!"
         @assert fd == q.wakeup_pipe[1]
         C.read(fd, Ref(0), 1)
     end
@@ -204,7 +204,7 @@ function poll_wait(f::Function, q::PollQueue, default_timeout_ms)
     deleteat!(v, del)                                             ;@db 6 "v=$v"
 
     # Check for timeouts.
-    notify_timers()                                                ;@dbr 6 "👍"
+    notify_timers()
     nothing
 end
 
@@ -237,7 +237,7 @@ const epoll_queue = EPollQueue(-1,
                                Vector{epoll_event}(undef, 10),
                                Threads.SpinLock())
 
-function epoll_queue_init()
+@db function epoll_queue_init()
 
     @assert Sys.ARCH != :x86_64 """
         FIXME: UnixIO does not support epoll on x86_64!
@@ -274,7 +274,7 @@ epoll_ctl(fd::UnixFD, op, events) =
 """
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
-function register_for_events(fd::UnixFD{EPollEvents})
+@db 4 function register_for_events(fd::UnixFD{EPollEvents})
     @dblock epoll_queue.lock begin
         push!(epoll_queue.set, fd)
         epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
@@ -289,7 +289,7 @@ poll_event_type(::WriteFD) = C.POLLOUT
 Call `epoll_wait(7)` to wait for events.
 Call `f(events, fd)` for each event.
 """
-function poll_wait(f::Function, q::EPollQueue, timeout_ms)
+@db 6 function poll_wait(f::Function, q::EPollQueue, timeout_ms)
     v = q.cvector
     n = @cerr allow=C.EINTR gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms)
     if n >= 0

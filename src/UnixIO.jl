@@ -51,9 +51,9 @@ const C = UnixIOHeaders
 include("errors.jl")
 include("debug.jl")
 
-function __init__()
-    global debug_t0
-    debug_t0 = time()
+
+@db function __init__()
+    global_debug.t0 = time()
     @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
 
     poll_queue_init()
@@ -90,17 +90,21 @@ end
 abstract type UnixFD{EventSource} <: IO end
 
 
-function UnixFD(fd, flags = fcntl_getfl(fd); events=DefaultEvents)
+@db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=DefaultEvents)
 
     @require lookup_unix_fd(fd) == nothing ||
              lookup_unix_fd(fd).isclosed
 
+    r = 
     flags & C.O_RDWR   != 0 ?  DuplexIO(ReadFD{events}(fd),
                                         WriteFD{events}(C.dup(fd))) :
     flags & C.O_RDONLY != 0 ?  ReadFD{events}(fd) :
     flags & C.O_WRONLY != 0 ?  WriteFD{events}(C.dup(fd)) :
                                @assert false 
+    @db 3 return r
 end
+
+debug_tiny(x::UnixFD) = string(x)
 
 Base.wait(fd::UnixFD) = wait(fd.ready)
 Base.lock(fd::UnixFD) = lock(fd.ready)
@@ -141,7 +145,7 @@ const fd_vector = fill(WeakRef(nothing), 100)
 const fd_vector_lock = Threads.SpinLock()
 lookup_unix_fd(fd) = @lock fd_vector_lock fd_vector[fd+1].value
 
-function register_unix_fd(fd::UnixFD)              ;@dbf 2 :register_unix_fd fd
+@db function register_unix_fd(fd::UnixFD)
     i = fd.fd+1
     @lock fd_vector_lock begin
         if i > length(fd_vector)
@@ -149,7 +153,7 @@ function register_unix_fd(fd::UnixFD)              ;@dbf 2 :register_unix_fd fd
         end
         fd_vector[i] = WeakRef(fd)
     end
-    @ensure lookup_unix_fd(fd.fd) == fd;                                 @dbr 2
+    @ensure lookup_unix_fd(fd.fd) == fd
 end
 
 
@@ -170,12 +174,13 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
-function open(pathname, flags = C.O_RDWR; timeout=Inf, events=DefaultEvents)
-                                                 @dbf 1 :open (pathname, flags)
+@db 1 function open(pathname, flags = C.O_RDWR;
+                    timeout=Inf, events=DefaultEvents)
+
     fd = @cerr C.open(pathname, flags | C.O_NONBLOCK)
     io = UnixFD(fd, flags; events=events)
-    @ensure isopen(io)                                               ;@dbr 1 io
-    io
+    @ensure isopen(io)
+    @db 1 return io
 end
 
 
@@ -208,8 +213,7 @@ Set `flag` in the file status flags.
 Uses `F_GETFL` to read the current flags and `F_SETFL` to store the new flag.
 See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
 """
-function fcntl_setfl(fd, flag; get=C.F_GETFL, set=C.F_SETFL)
-    @db 3 "fcntl_setfl($fd, $flag)"
+@db 3 function fcntl_setfl(fd, flag; get=C.F_GETFL, set=C.F_SETFL)
     flags = fcntl_getfl(fd; get=get)
     if flags & flag == flag
         return nothing
@@ -237,12 +241,11 @@ e.g.
     io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 """
-function tcsetattr(tty::UnixFD; iflag = 0,
-                                oflag = 0,
-                                cflag = C.CS8,
-                                lflag = 0,
-                                speed = 0)
-                                                         @db 2 "tcsetattr($fd)"
+@db 2 function tcsetattr(tty::UnixFD; iflag = 0,
+                                      oflag = 0,
+                                      cflag = C.CS8,
+                                      lflag = 0,
+                                      speed = 0)
     conf = termios()
     conf.c_iflag = iflag
     conf.c_oflag = oflag
@@ -253,13 +256,13 @@ function tcsetattr(tty::UnixFD; iflag = 0,
 end
 
 
-function Base.close(fd::UnixFD)                                @dbf 1 :close fd
+@db 1 function Base.close(fd::UnixFD)
     @dblock fd begin
         fd.isclosed = true
         @cerr allow=C.EBADF C.close(fd)
         notify(fd)
     end
-    @ensure !isopen(fd)                                                 ;@dbr 1
+    @ensure !isopen(fd)
     nothing
 end
 
@@ -267,34 +270,18 @@ end
 Base.isopen(fd::UnixFD) = !fd.isclosed
 
 
-#=
-function isclosed(fd::UnixFD)                           ;@dbf 6 "isclosed($fd)"
-    if fd.isclosed || fd.isdead                                   ;@db 6 "true"
-        return true 
-    end
-    fd.isdead = C.fcntl(fd, C.F_GETFL) == -1
-    fd.isdead && @db 2 "☠️:: isclosed($fd)"
-    return fd.isdead
-end
-=#
-
-
-
-
-function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
-                                     deadline=time()+timeout)
-
-                                        @dbf 1 :wait_close (fd, db_t(deadline))
+@db 1 function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
+                                           deadline=time()+timeout)
     @dblock fd begin
         t = register_timer(deadline, fd.ready)
         try
-            while isopen(fd) && time() < deadline        ;@db 3 "waiting..."
+            while isopen(fd) && time() < deadline           ;@db 3 "waiting..."
                 wait_for_event(fd)
             end
         finally
             cancel_timer(t)
         end
-    end                                                                 ;@dbr 1
+    end
     nothing
 end
 
@@ -306,8 +293,7 @@ Shut down part of a full-duplex connection.
 `how` is one of `C.SHUT_RD`, `C.SHUT_WR` or `C.SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 """
-function shutdown(fd, how=C.SHUT_WR)
-    @db 1 "shutdown($fd, $how)"
+@db 1 function shutdown(fd, how=C.SHUT_WR)
     @cerr allow=C.ENOTCONN C.shutdown(fd, how)
 end
 
@@ -324,66 +310,68 @@ Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
-function read(fd::ReadFD, buf, count=length(buf); timeout=fd.timeout,
+@db 2 function read(fd::ReadFD, buf, count=length(buf); timeout=fd.timeout,
                                                   deadline=time()+timeout)
     # First read from buffer.
-    n = bytesavailable(fd.buffer)                     ;@dbf 1 :read (fd, count)
-    if n > 0
+    n = bytesavailable(fd.buffer)
+    if n > 0                                          ;@db 2 "read from buffer"
         n = min(n, count)
-        read_from_buffer(fd, buf, n);                  ;@dbr 1 "$n from buffer"
+        read_from_buffer(fd, buf, n);
         @ensure n >= 1
         @ensure n <= count
-        return n
+        @db 2 return n
     end
 
     # Then read from file.
-    n = transfer(fd, buf, count, deadline)               ;@dbr 1 "$n from file"
-    return n
+    n = transfer(fd, buf, count, deadline)
+    @db 2 return n
 end
+
 
 """
 Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`
 until `deadline`.
 Return number of bytes transferred.
 """
-function transfer(fd::UnixFD, buf, count, deadline)
+@db 2 function transfer(fd::UnixFD, buf, count, deadline)
     @require !fd.isclosed                  
     @require fd.nwaiting >= 0
     @require count > 0
-                                   @dbf 3 :transfer (fd, count, db_t(deadline))
+
     @dblock fd begin
         n = -1
         t = time() < deadline ? register_timer(deadline, fd.ready) : nothing
         try
             while n == -1 && !fd.isclosed
-                n = @cerr allow=(C.EAGAIN, C.EINTR) transfer(fd, buf, count)
-                                                                @db 6 "C -> $n"
+                n = @cerr(allow=(C.EAGAIN, C.EINTR),
+                          transfer(fd, buf, count))           ;@db 6 "n=$n"
                 if n == -1
                     if Base.Libc.errno() == C.EINTR
-                                                                ;@db 3 "EINTR!"
+                                                              ;@db 2 "EINTR!"
                     else
-                        if time() < deadline;                ;@db 3 "waiting.."
+                        if time() < deadline;                 ;@db 2 "wait..."
                             wait_for_event(fd)
-                        else                                  ;@db 3 "timeout!"
+                        else                                  ;@db 2 "timeout!"
                             n = 0
                         end
                     end
-                elseif n == 0                                   ;@db 3 "💥HUP!"
-                    @assert fd isa ReadFD """
-                                          C.write returned 0!
-                                          https://stackoverflow.com/q/41904221/
-                                          """
+                elseif n == 0                                 ;@db 2 "HUP!💥"
+                    @assert(fd isa ReadFD,
+                            """
+                            C.write returned 0!
+                            https://stackoverflow.com/q/41904221/
+                            """)
                     fd.isdead = true
                 end
             end
         finally 
             t == nothing || cancel_timer(t)
         end 
-                                                                       @dbr 3 n
+
         @ensure fd.nwaiting >= 0
         @ensure n >= 0
         @ensure n <= count
-        return n
+        @db 2 return n
     end
 end
 
@@ -407,11 +395,10 @@ Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 """
-function write(fd::WriteFD, buf, count=length(buf);
-               timeout=Inf, deadline=time()+timeout)
-                                                      @dbf 3 :write (fd, count)
-    n = transfer(fd, buf, count, deadline)                            ;@dbr 3 n
-    return n
+@db 1 function write(fd::WriteFD, buf, count=length(buf);
+                     timeout=Inf, deadline=time()+timeout)
+    n = transfer(fd, buf, count, deadline)
+    @db 1 return n
 end
 
 
@@ -443,12 +430,11 @@ README"""
 Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 """
-function socketpair()
+@db function socketpair()
     v = fill(Cint(-1), 2)
     @cerr C.socketpair(C.AF_UNIX, C.SOCK_STREAM, 0, v)
     @ensure !(-1 in v)
-    @db 3 "socketpair() -> $((v...,))"
-    return (v[1], v[2])
+    @db return (v[1], v[2])
 end
 
 
@@ -479,12 +465,12 @@ julia> UnixIO.system("uname -srm")
 Darwin 20.3.0 x86_64
 ```
 """
-function system(command)                                ;@dbf 1 :system command
+@db function system(command)
     r = @cerr C.system(command)
     if r != 0
         throw(ErrorException("UnixIO.system termination status: $r"))
-    end                                                               ;@dbr 1 r
-    return r
+    end
+    @db return r
 end
 
 system(cmd::Cmd) = system(join(cmd.exec, " "))
@@ -530,15 +516,15 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 0000000c
 ```
 """
-function open(f::Function, cmd::Cmd; check_status=true,
-                                     capture_stderr=false)
-    @nospecialize f;                                  @dbf 1 :open "$cmd do..."
+@db function open(f::Function, cmd::Cmd; check_status=true,
+                                         capture_stderr=false)
+    @nospecialize f;
 
     # Create Unix Domain Socket to communicate with Child Process.
     parent_io, child_io = socketpair()
 
     fcntl_setfd(parent_io, C.O_CLOEXEC)
-    cmdin = WriteFD(parent_io)                           ;@db 2 "cmdin: $cmdin"
+    cmdin = WriteFD(parent_io)                         ;@db 2 "cmdin: $cmdin"
     cmdout = ReadFD(C.dup(parent_io))                  ;@db 2 "cmdout: $cmdout"
 
     child_in = child_io
@@ -553,34 +539,40 @@ function open(f::Function, cmd::Cmd; check_status=true,
     args = pointer.(cmd.exec)
     push!(args, Ptr{UInt8}(0))
 
-    pid = C.fork()                      # Child process:
-                                        if pid == 0
-                                            # Connect STDIN/OUT to socket.
-                                            C.dup2(child_in, Base.STDIN_NO)
-                                            C.dup2(child_out, Base.STDOUT_NO)
-                                            C.dup2(child_err, Base.STDERR_NO)
-
-                                            # Execute command.
-                                            C.execv(cmd_bin, args)
-                                            C._exit(-1)
-                                        end
-                                                    ;@db 1 "forked -> pid $pid"
+    # Start Child Process.
+    pid = C.fork()
+    #       │                           Child Process
+    #       ├─────────────────────────────────────┐ 
+    #       │                                     ▼
+            ;                           if pid == 0
+            ;                               # Connect STDIN/OUT to socket.
+            ;                               C.dup2(child_in, Base.STDIN_NO)
+            ;                               C.dup2(child_out, Base.STDOUT_NO)
+            ;                               C.dup2(child_err, Base.STDERR_NO)
+            ;
+            ;                               # Execute command.
+            ;                               C.execv(cmd_bin, args)
+            ;                               C._exit(-1)
+            ;                           end
+    #       │
+    #       ▼
     # Main process:
     Base.sigatomic_end()
     GC.enable(true)
 
-    @assert pid > 0
+    @assert pid > 0                               ;@db 1 "fork()-> $pid"
     register_child(pid)
     C.close(child_io)
 
-    try                                              ;@db 1 "f($cmdin,$cmdout)"
-        # Run the IO handling function `f`.  
-        result = f(cmdin, cmdout)                            ;@db 1 "f() done!"
-
+    # Run the IO handling function `f`.
+    try                                           ;@db 1 "f ┬─($cmdin,$cmdout)"
+                                                  ;@db_indent 1 "f"
+        result = f(cmdin, cmdout)                 ;@db_unindent 1
+                                                  ;@db 1 "  └─▶ 👍"
         # Close IO and send TERM signal.
         close(cmdin)
         close(cmdout)
-        C.kill(pid, C.SIGHUP)                           ;@db 3 "SIGHUP -> $pid"
+        C.kill(pid, C.SIGHUP)                     ;@db 3 "SIGHUP -> $pid"
 
         # Get child process exit status.
         status = waitpid(pid; timeout=1)
@@ -588,16 +580,16 @@ function open(f::Function, cmd::Cmd; check_status=true,
             status = 0
         end
         if status == nothing
-            C.kill(pid, C.SIGKILL)                     ;@db 3 "SIGKILL -> $pid"
+            C.kill(pid, C.SIGKILL)                ;@db 3 "SIGKILL -> $pid"
             status = waitpid(pid)
-        end                                           ;@dbr 1 "$pid -> $status"
+        end
         if check_status
             if !WIFEXITED(status) || WEXITSTATUS(status) != 0
                 throw(waitpid_error(cmd, status))
             end
-            return result
+            @db return result
         else
-            return status, result
+            @db return status, result
         end
     finally
         C.close(cmdin.fd)
@@ -610,25 +602,25 @@ end
 const child_pids_lock = Threads.SpinLock()
 const child_pids = Set{Cint}()
 
-function register_child(pid)                      ;@db 3 "register_child($pid)"
+@db 1 function register_child(pid)
     @lock child_pids_lock push!(child_pids, pid)
 end
 
-function terminate_child(pid)         ;@db 3 "terminate_child($pid) -> SIGKILL"
+@db 1 function terminate_child(pid)
     @lock child_pids_lock delete!(child_pids, pid)
     C.kill(pid, C.SIGKILL)
     @asynclog "UnixIO.terminate_child(::Cmd)" waitpid(pid)
 end
 
-function terminate_child_pids()                   ;@dbf 3 :terminate_child_pids
-    @sync for pid in child_pids                        ;@db 3 "SIGKILL -> $pid"
+@db 1 function terminate_child_pids()
+    @sync for pid in child_pids                        ;@db 1 "SIGKILL -> $pid"
         C.kill(pid, C.SIGKILL)               
         @async waitpid(pid)
-    end                                                                 ;@dbr 3
+    end
 end
 
 
-function open(cmd::Cmd; kw...);                                @dbf 1 :open cmd
+function open(cmd::Cmd; kw...)
     c = Channel{Tuple{WriteFD,ReadFD}}(0)
     @asynclog "UnixIO.open(::Cmd)" open(cmd; kw...) do cmdin, cmdout
         put!(c, (cmdin, cmdout))
@@ -636,7 +628,7 @@ function open(cmd::Cmd; kw...);                                @dbf 1 :open cmd
             @async Base.wait_close(cmdin)
             @async Base.wait_close(cmdout)
         end
-    end                                                               ;@dbr 1 c
+    end
     take!(c)
 end
 
@@ -660,12 +652,12 @@ julia> UnixIO.read(`uname -srm`, String)
 """
 read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
-function read(cmd::Cmd; timeout=Inf, kw...)                   ;@dbf 1 :read cmd
+@db function read(cmd::Cmd; timeout=Inf, kw...)
     r = open(cmd; kw...) do cmdin, cmdout
         shutdown(cmdin)
         Base.read(cmdout; timeout=timeout)
-    end                                                       ;@dbr 1 typeof(r)
-    return r
+    end
+    @db return r
 end
 
 
@@ -683,7 +675,7 @@ README"""
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 """
-function waitpid(pid; timeout=Inf)                         ;@dbf 3 :waitpid pid
+@db function waitpid(pid; timeout=Inf)
     status = Ref{Cint}(0)
     deadline = time() + timeout           ;@db 3 "deadline = $(db_t(deadline))"
     delay = nothing
@@ -693,16 +685,16 @@ function waitpid(pid; timeout=Inf)                         ;@dbf 3 :waitpid pid
             errno = Base.Libc.errno()
             if errno in (C.EINTR, C.EAGAIN)             ;@db 3 "EINTR / EAGAIN"
                 continue
-            elseif errno == C.ECHILD        ;@dbr 3 "ECHILD (No child process)"
-                return nothing
+            elseif errno == C.ECHILD
+                @db return nothing "ECHILD (No child process)"
             end
             throw(ccall_error(C.waitpid, (pid,)))
         end
-        if r == pid                                ;@dbr 3 "status=$(status[])"
-            return status[]
+        if r == pid
+            @db return status[]
         end
-        if time() >= deadline                                ;@dbr 3 "timeout!"
-            return nothing
+        if time() >= deadline
+            @db return nothing "timeout!"
         end
 
         delay = something(delay, exponential_delay())    ;@db 3 "sleep($delay)"

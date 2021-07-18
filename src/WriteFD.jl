@@ -32,16 +32,15 @@ Base.iswritable(fd::WriteFD) = Base.isopen(fd)
 Base.isreadable(::WriteFD) = false
 
 
-function Base.unsafe_write(fd::WriteFD, buf::Ptr{UInt8}, nbytes::UInt)
-                                         @dbf 1 :unsafe_write (fd, buf, nbytes)
+@db 1 function Base.unsafe_write(fd::WriteFD, buf::Ptr{UInt8}, nbytes::UInt)
     @require !fd.isclosed
     nwritten = 0
     while nwritten < nbytes
         n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
         nwritten += n
     end
-    @ensure nwritten == nbytes                                 ;@dbr 1 nwritten
-    return Int(nwritten)
+    @ensure nwritten == nbytes
+    @db 1 return Int(nwritten)
 end
 
 

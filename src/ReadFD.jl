@@ -25,13 +25,13 @@ mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
 end
 
 
-function transfer(fd::ReadFD, buf, count)         ;@dbf 4 :transfer (fd, count)
-    n = C.read(fd.fd, buf, count)                                     ;@dbr 4 n
-    return n
+@db 2 function transfer(fd::ReadFD, buf, count)
+    n = C.read(fd.fd, buf, count)
+    @db 2 return n
 end
 
 
-function Base.close(fd::ReadFD)                             ;@db 2 "close($fd)"
+@db function Base.close(fd::ReadFD)
     take!(fd.buffer)
     invoke(Base.close, Tuple{UnixFD}, fd)
 end
@@ -57,18 +57,18 @@ Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
 #FIXME ioctl FIONREAD ?
 
 
-function Base.eof(fd::ReadFD; timeout=Inf)                      ;@dbf 4 :eof fd
+@db 4 function Base.eof(fd::ReadFD; timeout=Inf)
     if bytesavailable(fd.buffer) == 0 && isopen(fd)
         Base.write(fd.buffer, readavailable(fd; timeout=timeout))
     end
-    r = bytesavailable(fd.buffer) == 0                                ;@dbr 4 r
-    return r
+    r = bytesavailable(fd.buffer) == 0
+    @db 4 return r
 end
 
 #FIXME set deadline at outer call
 
-function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt; kw...)
-                                          @dbf 1 :unsafe_read (fd, buf, nbytes)
+@db 1 function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt;
+                                kw...)
     @require !fd.isclosed
     nread = 0
     while nread < nbytes
@@ -78,16 +78,17 @@ function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt; kw...)
         end
         nread += n
     end
-    @ensure nread == nbytes                                       ;@dbr 1 nread
+    @ensure nread == nbytes
     nothing
 end
 
 
-function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)  ;@db 3 "read($fd, UInt8)"
+@db 3 function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)
     @require !fd.isclosed
     eof(fd; kw...) && throw(EOFError())
     @assert bytesavailable(fd.buffer) > 0
-    Base.read(fd.buffer, UInt8)
+    r = Base.read(fd.buffer, UInt8)
+    @db 3 return r
 end
 
 
@@ -95,9 +96,8 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
     readbytes!(fd, buf, UInt(nbytes); kw...)
 
 
-function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
-                         all::Bool=true, kw...)
-                                                @dbf 1 :readbytes! (fd, nbytes)
+@db 1 function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
+                               all::Bool=true, kw...)
     @require !fd.isclosed
     lb::Int = length(buf)
     nread = 0
@@ -105,7 +105,7 @@ function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
         @assert nread <= lb
         if (lb - nread) == 0
             lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
-            resize!(buf, lb)                             ;@db 5 "resize -> $lb"
+            resize!(buf, lb)                             ;@db 1 "resize -> $lb"
         end
         @assert lb > nread
         n = UnixIO.read(fd, view(buf, nread+1:lb); kw...)
@@ -114,17 +114,17 @@ function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
         end
         nread += n
     end
-    @ensure nread <= nbytes                                       ;@dbr 1 nread
-    return nread
+    @ensure nread <= nbytes
+    @db 1 return nread
 end
 
 
 const BUFFER_SIZE = 65536
 
-function Base.readavailable(fd::ReadFD; timeout=0)    ;@dbf 5 :readavailable fd
+@db 5 function Base.readavailable(fd::ReadFD; timeout=0)
     @require !fd.isclosed
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-    n = UnixIO.read(fd, buf; timeout=timeout)                         ;@dbr 5 n
+    n = UnixIO.read(fd, buf; timeout=timeout)                     ;@db 5 "n=$n"
     resize!(buf, n)
 end
 
