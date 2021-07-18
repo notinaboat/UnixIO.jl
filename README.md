@@ -32,11 +32,13 @@ If `UnixIO.enable_dumb_polling[]` is set to `true` IO polling is done by a dumb 
 
 ## Opening and Closing Unix Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> UnixFD <: IO
+    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
 
-The `UnixFD` returned by `UnixIO.open` can be used with
+Use `Base.close` to close the file.
+
+The `IO` returned by `UnixIO.open` can be used with
 `UnixIO.read` and `UnixIO.write`. It can also be used with
 the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
@@ -47,11 +49,17 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
     UnixIO.set_timeout(fd::UnixFD, timeout)
 
-Configure `fd` to throw `UnixIO.ReadTimeoutError` when read operations take
-longer than `timeout` seconds.
+Configure `fd` to limit IO operations to `timeout` seconds.
 
 
 ---
+
+    UnixIO.fcntl_getfl(fd::UnixFD)
+
+Set the file status flags.
+Uses `F_GETFL` to read the current flags.
+See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
+
 
     UnixIO.fcntl_setfl(fd::UnixFD, flag)
 
@@ -76,15 +84,6 @@ e.g.
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 
 
----
-
-    UnixIO.close(fd::UnixFD)
-
-Close a file descriptor, so that it no longer refers to
-any file and may be reused.
-See [close(2)](https://man7.org/linux/man-pages/man2/close.2.html)
-
-
     UnixIO.shutdown(sockfd, [how = C.SHUT_WR])
 
 Shut down part of a full-duplex connection.
@@ -101,8 +100,6 @@ Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
-Throw `UnixIO.ReadTimeoutError` if read takes longer than `timeout` seconds.
-
 
 ## Writing to Unix Files.
 
@@ -112,8 +109,6 @@ Throw `UnixIO.ReadTimeoutError` if read takes longer than `timeout` seconds.
 Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
-
-Throw `UnixIO.WriteTimeoutError` if write takes longer than `timeout` seconds.
 
 
     UnixIO.println(x...)
@@ -133,6 +128,14 @@ See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 
 ## Executing Unix Commands.
 
+    sh"shell command"
+
+String containing result of shell command. e.g.
+
+    julia> println("Machine is ", sh"uname -m")
+    Machine is x86_64
+
+
     UnixIO.system(command) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
@@ -149,14 +152,14 @@ Darwin 20.3.0 x86_64
     open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
 Run `cmd` using `fork` and `execv`.
-Call `f(fd)` where `fd` is a socket connected to stdin/stdout of `cmd`.
+Call `f(cmdin, cmdout)`.
 
 e.g.
 ```
-julia> UnixIO.open(`hexdump -C`) do io
-           write(io, "Hello World!")
-           shutdown(io)
-           read(io, String)
+julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
+           write(cmdin, "Hello World!")
+           shutdown(cmdin)
+           read(cmdout, String)
        end |> println
 00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 21              |Hello World!|
 0000000c
