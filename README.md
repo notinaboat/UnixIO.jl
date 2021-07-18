@@ -17,7 +17,7 @@ UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 readline(io; timeout=5)
 
 fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
-C.write(fd, "Hello!", 7)
+C.write(fd, pointer("Hello!"), 7)
 C.close(fd)
 
 io = UnixIO.open("file.txt", C.O_CREAT | C.O_WRONLY)
@@ -27,12 +27,15 @@ close(io)
 
 Blocking IO is multiplexed by running [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html) under a task started by `Threads.@spawn`. See [`src/poll.jl`](src/poll.jl)
 
-If `UnixIO.enable_dumb_polling[]` is set to `true` IO polling is done by a dumb loop with a 10ms delay. This may be more efficient for small systems with simple IO requirements (e.g. communicating with a few serial ports and sub-processes on a Raspberry Pi).
+If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `EPollEvents` the Linux [`epoll(7)`](https://man7.org/linux/man-pages/man7/epoll.7.html) API is used instead.
+
+If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `SleepEvents` IO polling is done by a dumb loop with a 10ms delay. This may be more efficient for small systems with simple IO requirements. (e.g. communicating with a few serial ports and sub-processes on a Raspberry Pi).
 
 
 ## Opening and Closing Unix Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> IO
+UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
+                      [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
 
@@ -84,7 +87,7 @@ e.g.
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 
 
-    UnixIO.shutdown(sockfd, [how = C.SHUT_WR])
+    UnixIO.shutdown(sockfd, how)
 
 Shut down part of a full-duplex connection.
 `how` is one of `C.SHUT_RD`, `C.SHUT_WR` or `C.SHUT_RDWR`.
@@ -158,7 +161,7 @@ e.g.
 ```
 julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
            write(cmdin, "Hello World!")
-           shutdown(cmdin)
+           close(cmdin)
            read(cmdout, String)
        end |> println
 00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 21              |Hello World!|

@@ -17,7 +17,7 @@ e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
     readline(io; timeout=5)
 
     fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
-    C.write(fd, "Hello!", 7)
+    C.write(fd, pointer("Hello!"), 7)
     C.close(fd)
 
     io = UnixIO.open("file.txt", C.O_CREAT | C.O_WRONLY)
@@ -29,10 +29,15 @@ Blocking IO is multiplexed by running
 under a task started by `Threads.@spawn`.
 See [`src/poll.jl`](src/poll.jl)
 
-If `UnixIO.enable_dumb_polling[]` is set to `true` IO polling is done by
-a dumb loop with a 10ms delay. This may be more efficient for small
-systems with simple IO requirements (e.g. communicating with a few
-serial ports and sub-processes on a Raspberry Pi).
+If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `EPollEvents` the
+Linux [`epoll(7)`](https://man7.org/linux/man-pages/man7/epoll.7.html)
+API is used instead.
+
+If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `SleepEvents` IO polling
+is done by a dumb loop with a 10ms delay. This may be more efficient
+for small systems with simple IO requirements.
+(e.g. communicating with a few serial ports and sub-processes on a
+Raspberry Pi).
 """
 module UnixIO
 
@@ -162,7 +167,8 @@ README"## Opening and Closing Unix Files."
 
 
 README"""
-    UnixIO.open(pathname, [flags = C.O_RDWR]; [timeout=Inf]) -> IO
+UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
+                      [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
 
@@ -174,10 +180,10 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
-@db 1 function open(pathname, flags = C.O_RDWR;
+@db 1 function open(pathname, flags = C.O_RDWR, mode=0o644;
                     timeout=Inf, events=DefaultEvents)
 
-    fd = @cerr C.open(pathname, flags | C.O_NONBLOCK)
+    fd = @cerr C.open(pathname, flags | C.O_NONBLOCK, mode)
     io = UnixFD(fd, flags; events=events)
     @ensure isopen(io)
     @db 1 return io
@@ -259,6 +265,7 @@ end
 @db 1 function Base.close(fd::UnixFD)
     @dblock fd begin
         fd.isclosed = true
+        shutdown(fd)
         @cerr allow=C.EBADF C.close(fd)
         notify(fd)
     end
@@ -287,14 +294,15 @@ end
 
 
 README"""
-    UnixIO.shutdown(sockfd, [how = C.SHUT_WR])
+    UnixIO.shutdown(sockfd, how)
 
 Shut down part of a full-duplex connection.
 `how` is one of `C.SHUT_RD`, `C.SHUT_WR` or `C.SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 """
-@db 1 function shutdown(fd, how=C.SHUT_WR)
-    @cerr allow=C.ENOTCONN C.shutdown(fd, how)
+@db 1 function shutdown(fd, how)
+    @cerr(allow=(C.ENOTCONN, C.EBADF, C.ENOTSOCK),
+          C.shutdown(fd, how))
 end
 
 
@@ -509,7 +517,7 @@ e.g.
 ```
 julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
            write(cmdin, "Hello World!")
-           shutdown(cmdin)
+           close(cmdin)
            read(cmdout, String)
        end |> println
 00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 21              |Hello World!|
@@ -654,7 +662,7 @@ read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
 
 @db function read(cmd::Cmd; timeout=Inf, kw...)
     r = open(cmd; kw...) do cmdin, cmdout
-        shutdown(cmdin)
+        close(cmdin)
         Base.read(cmdout; timeout=timeout)
     end
     @db return r

@@ -21,6 +21,8 @@ end
 transfer(fd::WriteFD, buf, count) = C.write(fd, buf, count)
 
 
+shutdown(fd::WriteFD) = shutdown(fd, C.SHUT_WR)
+
 @static if isdefined(Base, :shutdown)
     Base.shutdown(fd::WriteFD) = UnixIO.shutdown(fd, C.SHUT_WR)
 end
