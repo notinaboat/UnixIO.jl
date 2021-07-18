@@ -16,7 +16,7 @@ io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
 UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 readline(io; timeout=5)
 
-fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY)
+fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY, 0o644)
 C.write(fd, pointer("Hello!"), 7)
 C.close(fd)
 
