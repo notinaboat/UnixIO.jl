@@ -27,9 +27,9 @@ close(io)
 
 Blocking IO is multiplexed by running [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html) under a task started by `Threads.@spawn`. See [`src/poll.jl`](src/poll.jl)
 
-If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `EPollEvents` the Linux [`epoll(7)`](https://man7.org/linux/man-pages/man7/epoll.7.html) API is used instead.
+If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `epoll` the Linux [`epoll(7)`](https://man7.org/linux/man-pages/man7/epoll.7.html) API is used instead.
 
-If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `SleepEvents` IO polling is done by a dumb loop with a 10ms delay. This may be more efficient for small systems with simple IO requirements. (e.g. communicating with a few serial ports and sub-processes on a Raspberry Pi).
+If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `sleep` IO polling is done by a dumb loop with a 10ms delay. This may be more efficient for small systems with simple IO requirements. (e.g. communicating with a few serial ports and sub-processes on a Raspberry Pi).
 
 
 ## Opening and Closing Unix Files.
