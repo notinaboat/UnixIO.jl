@@ -705,8 +705,9 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
             @db return nothing "timeout!"
         end
 
-        delay = something(delay, exponential_delay())    ;@db 3 "sleep($delay)"
-        sleep(popfirst!(delay))
+        delay = something(delay, exponential_delay())    
+        t = popfirst!(delay)                                 ;@db 3 "sleep($t)"
+        sleep(t)
     end
 end
 

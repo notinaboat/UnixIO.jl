@@ -6,12 +6,7 @@ FIXME
  - specify types on kw args? check compiler log of methods generated
 """
 
-
-"""
-Tuple that matches the memory layout of C `struct pollfd`."
-"""
-const PollFDTuple = Tuple{fieldtypes(C.pollfd)...}
-
+const MAX_POLL_FD_COUNT = 1000
 
 """
 Global queue of file descriptors to poll.
@@ -29,23 +24,32 @@ a new FD to wait for.
 """
 mutable struct PollQueue
     set::Set{UnixFD}
-    cvector::Vector{PollFDTuple}
-    cvector_is_stale::Bool
+    fdvector::Vector{C.pollfd}
     wakeup_pipe::Vector{Cint}
     lock::Threads.SpinLock
 end
 
 
 const poll_queue = PollQueue(Set{UnixFD}(),
-                             [],
-                             true,
+                             fill(C.pollfd(), MAX_POLL_FD_COUNT),
                              [],
                              Threads.SpinLock())
 
 @db function poll_queue_init()
 
+    # Check that fdvector does not get reallocated when emptied and refilled.
+    fdvector_p = pointer(poll_queue.fdvector)
+    empty!(poll_queue.fdvector)
+    for i in 1:MAX_POLL_FD_COUNT
+        push!(poll_queue.fdvector, C.pollfd(1,2,3))
+    end
+    empty!(poll_queue.fdvector)
+    @assert pointer(poll_queue.fdvector) == fdvector_p
+
     # Pipe for asking `poll(2)` to return before timeout.
     poll_queue.wakeup_pipe = wakeup_pipe()
+    push!(poll_queue.fdvector,
+          C.pollfd(poll_queue.wakeup_pipe[1], C.POLLIN, 0))
 
     # Global Task to run `poll(2)`.
     Threads.@spawn poll_task(poll_queue)              ;@db "@spawn poll_task()"
@@ -74,7 +78,7 @@ end
 
 
 """
-Wait for an event to occur on `fd`. 
+Wait for an event to occur on `fd`.
 """
 @db 3 function wait_for_event(fd::UnixFD)
     Base.assert_havelock(fd)
@@ -83,7 +87,7 @@ Wait for an event to occur on `fd`.
     try
         register_for_events(fd)              ;@db 3 "$(fd.nwaiting) waiting..."
         wait(fd)
-    finally 
+    finally
         fd.nwaiting -= 1
     end
     nothing
@@ -95,7 +99,7 @@ wait_for_event(::UnixFD{SleepEvents}) = Base.sleep(0.01)
 @db 3 function register_for_events(fd::UnixFD{PollEvents})
     @dblock poll_queue.lock begin
         push!(poll_queue.set, fd)
-        poll_queue.cvector_is_stale = true
+        push!(poll_queue.fdvector, C.pollfd(fd.fd, poll_event_type(fd), 0))
         wakeup_poll(poll_queue)
     end
     nothing
@@ -119,10 +123,10 @@ Run `poll_wait()` in a loop.
         timeout_ms = 10000
     end
 
-    while true                                          
+    while true
         try
             poll_wait(q, timeout_ms) do events, fd
-                if events & (C.POLLHUP | C.POLLNVAL) != 0 
+                if events & (C.POLLHUP | C.POLLNVAL) != 0
                     fd.isdead = true   ;@db 1 "💥$(db_c(events,"POLL")) -> $fd"
                 end
                 @dblock q.lock delete!(q.set, fd)
@@ -163,45 +167,27 @@ Wait for events.
 When events occur, notify waiters and remove entries from queue.
 Return false if the queue is empty.
 """
-@db 6 function poll_wait(f::Function, q::PollQueue, default_timeout_ms)
+@db 6 function poll_wait(f::Function, q::PollQueue, timeout_ms)
 
-    # Build vector of `struct pollfd`.
-    v = q.cvector
-    if q.cvector_is_stale;
-        resize!(v, length(q.set) + 1)
-        for (i, fd) in enumerate(q.set)
-            v[i] = (fd.fd, poll_event_type(fd), 0)
-        end
-        v[end] = (q.wakeup_pipe[1], C.POLLIN, 0)
-        q.cvector_is_stale = false
-        @db 3 "rebuild cvector: $v"
-    end
-
-    # Wait for events
-    timeout_ms = next_timer_deadline_ms(default_timeout_ms)
-    @db 6 "C.poll $timeout_ms ms vl=$(length(v))"
-    n = @cerr allow=C.EINTR gc_safe_poll(v, length(v), timeout_ms)
-    @db 6 "C.poll -> $n $v"
-
-    # Check for write to wakeup pipe.
-    fd, events, revents = v[end]
-    if revents != 0                                        ;@db 5 "got wakeup!"
-        @assert fd == q.wakeup_pipe[1]
-        C.read(fd, Ref(0), 1)
-    end
+    #= Wait for events =#                       ;@db 6 "poll($v, $(length(v)))"
+    v = q.fdvector
+    timeout_ms = next_timer_deadline_ms(timeout_ms)
+    n = @cerr(allow=C.EINTR,
+              gc_safe_poll(v, length(v), timeout_ms))
 
     # Check poll vector for events.
-    del = Int[]
-    for i in 1:length(v)-1
-        fd, events, revents = v[i]
-        if revents != 0
-            push!(del, i)
-            ufd = lookup_unix_fd(fd)
-            @assert ufd != nothing
-            f(revents, ufd)
+    del = Int[]                                             ;@db 6 "n=$n, v=$v"
+    for (i, e) in enumerate(v)
+        if e.revents != 0
+            if e.fd == q.wakeup_pipe[1]
+                C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 5 "got wakeup!"
+            else
+                push!(del, i)
+                f(e.revents, lookup_unix_fd(e.fd))
+            end
         end
     end                                                       ;@db 6 "del=$del"
-    deleteat!(v, del)                                             ;@db 6 "v=$v"
+    @dblock q.lock deleteat!(v, del)                              ;@db 6 "v=$v"
 
     # Check for timeouts.
     notify_timers()
@@ -291,7 +277,8 @@ Call `f(events, fd)` for each event.
 """
 @db 6 function poll_wait(f::Function, q::EPollQueue, timeout_ms)
     v = q.cvector
-    n = @cerr allow=C.EINTR gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms)
+    n = @cerr(allow=C.EINTR,
+              gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))
     if n >= 0
         for i in 1:n
             p = Ptr{Cvoid}(UInt(v[i].data))
