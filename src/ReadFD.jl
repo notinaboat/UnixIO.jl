@@ -4,16 +4,17 @@ Read-only Unix File Descriptor.
 mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
     fd::RawFD
     isclosed::Bool
-    isdead::Bool
+    #isdead::Bool
     nwaiting::Int
     ready::Base.ThreadSynchronizer
     timeout::Float64
     buffer::IOBuffer
     function ReadFD{T}(fd, timeout=Inf) where T
         fcntl_setfl(fd, C.O_NONBLOCK)
-        fd = new{T}(RawFD(fd),
+        fd = new{T}(
+               RawFD(fd),
                false,
-               false,
+               #false,
                0,
                Base.ThreadSynchronizer(),
                timeout,

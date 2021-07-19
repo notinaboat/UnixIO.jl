@@ -3,7 +3,6 @@
 
 FIXME
 
-  - sepreate timeout
   - Channel API
       - all options configured on channel, not passed to take!
  - consider @noinline and @nospecialize, @noinline
@@ -140,7 +139,7 @@ Run `poll_wait()` in a loop.
         try
             poll_wait(q, timeout_ms) do events, fd
                 if events & (C.POLLHUP | C.POLLNVAL) != 0
-                    fd.isdead = true   ;@db 1 "💥$(db_c(events,"POLL")) -> $fd"
+                #=  fd.isdead = true =#;@db 1 "$(db_c(events,"POLL")) -> $fd💥"
                 end
                 @dblock q.lock delete!(q.set, fd)
                 if fd.nwaiting <= 0

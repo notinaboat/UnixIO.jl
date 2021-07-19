@@ -128,7 +128,7 @@ include("WriteFD.jl")
 function Base.show(io::IO, fd::UnixFD)
     fdint = convert(Cint, fd)
     print(io, "$(Base.typename(typeof(fd)).name)($fdint")
-    fd.isdead && print(io, "☠️ ")
+    #fd.isdead && print(io, "☠️ ")
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("⏳", fd.nwaiting))
     islocked(fd) && print(io, "🔒")
@@ -282,15 +282,15 @@ Base.isopen(fd::UnixFD) = !fd.isclosed
 
 
 @db 1 function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
-                                           deadline=time()+timeout)
+                                            deadline=timeout+time())
     @dblock fd begin
-        t = register_timer(deadline, fd.ready)
+        timer = register_timer(deadline, fd.ready)
         try
             while isopen(fd) && time() < deadline           ;@db 3 "waiting..."
                 wait_for_event(fd)
             end
         finally
-            cancel_timer(t)
+            close(timer)
         end
     end
     nothing
@@ -323,7 +323,7 @@ into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
 @db 2 function read(fd::ReadFD, buf, count=length(buf); timeout=fd.timeout,
-                                                  deadline=time()+timeout)
+                                                  deadline=timeout+time())
     # First read from buffer.
     n = bytesavailable(fd.buffer)
     if n > 0                                          ;@db 2 "read from buffer"
@@ -343,47 +343,50 @@ end
 """
 Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`
 until `deadline`.
-Return number of bytes transferred.
+Return number of bytes transferred or `0` on timeout.
 """
 @db 2 function transfer(fd::UnixFD, buf, count, deadline)
     @require !fd.isclosed                  
-    @require fd.nwaiting >= 0
     @require count > 0
 
-    @dblock fd begin
-        n = -1
-        t = time() < deadline ? register_timer(deadline, fd.ready) : nothing
-        try
-            while n == -1 && !fd.isclosed
-                n = @cerr(allow=(C.EAGAIN, C.EINTR),
-                          transfer(fd, buf, count))           ;@db 6 "n=$n"
-                if n == -1
-                    if errno() == C.EINTR
-                                                              ;@db 2 "EINTR!"
-                    else
-                        if time() < deadline;                 ;@db 2 "wait..."
-                            wait_for_event(fd)
-                        else                                  ;@db 2 "timeout!"
-                            n = 0
-                        end
-                    end
-                elseif n == 0                                 ;@db 2 "HUP!💥"
-                    @assert(fd isa ReadFD,
-                            """
-                            C.write returned 0!
-                            https://stackoverflow.com/q/41904221/
-                            """)
-                    fd.isdead = true
-                end
-            end
-        finally 
-            t == nothing || cancel_timer(t)
-        end 
-
-        @ensure fd.nwaiting >= 0
-        @ensure n >= 0
-        @ensure n <= count
+    n = transfer(fd, buf, count)
+    if n >= 0
         @db 2 return n
+    end
+
+    if time() < deadline 
+        @dblock fd begin
+            timer = register_timer(deadline, fd.ready)
+            try
+                while time() < deadline 
+                    n = transfer(fd, buf, count)
+                    if n >= 0
+                        @db 2 return n
+                    end                                        ;@db 2 "wait..."
+                    wait_for_event(fd)
+                end
+            finally 
+                close(timer)
+            end 
+        end
+    end
+
+    @db 2 return 0 "timeout!"
+end
+
+
+"""
+Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`.
+Return number of bytes transferred or `-1` on `C.EAGAIN`.
+"""
+@db 2 function transfer(fd::UnixFD, buf, count)
+    @require count > 0
+    while true
+        n = @cerr(allow=(C.EAGAIN, C.EINTR), transfer(fd, buf, count))
+        if n != -1 || errno() == C.EAGAIN
+            @ensure n <= count
+            @db 2 return n
+        end 
     end
 end
 
@@ -408,7 +411,7 @@ the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 """
 @db 1 function write(fd::WriteFD, buf, count=length(buf);
-                     timeout=Inf, deadline=time()+timeout)
+                     timeout=Inf, deadline=timeout+time())
     n = transfer(fd, buf, count, deadline)
     @db 1 return n
 end
@@ -689,7 +692,7 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 """
 @db function waitpid(pid; timeout=Inf)
     status = Ref{Cint}(0)
-    deadline = time() + timeout           ;@db 3 "deadline = $(db_t(deadline))"
+    deadline = timeout + time()           ;@db 3 "deadline = $(db_t(deadline))"
     delay = nothing
     while true
         r = C.waitpid(pid, status, C.WNOHANG | C.WUNTRACED)     ;@db 3 "r = $r"
