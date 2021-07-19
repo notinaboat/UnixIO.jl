@@ -148,4 +148,13 @@ end
 
 
 
+# Pretty Printing.
+
+function dbshow(io::IO, t::Timer)
+    print(io, "Timer(", debug_time(t.deadline),
+                        " [", round(t.deadline - time(); digits=2), "])")
+end
+
+
+
 # End of file: timer.jl

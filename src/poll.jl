@@ -1,12 +1,5 @@
 """
 # Polling
-
-FIXME
-
-  - Channel API
-      - all options configured on channel, not passed to take!
- - consider @noinline and @nospecialize, @noinline
- - specify types on kw args? check compiler log of methods generated
 """
 
 const MAX_POLL_FD_COUNT = 1000
@@ -36,15 +29,6 @@ const poll_queue = PollQueue(Set{UnixFD}(),
                              fill(C.pollfd(), MAX_POLL_FD_COUNT),
                              [],
                              Threads.SpinLock())
-
-Base.show(io::IO, fd::C.pollfd) =
-    print(io, "[", fd.fd, ", ", fd.events, ", ", fd.revents, "]")
-Base.show(io::IO, q::PollQueue) =
-    print(io, "(", q.set, ", ", q.fdvector,
-              (islocked(q.lock) ? ", 🔒" : ""),
-              ")")
-
-debug_tiny(q::PollQueue) = debug_long(q)
 
 
 @db function poll_queue_init()
@@ -84,7 +68,7 @@ end
 """
 Write a byte to the pipe to wake up `poll(2)` before its timeout.
 """
-@db 3 function wakeup_poll(q::PollQueue)
+function wakeup_poll(q::PollQueue);                       @db 3 "wakeup_poll()"
     @cerr C.write(q.wakeup_pipe[2], Ref(0), 1)
 end
 
@@ -139,14 +123,14 @@ Run `poll_wait()` in a loop.
         try
             poll_wait(q, timeout_ms) do events, fd
                 if events & (C.POLLHUP | C.POLLNVAL) != 0
-                #=  fd.isdead = true =#;
-                @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
+                    #=  fd.isdead = true =#;
+                    @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
                 @dblock q.lock delete!(q.set, fd)
                 if fd.nwaiting <= 0
-                    @db 1 "$(db_c(events,"POLL")) -> $fd None Waiting!"
+                    @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
                 else
-                    @db 3 "$(db_c(events,"POLL")) -> $fd"
+                    @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
                     @dblock fd notify(fd);
                 end
             end
@@ -180,19 +164,20 @@ Wait for events.
 When events occur, notify waiters and remove entries from queue.
 Return false if the queue is empty.
 """
-@db 6 function poll_wait(f::Function, q::PollQueue, timeout_ms)
+@db 4 function poll_wait(f::Function, q::PollQueue, timeout_ms)
 
-    #= Wait for events =#                       
-    v = q.fdvector
+    # Wait for events
+    v = q.fdvector                                         
     timeout_ms = next_timer_deadline_ms(timeout_ms)
-    n = @cerr(allow=C.EINTR, gc_safe_poll(v, length(v), timeout_ms))
-
+    @db 4 " [ poll($timeout_ms ms)..."
+    n = @cerr(allow=C.EINTR, gc_safe_poll(v, length(v), timeout_ms))   ;@db 5 n
+                                                                       ;@db 3 v
     # Check poll vector for events.
-    del = Int[]                                             ;@db 6 "n=$n, v=$v"
+    del = Int[]
     for (i, e) in enumerate(v)
         if e.revents != 0
             if e.fd == q.wakeup_pipe[1]
-                C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 5 "got wakeup!"
+                C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 4 "got wakeup!"
             else
                 push!(del, i)
                 fd = lookup_unix_fd(e.fd)
@@ -201,8 +186,8 @@ Return false if the queue is empty.
                 f(e.revents, fd)
             end
         end
-    end                                                       ;@db 6 "del=$del"
-    @dblock q.lock deleteat!(v, del)                              ;@db 6 "v=$v"
+    end
+    @dblock q.lock deleteat!(v, del)                               ;@db 6 del v
 
     # Check for timeouts.
     notify_timers()
@@ -312,6 +297,24 @@ end
     @ccall jl_gc_safe_leave(old_state::Int8)::Cvoid
     return n
 end
+
+
+
+# Pretty Printing.
+
+
+Base.show(io::IO, fd::C.pollfd) =
+    print(io, "(", fd.fd, ", ", fd.events, ", ", fd.revents, ")")
+
+
+Base.show(io::IO, q::PollQueue) =
+    dbprint(io, "(", q.set, ", ", q.fdvector,
+                     (islocked(q.lock) ? ", 🔒" : ())...,
+                ")")
+
+
+debug_tiny(q::PollQueue) = debug_long(q)
+
 
 
 # End of file: poll.h

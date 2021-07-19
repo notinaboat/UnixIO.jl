@@ -44,6 +44,14 @@ module UnixIO
 export UnixFD, DuplexIO
 
 
+"""
+FIXME
+  - Channel API?
+      - all options configured on channel, not passed to take!
+ - consider @noinline and @nospecialize, @noinline
+ - specify types on kw args? check compiler log of methods generated
+"""
+
 using Base: @lock
 using ReadmeDocs
 using Preconditions
@@ -91,6 +99,33 @@ end
 
 
 
+# Deadlines / Timeouts.
+
+macro with_timeout(fd, timeout, ex)
+    quote
+        fd = $(esc(fd))
+        timeout = $(esc(timeout))
+        old_deadline = fd.deadline
+        new_deadline = timeout + time()
+        if new_deadline < old_deadline
+            fd.deadline = new_deadline
+            if fd.deadline != Inf
+                @db 1 "Set fd.deadline: $(db_t(fd.deadline)) ($timeout)"
+            end
+        end
+        try
+            $(esc(ex))
+        finally
+            fd.deadline = old_deadline
+            if fd.deadline != Inf && fd.deadline != old_deadline
+                @db 1 "Reset fd.deadline: $(db_t(fd.deadline))"
+            end
+        end
+    end
+end
+
+
+
 # Unix File Descriptor wrapper.
 
 abstract type UnixFD{T,EventSource} <: IO end
@@ -125,25 +160,6 @@ Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
 include("ReadFD.jl")
 include("WriteFD.jl")
-
-function Base.show(io::IO, fd::UnixFD{T}) where T
-    fdint = convert(Cint, fd)
-    t = type_icon(T)
-
-    print(io, "$(Base.typename(typeof(fd)).name){$t}($fdint")
-    #fd.isdead && print(io, "☠️ ")
-    fd.isclosed && print(io, "🚫")
-    fd.nwaiting > 0 && print(io, repeat("⏳", fd.nwaiting))
-    islocked(fd) && print(io, "🔒")
-    fd.timeout == Inf || print(io, ", ⏱", fd.timeout)
-    if fd isa ReadFD
-        n = bytesavailable(fd.buffer)
-        if n > 0
-            print(io, ", $n-byte buf")
-        end
-    end
-    print(io, ")")
-end
 
 
 
@@ -224,7 +240,7 @@ Uses `F_GETFL` to read the current flags and `F_SETFL` to store the new flag.
 See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
 """
 @db 3 function fcntl_setfl(fd, flag; get=C.F_GETFL, set=C.F_SETFL)
-    flags = fcntl_getfl(fd; get=get)
+    flags = fcntl_getfl(fd; get=get)               ;@db 3 "$(db_c(flag, "O_"))"
     if flags & flag == flag
         return nothing
     end
@@ -325,8 +341,8 @@ Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
-@db 2 function read(fd::ReadFD, buf, count=length(buf); timeout=fd.timeout,
-                                                  deadline=timeout+time())
+@db 2 function read(fd::ReadFD, buf, count=length(buf); timeout=fd.timeout)
+
     # First read from buffer.
     n = bytesavailable(fd.buffer)
     if n > 0                                          ;@db 2 "read from buffer"
@@ -338,33 +354,36 @@ See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
     end
 
     # Then read from file.
-    n = transfer(fd, buf, count, deadline)
+    n = @with_timeout(fd, timeout, transfer(fd, buf, count))
     @db 2 return n
 end
+
+read_from_buffer(fd::ReadFD, buf, n) = readbytes!(fd.buffer, buf, n)
+read_from_buffer(fd::ReadFD, buf::Ptr, n) = unsafe_read(fd.buffer, buf, n)
 
 
 """
 Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`
-until `deadline`.
+until `fd.deadline`.
 Always attempt at least one call to `read(2)/write(2)`
-even if `deadline` has passed.
+even if `fd.deadline` has passed.
 Return number of bytes transferred or `0` on timeout.
 """
-@db 2 function transfer(fd::UnixFD, buf, count, deadline)
+@db 2 function transfer(fd::UnixFD, buf, count)
     @require !fd.isclosed                  
     @require count > 0
 
-    n = transfer(fd, buf, count)
+    n = raw_transfer(fd, buf, count)
     if n >= 0
         @db 2 return n
     end
 
-    if time() < deadline 
+    if time() < fd.deadline 
         @dblock fd begin
-            timer = register_timer(deadline, fd.ready)
+            timer = register_timer(fd.deadline, fd.ready)
             try
-                while time() < deadline 
-                    n = transfer(fd, buf, count)
+                while time() < fd.deadline 
+                    n = raw_transfer(fd, buf, count);               ;@db 2 n
                     if n >= 0
                         @db 2 return n
                     end                                        ;@db 2 "wait..."
@@ -384,19 +403,16 @@ end
 Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`.
 Return number of bytes transferred or `-1` on `C.EAGAIN`.
 """
-@db 2 function transfer(fd::UnixFD, buf, count)
+@db 2 function raw_transfer(fd::UnixFD, buf, count)
     @require count > 0
     while true
-        n = @cerr(allow=(C.EAGAIN, C.EINTR), transfer(fd, buf, count))
+        n = @cerr(allow=(C.EAGAIN, C.EINTR), raw_transfer(fd, buf, count))
         if n != -1 || errno() == C.EAGAIN
             @ensure n <= count
             @db 2 return n
         end 
     end
 end
-
-read_from_buffer(fd::ReadFD, buf, n) = readbytes!(fd.buffer, buf, n)
-read_from_buffer(fd::ReadFD, buf::Ptr, n) = unsafe_read(fd.buffer, buf, n)
 
 
 include("timer.jl")
@@ -415,9 +431,8 @@ Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 """
-@db 1 function write(fd::WriteFD, buf, count=length(buf);
-                     timeout=Inf, deadline=timeout+time())
-    n = transfer(fd, buf, count, deadline)
+@db 1 function write(fd::WriteFD, buf, count=length(buf); timeout=fd.timeout)
+    n = @with_timeout(fd, timeout, transfer(fd, buf, count))
     @db 1 return n
 end
 
@@ -536,16 +551,16 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 0000000c
 ```
 """
-@db function open(f::Function, cmd::Cmd; check_status=true,
-                                         capture_stderr=false)
+@db function open(f::Any, cmd::Cmd; check_status=true,
+                                    capture_stderr=false)
     @nospecialize f;
 
     # Create Unix Domain Socket to communicate with Child Process.
     parent_io, child_io = socketpair()
 
     fcntl_setfd(parent_io, C.O_CLOEXEC)
-    cmdin = WriteFD(parent_io)                         ;@db 2 "cmdin: $cmdin"
-    cmdout = ReadFD(C.dup(parent_io))                  ;@db 2 "cmdout: $cmdout"
+    cmdin = WriteFD(parent_io)
+    cmdout = ReadFD(C.dup(parent_io))                       ;@db 2 cmdin cmdout
 
     child_in = child_io
     child_out = child_io
@@ -670,7 +685,10 @@ julia> UnixIO.read(`uname -srm`, String)
 "Darwin 20.3.0 x86_64\n"
 ```
 """
-read(cmd::Cmd, ::Type{String}; kw...) = String(read(cmd; kw...))
+@db function read(cmd::Cmd, ::Type{String}; kw...)
+    r = String(read(cmd; kw...))
+    @db return r
+end
 
 @db function read(cmd::Cmd; timeout=Inf, kw...)
     r = open(cmd; kw...) do cmdin, cmdout
@@ -700,7 +718,7 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
     deadline = timeout + time()           ;@db 3 "deadline = $(db_t(deadline))"
     delay = nothing
     while true
-        r = C.waitpid(pid, status, C.WNOHANG | C.WUNTRACED)     ;@db 3 "r = $r"
+        r = C.waitpid(pid, status, C.WNOHANG | C.WUNTRACED)            ;@db 3 r
         if r == -1
             err = errno()
             if err in (C.EINTR, C.EAGAIN)               ;@db 3 "EINTR / EAGAIN"
@@ -725,6 +743,39 @@ end
 
 exponential_delay() =
     Iterators.Stateful(ExponentialBackOff(n=typemax(Int); factor=2))
+
+
+
+# Pretty Printing.
+
+
+type_icon(::Type{S_IFIFO})  = "📥"
+type_icon(::Type{S_IFCHR})  = "📞"
+type_icon(::Type{S_IFDIR})  = "📂"
+type_icon(::Type{S_IFBLK})  = "🧊"
+type_icon(::Type{S_IFREG})  = "📄"
+type_icon(::Type{S_IFLNK})  = "🔗"
+type_icon(::Type{S_IFSOCK}) = "🧦"
+
+
+function Base.show(io::IO, fd::UnixFD{T}) where T
+    fdint = convert(Cint, fd)
+    t = type_icon(T)
+
+    print(io, "$(Base.typename(typeof(fd)).name){$t}($fdint")
+    #fd.isdead && print(io, "☠️ ")
+    fd.isclosed && print(io, "🚫")
+    fd.nwaiting > 0 && print(io, repeat("⏳", fd.nwaiting))
+    islocked(fd) && print(io, "🔒")
+    fd.timeout == Inf || print(io, ", ⏱", fd.timeout)
+    if fd isa ReadFD
+        n = bytesavailable(fd.buffer)
+        if n > 0
+            print(io, ", $n-byte buf")
+        end
+    end
+    print(io, ")")
+end
 
 
 

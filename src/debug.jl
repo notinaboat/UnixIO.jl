@@ -3,7 +3,7 @@
 using Crayons
 
 
-const DEBUG_LEVEL = 3
+const DEBUG_LEVEL = 0
 
 
 
@@ -61,6 +61,7 @@ end
 Indent this task's debug messages for new call to `function_name`.
 """
 function debug_indent_push(function_name)
+#    function_name = function_name[1:min(length(function_name), 4)]
     pad = repeat(" ", length(function_name))
     v = task_local_debug().indent
     i, j = v[end]
@@ -85,6 +86,7 @@ IO configuration for printing debug messages.
 """
 debug_io_context(io=Base.stderr) =
     IOContext(io, :color => true,
+                  :module => @__MODULE__,
                   :compact => true,
                   :limit => true,
                   :displaysize => (1,30))
@@ -99,9 +101,10 @@ Annotate the message with:
  - `lineno`,
  - Thread and Task IDs.
 """
-debug_print(n, l, m; kw...) = debug_print(n, l, debug_tiny(m); kw...)
+debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
 
-@noinline function debug_print(n::Int, lineno::String, message::String;
+@noinline function debug_print(n::Int, lineno::String,
+                               message::String, value="";
                                prefix::String=" │ ")
 
     io = IOBuffer()
@@ -115,16 +118,16 @@ debug_print(n, l, m; kw...) = debug_print(n, l, debug_tiny(m); kw...)
     task_switched = task != global_debug.task
     global_debug.task = task
 
-    # Use verbose indentation of there was a task-switch.
-    indent = task_local_debug().indent[end][task_switched ? 1 : 2]
+    # Use verbose indentation if there was a task-switch.
+    indent = task_local_debug().indent[end][2] # FIXMEtask_switched ? 1 : 2]
     if indent != "" 
         indent *= prefix
     end
 
-    print(ioc,
+    dbprint(ioc,
         bg_color,
 
-        color, "[ UnixIO: ", inv(color),
+        color, "[ UnixIO $n: ", inv(color),
 
         # Timestamp.
         lpad(debug_time(time()), 8), " ",
@@ -135,10 +138,10 @@ debug_print(n, l, m; kw...) = debug_print(n, l, debug_tiny(m); kw...)
         # Thread and Task IDs
         (task_switched ? (lpad(Threads.threadid(), 2), ".",
                           uppercase(string(task; base=16, pad=4)), " ")
-                       : repeat(" ", 8))...,
+                       : (repeat(" ", 8),))...,
 
         # Indented message.
-        indent, message,
+        indent, message, value,
 
         # Clear to end of line
         "\e[0K",
@@ -186,7 +189,8 @@ String representation of function argument.
 function debug_tiny(x; limit=16)
     io = IOBuffer()
     ioc =  debug_io_context(io)
-    show(ioc, "text/plain", x)
+    #show(ioc, "text/plain", x)
+    dbshow(ioc, x)
     s =String(take!(io))
     if length(s) > limit
         s = string(s[1:nextind(s,16)], "...")
@@ -202,9 +206,10 @@ debug_tiny(x::Cmd) = debug_long(x)
 Symbol for function argument.
 """
 argsym(s::Symbol) = s
-argsym(s::Expr) = s.head == :(::) ? argsym(s.args[1]) :
-                  s.head == :kw   ? argsym(s.args[1]) :
-                  s.head == :...  ? argsym(s.args[1]) :
+argsym(s::Expr) = s.head == :(::)        ? argsym(s.args[1]) :
+                  s.head == :kw          ? argsym(s.args[1]) :
+                  s.head == :...         ? argsym(s.args[1]) :
+                  s.head == :parameters  ? missing           :
                                            " ?"
 
 """
@@ -268,7 +273,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
 
     # Split function Expr into parts.
     name = string(call.args[1])
-    args = tuple((argsym(a) for a in call.args[2:end])...)
+    args = tuple((skipmissing(argsym(a) for a in call.args[2:end]))...)
     head, body = body_split(body)
 
     # Rewrite function body.
@@ -279,6 +284,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
         _db_level::Int = $n
         _db_returned::Bool = false
         _db_status::String = "👍"
+        _db_prefix::String = " │ "
 
         debug_print(
             _db_level,
@@ -325,6 +331,7 @@ macro debug_return(n::Int, ex::Expr, message, lineno)
     end)
 end
 
+const _db_prefix = " │ [ "
 
 """
 Print a debug message.
@@ -332,7 +339,17 @@ Print a debug message.
 """
 macro debug_print(n::Int, ex, lineno)
     DEBUG_LEVEL < n && return :()
-    esc(:(debug_print($n, $lineno, $ex)))
+    esc(:(debug_print($n, $lineno, $ex; prefix=_db_prefix)))
+end
+
+
+"""
+Print a debug message for `name` and `value`.
+(Do not use directly. Called by `@db`)
+"""
+macro debug_show(n::Int, name, value, lineno)
+    DEBUG_LEVEL < n && return :()
+    esc(:(debug_print($n, $lineno, $name, $value; prefix=_db_prefix)))
 end
 
 
@@ -357,10 +374,14 @@ value (or an optional `message`) before returning.
 """
 macro db(args...)
 
-    @require length(args) in 1:3
+    db_level = args[1]
+    if db_level isa Int
+        args = args[2:end]
+    else
+        db_level =1
+    end
 
-    db_level, ex, message = args[1] isa Int ? (args..., nothing) :
-                                              (1, args..., nothing)
+    ex, message = (args..., nothing)
 
     lineno = debug_lineno_str(__source__)
 
@@ -369,7 +390,14 @@ macro db(args...)
     elseif ex isa Expr && ex.head == :function
         return esc(:(@debug_function $db_level $ex $lineno))
     else
-        return esc(:(@debug_print $db_level $ex $lineno))
+        if ex isa String || (ex isa Expr && ex.head == :string)
+            return esc(:(@debug_print $db_level $ex $lineno))
+        else
+            return esc(Expr(
+                :block,
+                (:(@debug_show $db_level $(string(v, " = ")) $v $lineno)
+                for v in args)...))
+        end
     end
 
     @assert false
@@ -402,7 +430,7 @@ const debug_background_colors =
     Iterators.Stateful(
     Iterators.Cycle([
     crayon"bg:16",
-    crayon"bg:52",
+    crayon"bg:18",
     crayon"bg:233",
     crayon"bg:234",
     crayon"bg:235",
@@ -425,6 +453,35 @@ const debug_background_colors =
     crayon"bg:58",
     crayon"bg:59",
     crayon"bg:60",]))
+
+
+
+# Pretty Printing.
+
+dbprint(io::IO, v::String) = print(io, v)
+dbprint(io::IO, a) = print(io, a)
+
+dbshow(io::IO, a) = show(io, a)
+
+function dbprint(io::IO, a, args...)
+    for a in (a, args...)
+        if a isa String || a isa Crayon
+            dbprint(io, a)
+        else
+            dbshow(io, a)
+        end
+    end
+end
+
+
+function dbshow(io::IO, v::Union{AbstractVector,AbstractSet})
+    if get(io, :compact, false)
+        print(IOContext(io, :typeinfo => typeof(v)), v)
+    else
+        print(io, v)
+    end
+end
+
 
 
 

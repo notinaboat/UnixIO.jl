@@ -8,10 +8,12 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     nwaiting::Int
     ready::Base.ThreadSynchronizer
     timeout::Float64
+    deadline::Float64
     function WriteFD{T, E}(fd, timeout=Inf) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
         fd = new{T, E}(RawFD(fd),
-                    false, #=false,=# 0, Base.ThreadSynchronizer(), timeout)
+                    false, #=false,=# 0, Base.ThreadSynchronizer(),
+                    timeout, Inf)
         register_unix_fd(fd)
         fd
     end
@@ -23,7 +25,7 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
 end
 
 
-transfer(fd::WriteFD, buf, count) = C.write(fd, buf, count)
+raw_transfer(fd::WriteFD, buf, count) = C.write(fd, buf, count)
 
 
 shutdown(fd::WriteFD) = shutdown(fd, C.SHUT_WR)

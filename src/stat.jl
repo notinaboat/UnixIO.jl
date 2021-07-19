@@ -28,13 +28,6 @@ function fdtype(fd)
                      Nothing
 end
 
-type_icon(::Type{S_IFIFO})  = "📥"
-type_icon(::Type{S_IFCHR})  = "📞"
-type_icon(::Type{S_IFDIR})  = "📂"
-type_icon(::Type{S_IFBLK})  = "🧊"
-type_icon(::Type{S_IFREG})  = "📄"
-type_icon(::Type{S_IFLNK})  = "🔗"
-type_icon(::Type{S_IFSOCK}) = "🧦"
 
 
 # End of file: stat.jl

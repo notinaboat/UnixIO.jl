@@ -8,6 +8,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
     nwaiting::Int
     ready::Base.ThreadSynchronizer
     timeout::Float64
+    deadline::Float64
     buffer::IOBuffer
     function ReadFD{T, E}(fd, timeout=Inf) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
@@ -18,6 +19,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
                0,
                Base.ThreadSynchronizer(),
                timeout,
+               Inf,
                PipeBuffer())
         register_unix_fd(fd)
         fd
@@ -30,7 +32,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
 end
 
 
-@db 2 function transfer(fd::ReadFD, buf, count)
+@db 2 function raw_transfer(fd::ReadFD, buf, count)
     n = C.read(fd.fd, buf, count)
     @db 2 return n
 end
@@ -63,29 +65,31 @@ Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
 #FIXME ioctl FIONREAD ?
 
 
-@db 4 function Base.eof(fd::ReadFD; timeout=Inf)
+@db 4 function Base.eof(fd::ReadFD; timeout=Inf, kw...)
     if bytesavailable(fd.buffer) == 0 && isopen(fd)
-        Base.write(fd.buffer, readavailable(fd; timeout=timeout))
+        Base.write(fd.buffer, readavailable(fd; timeout=timeout, kw...))
     end
     r = bytesavailable(fd.buffer) == 0
     @db 4 return r
 end
 
-#FIXME set deadline at outer call
 
 @db 1 function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt;
-                                kw...)
+                                timeout=fd.timeout, kw...)
     @require !fd.isclosed
-    nread = 0
-    while nread < nbytes
-        n = UnixIO.read(fd, buf + nread, nbytes - nread; kw...)
-        if n == 0
-            throw(EOFError())
+
+    @with_timeout fd timeout begin
+        nread = 0
+        while nread < nbytes
+            n = UnixIO.read(fd, buf + nread, nbytes - nread; kw...)
+            if n == 0
+                throw(EOFError())
+            end
+            nread += n
         end
-        nread += n
+        @ensure nread == nbytes
+        nothing
     end
-    @ensure nread == nbytes
-    nothing
 end
 
 
@@ -93,7 +97,7 @@ end
     @require !fd.isclosed
     eof(fd; kw...) && throw(EOFError())
     @assert bytesavailable(fd.buffer) > 0
-    r = Base.read(fd.buffer, UInt8)
+    r = Base.read(fd.buffer, UInt8)          ;@db 2 "from buffer: '$(Char(r))'"
     @db 3 return r
 end
 
@@ -103,25 +107,28 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
 
 
 @db 1 function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
-                               all::Bool=true, kw...)
+                               all::Bool=true, timeout=fd.timeout, kw...)
     @require !fd.isclosed
-    lb::Int = length(buf)
-    nread = 0
-    while nread < nbytes
-        @assert nread <= lb
-        if (lb - nread) == 0
-            lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
-            resize!(buf, lb)                             ;@db 1 "resize -> $lb"
+
+    @with_timeout fd timeout begin
+        lb::Int = length(buf)
+        nread = 0
+        while nread < nbytes
+            @assert nread <= lb
+            if (lb - nread) == 0
+                lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
+                resize!(buf, lb)                             ;@db 1 "resize -> $lb"
+            end
+            @assert lb > nread
+            n = UnixIO.read(fd, view(buf, nread+1:lb); kw...)
+            if n == 0 || !all
+                break
+            end
+            nread += n
         end
-        @assert lb > nread
-        n = UnixIO.read(fd, view(buf, nread+1:lb); kw...)
-        if n == 0 || !all
-            break
-        end
-        nread += n
+        @ensure nread <= nbytes
+        @db 1 return nread
     end
-    @ensure nread <= nbytes
-    @db 1 return nread
 end
 
 
@@ -130,33 +137,33 @@ const BUFFER_SIZE = 65536
 @db 5 function Base.readavailable(fd::ReadFD; timeout=0)
     @require !fd.isclosed
     buf = Vector{UInt8}(undef, BUFFER_SIZE)
-    n = UnixIO.read(fd, buf; timeout=timeout)                     ;@db 5 "n=$n"
+    n = UnixIO.read(fd, buf; timeout=timeout)                          ;@db 5 n
     resize!(buf, n)
 end
 
 
-function invoke_with_timeout(fd, timeout, f, types, args...; kw...)
-    old_timeout = fd.timeout
-    fd.timeout = timeout
-    try
-        invoke(f, types, fd, args...; kw...)
-    finally
-        fd.timeout = old_timeout
-    end
+@db 2 function Base.readline(fd::ReadFD;
+                             timeout=fd.timeout, kw...)
+    @with_timeout(fd, timeout,
+                  invoke(Base.readline, Tuple{IO}, fd; kw...))
 end
 
-Base.readline(fd::ReadFD; timeout=Inf, kw...) =
-    invoke_with_timeout(fd, timeout, readline, Tuple{IO}; kw...)
+@db 2 function Base.readuntil(fd::ReadFD, d::AbstractChar;
+                              timeout=fd.timeout, kw...)
+    @with_timeout(fd, timeout,
+                  invoke(Base.readuntil, Tuple{IO, AbstractChar},
+                                               fd, d; kw...))
+end
 
-Base.readuntil(fd::ReadFD, d::AbstractChar; timeout=Inf, kw...) =
-    invoke_with_timeout(fd, timeout, readuntil, Tuple{IO, AbstractChar}, d;
-                        kw...)
+@db 2 function Base.read(fd::ReadFD, n::Integer=typemax(Int);
+                         timeout=fd.timeout, kw...)
+    @with_timeout(fd, timeout,
+                  invoke(Base.read, Tuple{IO, Integer}, fd, n; kw...))
+end
 
-Base.read(fd::ReadFD, n::Integer=typemax(Int); timeout=Inf, kw...) =
-    invoke_with_timeout(fd, timeout, Base.read, Tuple{IO, Integer}, n; kw...)
-
-Base.read(fd::ReadFD, x::Type{String}; kw...) = String(Base.read(fd; kw...))
-
+@db 2 function Base.read(fd::ReadFD, x::Type{String}; kw...)
+    String(Base.read(fd; kw...))
+end
 
 
 # End of file: ReadFD.jl
