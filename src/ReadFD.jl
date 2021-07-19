@@ -1,7 +1,7 @@
 """
 Read-only Unix File Descriptor.
 """
-mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
+mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
     fd::RawFD
     isclosed::Bool
     #isdead::Bool
@@ -9,9 +9,9 @@ mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
     ready::Base.ThreadSynchronizer
     timeout::Float64
     buffer::IOBuffer
-    function ReadFD{T}(fd, timeout=Inf) where T
+    function ReadFD{T, E}(fd, timeout=Inf) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
-        fd = new{T}(
+        fd = new{T, E}(
                RawFD(fd),
                false,
                #false,
@@ -21,6 +21,10 @@ mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
                PipeBuffer())
         register_unix_fd(fd)
         fd
+    end
+    function ReadFD{EventSource}(fd, a...) where EventSource
+        T = fdtype(fd)
+        ReadFD{T, EventSource}(fd, a...)
     end
     ReadFD(a...) = ReadFD{DefaultEvents}(a...)
 end

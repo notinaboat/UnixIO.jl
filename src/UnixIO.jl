@@ -55,6 +55,7 @@ const C = UnixIOHeaders
 
 include("errors.jl")
 include("debug.jl")
+include("stat.jl")
 
 
 @db function __init__()
@@ -92,7 +93,7 @@ end
 
 # Unix File Descriptor wrapper.
 
-abstract type UnixFD{EventSource} <: IO end
+abstract type UnixFD{T,EventSource} <: IO end
 
 
 @db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=DefaultEvents)
@@ -111,6 +112,7 @@ end
 
 debug_tiny(x::UnixFD) = string(x)
 
+Base.stat(fd::UnixFD) = stat(fd.fd)
 Base.wait(fd::UnixFD) = wait(fd.ready)
 Base.lock(fd::UnixFD) = lock(fd.ready)
 Base.unlock(fd::UnixFD) = unlock(fd.ready)
@@ -124,10 +126,11 @@ Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 include("ReadFD.jl")
 include("WriteFD.jl")
 
-
-function Base.show(io::IO, fd::UnixFD)
+function Base.show(io::IO, fd::UnixFD{T}) where T
     fdint = convert(Cint, fd)
-    print(io, "$(Base.typename(typeof(fd)).name)($fdint")
+    t = type_icon(T)
+
+    print(io, "$(Base.typename(typeof(fd)).name){$t}($fdint")
     #fd.isdead && print(io, "☠️ ")
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("⏳", fd.nwaiting))

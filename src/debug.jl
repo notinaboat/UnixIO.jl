@@ -3,7 +3,7 @@
 using Crayons
 
 
-const DEBUG_LEVEL = 0
+const DEBUG_LEVEL = 3
 
 
 
@@ -263,7 +263,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
     @require ex.head == :function
     @require length(ex.args) == 2
     call, body = ex.args
-    @require call.head == :call
+    @require call.head in (:call, :where)
     @require body.head == :block
 
     # Split function Expr into parts.

@@ -1,19 +1,23 @@
 """
 Write-only Unix File Descriptor.
 """
-mutable struct WriteFD{EventSource} <: UnixFD{EventSource}
+mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     fd::RawFD 
     isclosed::Bool
     #isdead::Bool
     nwaiting::Int
     ready::Base.ThreadSynchronizer
     timeout::Float64
-    function WriteFD{T}(fd, timeout=Inf) where T
+    function WriteFD{T, E}(fd, timeout=Inf) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
-        fd = new{T}(RawFD(fd),
+        fd = new{T, E}(RawFD(fd),
                     false, #=false,=# 0, Base.ThreadSynchronizer(), timeout)
         register_unix_fd(fd)
         fd
+    end
+    function WriteFD{EventSource}(fd, a...) where EventSource
+        T = fdtype(fd)
+        WriteFD{T,EventSource}(fd, a...)
     end
     WriteFD(a...) = WriteFD{DefaultEvents}(a...)
 end

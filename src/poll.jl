@@ -108,7 +108,7 @@ end
 wait_for_event(::UnixFD{SleepEvents}) = Base.sleep(0.01)
 
 
-@db 2 function register_for_events(fd::UnixFD{PollEvents})
+@db 2 function register_for_events(fd::UnixFD{T, PollEvents}) where T
     @dblock poll_queue.lock begin
         push!(poll_queue.set, fd)
         push!(poll_queue.fdvector, C.pollfd(fd, poll_event_type(fd), 0))
@@ -275,7 +275,7 @@ epoll_ctl(fd::UnixFD, op, events) =
 """
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
-@db 4 function register_for_events(fd::UnixFD{EPollEvents})
+@db 4 function register_for_events(fd::UnixFD{T, EPollEvents}) where T
     @dblock epoll_queue.lock begin
         push!(epoll_queue.set, fd)
         epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
