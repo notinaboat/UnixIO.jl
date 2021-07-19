@@ -294,7 +294,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
             $body
 
         catch _db_err
-            _db_status = "⚠️  $err"
+            _db_status = "⚠️  $_db_err"
             rethrow(_db_err)
         finally
             if ! _db_returned

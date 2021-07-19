@@ -139,7 +139,8 @@ Run `poll_wait()` in a loop.
         try
             poll_wait(q, timeout_ms) do events, fd
                 if events & (C.POLLHUP | C.POLLNVAL) != 0
-                #=  fd.isdead = true =#;@db 1 "$(db_c(events,"POLL")) -> $fd💥"
+                #=  fd.isdead = true =#;
+                @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
                 @dblock q.lock delete!(q.set, fd)
                 if fd.nwaiting <= 0
@@ -181,11 +182,10 @@ Return false if the queue is empty.
 """
 @db 6 function poll_wait(f::Function, q::PollQueue, timeout_ms)
 
-    #= Wait for events =#                       ;@db 6 "poll($v, $(length(v)))"
+    #= Wait for events =#                       
     v = q.fdvector
     timeout_ms = next_timer_deadline_ms(timeout_ms)
-    n = @cerr(allow=C.EINTR,
-              gc_safe_poll(v, length(v), timeout_ms))
+    n = @cerr(allow=C.EINTR, gc_safe_poll(v, length(v), timeout_ms))
 
     # Check poll vector for events.
     del = Int[]                                             ;@db 6 "n=$n, v=$v"
