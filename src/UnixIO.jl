@@ -343,6 +343,8 @@ end
 """
 Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`
 until `deadline`.
+Always attempt at least one call to `read(2)/write(2)`
+even if `deadline` has passed.
 Return number of bytes transferred or `0` on timeout.
 """
 @db 2 function transfer(fd::UnixFD, buf, count, deadline)
