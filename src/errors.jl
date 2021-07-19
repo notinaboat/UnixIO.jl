@@ -12,7 +12,7 @@ Look up name for C-constant(s) with value `n`.
 function constant_name(n; prefix="")
     v = get(C.constants, n, Symbol[])
     if prefix != ""
-        filter!(x -> startswith(String(x), prefix))
+        filter!(x -> startswith(String(x), prefix), v)
     end
     if length(v) == 0
         string(n)

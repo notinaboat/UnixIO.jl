@@ -126,7 +126,7 @@ include("WriteFD.jl")
 
 
 function Base.show(io::IO, fd::UnixFD)
-    fdint = convert(Cint, fd.fd)
+    fdint = convert(Cint, fd)
     print(io, "$(Base.typename(typeof(fd)).name)($fdint")
     fd.isdead && print(io, "☠️ ")
     fd.isclosed && print(io, "🚫")
