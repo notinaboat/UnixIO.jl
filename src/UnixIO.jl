@@ -67,9 +67,9 @@ include("debug.jl")
     global stdin
     global stdout
     global stderr
-    stdin = ReadFD(Base.STDIN_NO)
-    stdout = WriteFD(Base.STDOUT_NO)
-    stderr = WriteFD(Base.STDERR_NO)
+    stdin = ReadFD(RawFD(Base.STDIN_NO))
+    stdout = WriteFD(RawFD(Base.STDOUT_NO))
+    stderr = WriteFD(RawFD(Base.STDERR_NO))
 end
 
 
@@ -118,7 +118,7 @@ Base.notify(fd::UnixFD) = notify(fd.ready)
 Base.islocked(fd::UnixFD) = islocked(fd.ready)
 Base.assert_havelock(fd::UnixFD) = Base.assert_havelock(fd.ready)
 
-Base.convert(::Type{Cint}, fd::UnixFD) = fd.fd
+Base.convert(::Type{Cint}, fd::UnixFD) = Base.cconvert(Cint, fd.fd)
 Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
 include("ReadFD.jl")
@@ -126,7 +126,8 @@ include("WriteFD.jl")
 
 
 function Base.show(io::IO, fd::UnixFD)
-    print(io, "$(Base.typename(typeof(fd)).name)($(fd.fd)")
+    fdint = convert(Cint, fd.fd)
+    print(io, "$(Base.typename(typeof(fd)).name)($fdint")
     fd.isdead && print(io, "☠️ ")
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("⏳", fd.nwaiting))
@@ -145,20 +146,20 @@ end
 
 # Reigistry of UnixFDs indexed by FD number.
 
-
 const fd_vector = fill(WeakRef(nothing), 100)
 const fd_vector_lock = Threads.SpinLock()
-lookup_unix_fd(fd) = @lock fd_vector_lock fd_vector[fd+1].value
+
+lookup_unix_fd(fd::Cint) = @lock fd_vector_lock fd_vector[fd+1].value
 
 @db function register_unix_fd(fd::UnixFD)
-    i = fd.fd+1
+    i = 1 + convert(Cint, fd)
     @lock fd_vector_lock begin
         if i > length(fd_vector)
             resize!(fd_vector, max(i, length(fd_vector) * 2))
         end
         fd_vector[i] = WeakRef(fd)
     end
-    @ensure lookup_unix_fd(fd.fd) == fd
+    @ensure lookup_unix_fd(convert(Cint,fd)) == fd
 end
 
 
@@ -267,6 +268,9 @@ end
         fd.isclosed = true
         shutdown(fd)
         @cerr allow=C.EBADF C.close(fd)
+        # FIXME Should we call wakeup_poll(poll_queue) here
+        #       to prevent sprurious wakeups for this fd after it is closed?
+        #       See note after `lookup_unix_fd` in poll.jl
         notify(fd)
     end
     @ensure !isopen(fd)
@@ -354,7 +358,7 @@ Return number of bytes transferred.
                 n = @cerr(allow=(C.EAGAIN, C.EINTR),
                           transfer(fd, buf, count))           ;@db 6 "n=$n"
                 if n == -1
-                    if Base.Libc.errno() == C.EINTR
+                    if errno() == C.EINTR
                                                               ;@db 2 "EINTR!"
                     else
                         if time() < deadline;                 ;@db 2 "wait..."
@@ -439,7 +443,7 @@ Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 """
 @db function socketpair()
-    v = fill(Cint(-1), 2)
+    v = fill(RawFD(-1), 2)
     @cerr C.socketpair(C.AF_UNIX, C.SOCK_STREAM, 0, v)
     @ensure !(-1 in v)
     @db return (v[1], v[2])
@@ -690,13 +694,13 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
     while true
         r = C.waitpid(pid, status, C.WNOHANG | C.WUNTRACED)     ;@db 3 "r = $r"
         if r == -1
-            errno = Base.Libc.errno()
-            if errno in (C.EINTR, C.EAGAIN)             ;@db 3 "EINTR / EAGAIN"
+            err = errno()
+            if err in (C.EINTR, C.EAGAIN)               ;@db 3 "EINTR / EAGAIN"
                 continue
-            elseif errno == C.ECHILD
+            elseif err == C.ECHILD
                 @db return nothing "ECHILD (No child process)"
             end
-            throw(ccall_error(C.waitpid, (pid,)))
+            systemerror(string("C.waitpid($pid)"), err)
         end
         if r == pid
             @db return status[]

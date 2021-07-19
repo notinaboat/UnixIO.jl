@@ -2,7 +2,7 @@
 Write-only Unix File Descriptor.
 """
 mutable struct WriteFD{EventSource} <: UnixFD{EventSource}
-    fd::Cint 
+    fd::RawFD 
     isclosed::Bool
     isdead::Bool
     nwaiting::Int
@@ -10,7 +10,8 @@ mutable struct WriteFD{EventSource} <: UnixFD{EventSource}
     timeout::Float64
     function WriteFD{T}(fd, timeout=Inf) where T
         fcntl_setfl(fd, C.O_NONBLOCK)
-        fd = new{T}(fd, false, false, 0, Base.ThreadSynchronizer(), timeout)
+        fd = new{T}(RawFD(fd),
+                    false, false, 0, Base.ThreadSynchronizer(), timeout)
         register_unix_fd(fd)
         fd
     end

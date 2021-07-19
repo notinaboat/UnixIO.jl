@@ -2,7 +2,7 @@
 Read-only Unix File Descriptor.
 """
 mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
-    fd::Cint
+    fd::RawFD
     isclosed::Bool
     isdead::Bool
     nwaiting::Int
@@ -11,7 +11,7 @@ mutable struct ReadFD{EventSource} <: UnixFD{EventSource}
     buffer::IOBuffer
     function ReadFD{T}(fd, timeout=Inf) where T
         fcntl_setfl(fd, C.O_NONBLOCK)
-        fd = new{T}(fd,
+        fd = new{T}(RawFD(fd),
                false,
                false,
                0,

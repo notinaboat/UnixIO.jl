@@ -1,26 +1,25 @@
 # Errors.
 
 
+using Base.Libc: errno
+
+
 """
     e.g. constant_name(32; prefix="POLL") -> [:POLLNVAL]
 
 Look up name for C-constant(s) with value `n`.
 """
 function constant_name(n; prefix="")
-    v = filter(names(C; all=true)) do name
-        try 
-            startswith(String(name), prefix) &&
-            eval(:(C.$name)) == n
-        catch
-            false
-        end
+    v = get(C.constants, n, Symbol[])
+    if prefix != ""
+        filter!(x -> startswith(String(x), prefix))
     end
     if length(v) == 0
         string(n)
     elseif length(v) == 1
         string(v[1])
     else
-        join(("$(n)?" for n in v), ", ")
+        string("Maybe: ", join(("$(n)?" for n in v), ", "))
     end
 end
 
@@ -28,12 +27,8 @@ end
 """
 Throw SystemError with `errno` info for failed C call.
 """
-@noinline function ccall_error(call::Function, args::Tuple)
-    @nospecialize
-    errno = Base.Libc.errno()
-    name = constant_name(errno; prefix="E")
-    throw(Base.SystemError("$call $args failed ($name)", errno))
-end
+systemerror(p, errno::Cint=errno(); kw...) =
+    Base.systemerror(p, errno; extrainfo=constant_name(errno; prefix="E"))
 
 
 """
@@ -53,10 +48,10 @@ macro cerr(a, b=nothing)
     r = gensym()
     condition = allow == nothing ?
                 :($r == -1) :
-                :($r == -1 && !(Base.Libc.errno() in $(allow.args[2])))
+                :($r == -1 && !(errno() in $(allow.args[2])))
     esc(:(begin
         $r = $ex
-        $condition && ccall_error($f, ($(args...),))
+        $condition && systemerror(string($f, ($(args...),)))
         @assert $r >= -1
         $r
     end))

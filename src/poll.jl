@@ -2,6 +2,10 @@
 # Polling
 
 FIXME
+
+  - sepreate timeout
+  - Channel API
+      - all options configured on channel, not passed to take!
  - consider @noinline and @nospecialize, @noinline
  - specify types on kw args? check compiler log of methods generated
 """
@@ -29,11 +33,20 @@ mutable struct PollQueue
     lock::Threads.SpinLock
 end
 
-
 const poll_queue = PollQueue(Set{UnixFD}(),
                              fill(C.pollfd(), MAX_POLL_FD_COUNT),
                              [],
                              Threads.SpinLock())
+
+Base.show(io::IO, fd::C.pollfd) =
+    print(io, "[", fd.fd, ", ", fd.events, ", ", fd.revents, "]")
+Base.show(io::IO, q::PollQueue) =
+    print(io, "(", q.set, ", ", q.fdvector,
+              (islocked(q.lock) ? ", 🔒" : ""),
+              ")")
+
+debug_tiny(q::PollQueue) = debug_long(q)
+
 
 @db function poll_queue_init()
 
@@ -96,11 +109,11 @@ end
 wait_for_event(::UnixFD{SleepEvents}) = Base.sleep(0.01)
 
 
-@db 3 function register_for_events(fd::UnixFD{PollEvents})
+@db 2 function register_for_events(fd::UnixFD{PollEvents})
     @dblock poll_queue.lock begin
         push!(poll_queue.set, fd)
-        push!(poll_queue.fdvector, C.pollfd(fd.fd, poll_event_type(fd), 0))
-        wakeup_poll(poll_queue)
+        push!(poll_queue.fdvector, C.pollfd(fd, poll_event_type(fd), 0))
+        wakeup_poll(poll_queue)                               ;@db 5 poll_queue
     end
     nothing
 end
@@ -183,7 +196,10 @@ Return false if the queue is empty.
                 C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 5 "got wakeup!"
             else
                 push!(del, i)
-                f(e.revents, lookup_unix_fd(e.fd))
+                fd = lookup_unix_fd(e.fd)
+                @assert fd != nothing "Can't find UnixFD for $e!" *
+                                      " (Need wakeup_poll() in close?)"
+                f(e.revents, fd)
             end
         end
     end                                                       ;@db 6 "del=$del"
@@ -212,13 +228,13 @@ end
 See PollQueue above.
 """
 mutable struct EPollQueue
-    fd::Cint
+    fd::RawFD
     set::Set{UnixFD}
     cvector::Vector{epoll_event}
     lock::Threads.SpinLock
 end
 
-const epoll_queue = EPollQueue(-1,
+const epoll_queue = EPollQueue(RawFD(-1),
                                Set{UnixFD}(),
                                Vector{epoll_event}(undef, 10),
                                Threads.SpinLock())

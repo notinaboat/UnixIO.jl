@@ -158,7 +158,7 @@ function debug_write(p, l)
             l -= n;
             p += n;
         elseif n == -1
-            @assert Base.Libc.errno() in (C.EAGAIN, C.EINTR)
+            @assert errno() in (C.EAGAIN, C.EINTR)
         end
     end
 end
@@ -183,18 +183,19 @@ end
 """
 String representation of function argument.
 """
-function debug_tiny(x)
+function debug_tiny(x; limit=16)
     io = IOBuffer()
     ioc =  debug_io_context(io)
     show(ioc, "text/plain", x)
     s =String(take!(io))
-    if length(s) > 16
+    if length(s) > limit
         s = string(s[1:nextind(s,16)], "...")
     end
     s
 end
 
-debug_tiny(x::Cmd) = string(x)
+debug_long(x) = debug_tiny(x; limit=typemax(Int))
+debug_tiny(x::Cmd) = debug_long(x)
 
 
 """
@@ -292,9 +293,9 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
             # Original function body.
             $body
 
-        catch
-            _db_status = "⚠️ "
-            rethrow()
+        catch _db_err
+            _db_status = "⚠️  $err"
+            rethrow(_db_err)
         finally
             if ! _db_returned
                 debug_print(_db_level, _db_lineno, _db_status; prefix=" └─ ");
