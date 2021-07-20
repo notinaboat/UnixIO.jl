@@ -565,7 +565,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
     # or leave connected to Parent Process STDERR?
     child_err = capture_stderr ? child_io : Base.STDERR_NO
 
-    if true
+    if true #Sys.isapple()
         pid = posix_spawn(cmd, child_io, child_io, child_err)
     else
         pid = fork_and_exec(cmd, child_io, child_io, child_err)
@@ -754,14 +754,14 @@ See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
                                                 C.POSIX_SPAWN_SETPGROUP)
 
         # Set all signals to default behaviour.
-        sigset = Ref{C.sigset_t}(0)
+        sigset = Ref{C.sigset_t}()
         @cerr0 C.sigfillset(sigset)
         @cerr0 C.sigdelset(sigset, C.SIGKILL)
         @cerr0 C.sigdelset(sigset, C.SIGSTOP)
         @cerr0 C.posix_spawnattr_setsigdefault(attr, sigset)
 
         # Un-mask all signals.
-        emptyset = Ref{C.sigset_t}(0)
+        emptyset = Ref{C.sigset_t}()
         @cerr0 C.sigemptyset(emptyset)
         @cerr0 C.posix_spawnattr_setsigmask(attr, emptyset)
 
@@ -806,6 +806,11 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
         # Prepare arguments for `C.execv`.
         args = [pointer.(cmd.exec); Ptr{UInt8}(0)]
 
+        # Mask all signals.
+        oldmask = Ref{C.sigset_t}()
+        newmask = Ref{C.sigset_t}()
+        C.sigfillset(newmask)
+        C.pthread_sigmask(C.SIG_SETMASK, newmask, oldmask);
 
         # Start Child Process ─────────────────────╮
         #                                          ▼
@@ -817,7 +822,7 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
                                              end
 
                                              # Clear Signal Mask.
-                                             emptyset = Ref{C.sigset_t}(0)
+                                             emptyset = Ref{C.sigset_t}()
                                              C.sigemptyset(emptyset)
                                              C.pthread_sigmask(C.SIG_SETMASK,
                                                                emptyset,
@@ -832,6 +837,10 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
                                              C.execv(cmd_bin, args)
                                              C._exit(-1)
                                          end
+
+        # Restore old signal mask.
+        C.pthread_sigmask(C.SIG_SETMASK, oldmask, Base.C_NULL);
+
         @assert pid > 0
         register_child(pid)
 

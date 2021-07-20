@@ -3,17 +3,7 @@ baremodule UnixIOHeaders
 import Base
 using Base:@ccall, Cstring, Cint, Sys, Vector
 
-open(pathname::AbstractString, flags) =
-    @ccall open(pathname::Cstring, flags::Cint)::Cint
-
-open(pathname::AbstractString, flags, mode) =
-    @ccall open(pathname::Cstring, flags::Cint, mode::Cint)::Cint
-
-fcntl(fd, cmd) = @ccall fcntl(fd::Cint, cmd::Cint)::Cint
-fcntl(fd, cmd, arg) = @ccall fcntl(fd::Cint, cmd::Cint, arg::Cint)::Cint
-
-system(command) = @ccall system(command::Cstring)::Cint
-
+const __spawn_action = Cvoid
 
 using CInclude
 
@@ -35,6 +25,7 @@ using CInclude
 
     exclude=r"""
         sv_onstack
+      | sched_priority | sigcontext_struct
       | ru_first | ru_last 
       | MACH_MSG_TYPE_INTEGER_T | msgh_reserved | msgh_kind | mach_msg_kind_t
     """x
@@ -54,9 +45,28 @@ posix_spawn(pid, path, file_actions, attrp, argv::Vector{Ptr{UInt8}},
                        argv::Ptr{Ptr{UInt8}},
                        envp::Ptr{Ptr{UInt8}})::Cint
 
-signal(sig, func) = @ccall signal(sig::Cint, func::sig_t)::sig_t
 
+# Signal wrongly wrapped as 3-args by CInclude.jl.
+if Sys.isapple()
+    signal(sig, func) = @ccall signal(sig::Cint, func::sig_t)::sig_t
+end
 const SIG_DFL = sig_t(0)
+
+
+# Multiple methods for `open` and `fcntl`:
+open(pathname::AbstractString, flags) =
+    @ccall open(pathname::Cstring, flags::Cint)::Cint
+
+open(pathname::AbstractString, flags, mode) =
+    @ccall open(pathname::Cstring, flags::Cint, mode::Cint)::Cint
+
+fcntl(fd, cmd) = @ccall fcntl(fd::Cint, cmd::Cint)::Cint
+fcntl(fd, cmd, arg) = @ccall fcntl(fd::Cint, cmd::Cint, arg::Cint)::Cint
+
+
+# Need `Cstring` argumnet for `system`.
+system(command) = @ccall system(command::Cstring)::Cint
+
 
 
 end # module

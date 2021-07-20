@@ -70,7 +70,7 @@ end
 @wrap in bytesavailable
 @wrap in read
 @wrap in read!
-@wrap in readbytes!
+#@wrap in readbytes! FIXME "WARNING: Method definition readbytes...." ???
 @wrap in readuntil
 @wrap in readline
 @wrap in countlines

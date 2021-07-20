@@ -233,10 +233,9 @@ const epoll_queue = EPollQueue(RawFD(-1),
     @assert C.EPOLLIN == C.POLLIN
     @assert C.EPOLLOUT == C.POLLOUT
     @assert C.EPOLLHUP == C.POLLHUP
-    @assert C.EPOLLNVAL == C.POLLNVAL
 
     # Global FD interface to Linux epoll(7).
-    epoll_queue.fd = @cerr C.epoll_create1(C.EPOLL_CLOEXEC)
+    epoll_queue.fd = RawFD(@cerr C.epoll_create1(C.EPOLL_CLOEXEC))
 
     # Global Task to run `epoll_wait(7)`.
     Threads.@spawn poll_task(epoll_queue)
