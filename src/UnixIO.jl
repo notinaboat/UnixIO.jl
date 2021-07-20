@@ -555,7 +555,9 @@ end
     UnixIO.open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
 Run `cmd` using `posix_spawn`.
+
 Connect (STDIN, STDOUT) to (`cmdin`, `cmdout`).
+
 Call `f(cmdin, cmdout)`.
 
 e.g.
@@ -650,6 +652,7 @@ end
     read(cmd::Cmd, String; kw...) -> String
 
 Run `cmd` using `fork` and `execv`.
+
 Return byes written to stdout by `cmd`.
 
 e.g.
