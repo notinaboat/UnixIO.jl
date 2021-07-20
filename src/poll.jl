@@ -246,7 +246,7 @@ See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
 """
 function epoll_ctl(fd, op, events, data=fd)
     e = [epoll_event(events, data)]
-    GC.@preserve e @cerr(allow=EBADF, #FIXME ?
+    GC.@preserve e @cerr(allow=C.EBADF, #FIXME ?
                          C.epoll_ctl(epoll_queue.fd, op, fd, pointer(e)))
 end
 

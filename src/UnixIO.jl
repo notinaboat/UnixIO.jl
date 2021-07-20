@@ -191,9 +191,11 @@ end
 README"## Opening and Closing Unix Files."
 
 
-README"""
-UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
-                      [timeout=Inf]) -> IO
+@doc README"""
+### `UnixIO.open` -- Open Files.
+
+    UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
+                          [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
 
@@ -216,9 +218,9 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 end
 
 
-README"---"
+@doc README"""
+### `UnixIO.set_timeout` -- Configure Timeouts.
 
-README"""
     UnixIO.set_timeout(fd::UnixFD, timeout)
 
 Configure `fd` to limit IO operations to `timeout` seconds.
@@ -226,11 +228,7 @@ Configure `fd` to limit IO operations to `timeout` seconds.
 set_timeout(fd::UnixFD, timeout) = fd.timeout = timeout
 
 
-README"---"
-
-README"""
-    UnixIO.fcntl_getfl(fd::UnixFD)
-
+"""
 Set the file status flags.
 Uses `F_GETFL` to read the current flags.
 See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
@@ -238,9 +236,7 @@ See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
 fcntl_getfl(fd; get=C.F_GETFL) = @cerr C.fcntl(fd, get)
 
 
-README"""
-    UnixIO.fcntl_setfl(fd::UnixFD, flag)
-
+"""
 Set `flag` in the file status flags.
 Uses `F_GETFL` to read the current flags and `F_SETFL` to store the new flag.
 See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
@@ -257,9 +253,9 @@ end
 fcntl_setfd(fd, flag) = fcntl_setfl(fd, flag; get=C.F_GETFD, set=C.F_SETFD)
 
 
-README"---"
+@doc README"""
+### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
 
-README"""
     UnixIO.tcsetattr(tty::UnixFD;
                      [iflag=0], [oflag=0], [cflag=C.CS8], [lflag=0], [speed=0])
 
@@ -326,7 +322,9 @@ Base.isopen(fd::UnixFD) = !fd.isclosed
 end
 
 
-README"""
+@doc README"""
+### `UnixIO.shutdown` -- Signal end of transmission or reception.
+
     UnixIO.shutdown(sockfd, how)
 
 Shut down part of a full-duplex connection.
@@ -343,7 +341,9 @@ end
 README"## Reading from Unix Files."
 
 
-README"""
+@doc README"""
+### `UnixIO.read` -- Read bytes into a buffer.
+
     UnixIO.read(fd, buf, [count=length(buf)];
                 [timeout=Inf] ) -> number of bytes read
 
@@ -433,7 +433,9 @@ include("poll.jl")
 README"## Writing to Unix Files."
 
 
-README"""
+@doc README"""
+### `UnixIO.write` -- Write bytes from a buffer.
+
     UnixIO.write(fd, buf, [count=length(buf)];
                  [timeout=Inf] ) -> number of bytes written
 
@@ -447,7 +449,9 @@ See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 end
 
 
-README"""
+@doc README"""
+### `UnixIO.println` -- Write messages to the terminal.
+
     UnixIO.println(x...)
     UnixIO.printerr(x...)
 
@@ -469,8 +473,10 @@ end
 README"## Unix Domain Sockets."
 
 
-README"""
-    socketpair() -> fd1, fd2
+@doc README"""
+### `UnixIO.socketpair()` -- Unix Domain Sockets for IPC.
+
+    UnixIO.socketpair() -> fd1, fd2
 
 Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
@@ -486,7 +492,9 @@ end
 
 README"## Executing Unix Commands."
 
-README"""
+@doc README"""
+### `sh"cmd"` -- Shell command string.
+
     sh"shell command"
 
 String containing result of shell command. e.g.
@@ -503,7 +511,9 @@ macro sh_str(s)
     esc(:($cmd |> read |> String |> chomp))
 end
 
-README"""
+@doc README"""
+### `UnixIO.system` -- Run a shell command.
+
     UnixIO.system(command) -> exit status
 
 See [system(3)](https://man7.org/linux/man-pages/man3/system.3.html)
@@ -539,10 +549,10 @@ function waitpid_error(cmd, status)
 end
 
 
-README"---"
+@doc README"""
+### `UnixIO.open(::Cmd) do...` -- Communicate with a sub-process.
 
-README"""
-    open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
+    UnixIO.open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
 Run `cmd` using `posix_spawn`.
 Connect (STDIN, STDOUT) to (`cmdin`, `cmdout`).
@@ -631,9 +641,9 @@ function open(cmd::Cmd; kw...)
 end
 
 
-README"---"
+@doc README"""
+### `UnixIO.read(::Cmd)` -- Read sub-process output.
 
-README"""
     read(cmd::Cmd; [timeout=Inf,
                     check_status=true,
                     capture_stderr=false]) -> Vector{UInt8}
@@ -669,9 +679,9 @@ WEXITSTATUS(x) = signed(UInt8((x >> 8) & 0xff))
 WIFSTOPPED(x) = (x & 0xff) == 0x7f
 WSTOPSIG(x) = WEXITSTATUS(x)
 
-README"---"
+@doc README"""
+### `UnixIO.waitpid` -- Wait for a sub-process to terminate.
 
-README"""
     UnixIO.waitpid(pid) -> status
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)

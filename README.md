@@ -34,8 +34,10 @@ If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `sleep` IO polling is done by a dumb
 
 ## Opening and Closing Unix Files.
 
-UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
-                      [timeout=Inf]) -> IO
+### `UnixIO.open` -- Open Files.
+
+    UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
+                          [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
 
@@ -48,30 +50,14 @@ the standard `Base.IO` functions
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
 
----
+### `UnixIO.set_timeout` -- Configure Timeouts.
 
     UnixIO.set_timeout(fd::UnixFD, timeout)
 
 Configure `fd` to limit IO operations to `timeout` seconds.
 
 
----
-
-    UnixIO.fcntl_getfl(fd::UnixFD)
-
-Set the file status flags.
-Uses `F_GETFL` to read the current flags.
-See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
-
-
-    UnixIO.fcntl_setfl(fd::UnixFD, flag)
-
-Set `flag` in the file status flags.
-Uses `F_GETFL` to read the current flags and `F_SETFL` to store the new flag.
-See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
-
-
----
+### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
 
     UnixIO.tcsetattr(tty::UnixFD;
                      [iflag=0], [oflag=0], [cflag=C.CS8], [lflag=0], [speed=0])
@@ -87,6 +73,8 @@ e.g.
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 
 
+### `UnixIO.shutdown` -- Signal end of transmission or reception.
+
     UnixIO.shutdown(sockfd, how)
 
 Shut down part of a full-duplex connection.
@@ -95,6 +83,8 @@ See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 
 ## Reading from Unix Files.
+
+### `UnixIO.read` -- Read bytes into a buffer.
 
     UnixIO.read(fd, buf, [count=length(buf)];
                 [timeout=Inf] ) -> number of bytes read
@@ -106,6 +96,8 @@ See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 ## Writing to Unix Files.
 
+### `UnixIO.write` -- Write bytes from a buffer.
+
     UnixIO.write(fd, buf, [count=length(buf)];
                  [timeout=Inf] ) -> number of bytes written
 
@@ -113,6 +105,8 @@ Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 
+
+### `UnixIO.println` -- Write messages to the terminal.
 
     UnixIO.println(x...)
     UnixIO.printerr(x...)
@@ -123,13 +117,17 @@ Does not yield control from the current task.
 
 ## Unix Domain Sockets.
 
-    socketpair() -> fd1, fd2
+### `UnixIO.socketpair()` -- Unix Domain Sockets for IPC.
+
+    UnixIO.socketpair() -> fd1, fd2
 
 Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 
 
 ## Executing Unix Commands.
+
+### `sh"cmd"` -- Shell command string.
 
     sh"shell command"
 
@@ -138,6 +136,11 @@ String containing result of shell command. e.g.
     julia> println("Machine is ", sh"uname -m")
     Machine is x86_64
 
+    julia> println("V: ", sh"grep version Project.toml | awk '{print\$3}'")
+    V: "0.1.0"  
+
+
+### `UnixIO.system` -- Run a shell command.
 
     UnixIO.system(command) -> exit status
 
@@ -150,11 +153,12 @@ Darwin 20.3.0 x86_64
 ```
 
 
----
+### `UnixIO.open(::Cmd) do...` -- Communicate with a sub-process.
 
-    open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
+    UnixIO.open(f, cmd::Cmd; [check_status=true, capture_stderr=false])
 
-Run `cmd` using `fork` and `execv`.
+Run `cmd` using `posix_spawn`.
+Connect (STDIN, STDOUT) to (`cmdin`, `cmdout`).
 Call `f(cmdin, cmdout)`.
 
 e.g.
@@ -169,7 +173,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 ```
 
 
----
+### `UnixIO.read(::Cmd)` -- Read sub-process output.
 
     read(cmd::Cmd; [timeout=Inf,
                     check_status=true,
@@ -186,7 +190,7 @@ julia> UnixIO.read(`uname -srm`, String)
 ```
 
 
----
+### `UnixIO.waitpid` -- Wait for a sub-process to terminate.
 
     UnixIO.waitpid(pid) -> status
 
