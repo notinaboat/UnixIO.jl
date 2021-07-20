@@ -41,7 +41,7 @@ Raspberry Pi).
 """
 module UnixIO
 
-export UnixFD, DuplexIO
+export UnixFD, DuplexIO, @sh_str
 
 
 """
@@ -67,9 +67,8 @@ include("stat.jl")
 
 
 @db function __init__()
-    global_debug.t0 = time()
+    debug_init()
     @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
-
     poll_queue_init()
     atexit(terminate_child_pids)
 
@@ -132,6 +131,7 @@ abstract type UnixFD{T,EventSource} <: IO end
 
 
 @db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=DefaultEvents)
+    @nospecialize
 
     @require lookup_unix_fd(fd) == nothing ||
              lookup_unix_fd(fd).isclosed
@@ -175,6 +175,7 @@ const fd_vector_lock = Threads.SpinLock()
 lookup_unix_fd(fd::Cint) = @lock fd_vector_lock fd_vector[fd+1].value
 
 @db function register_unix_fd(fd::UnixFD)
+    @nospecialize
     i = 1 + convert(Cint, fd)
     @lock fd_vector_lock begin
         if i > length(fd_vector)
@@ -206,6 +207,7 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
 @db 1 function open(pathname, flags = C.O_RDWR, mode=0o644;
                     timeout=Inf, events=DefaultEvents)
+    @nospecialize
 
     fd = @cerr C.open(pathname, flags | C.O_NONBLOCK, mode)
     io = UnixFD(fd, flags; events=events)
@@ -305,7 +307,7 @@ Base.isopen(fd::UnixFD) = !fd.isclosed
 
 
 @db 1 function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
-                                            deadline=timeout+time())
+                                           deadline=timeout+time())
     @dblock fd begin
         timer = register_timer(deadline, fd.ready)
         try
@@ -491,10 +493,14 @@ String containing result of shell command. e.g.
 
     julia> println("Machine is ", sh"uname -m")
     Machine is x86_64
+
+    julia> println("V: ", sh"grep version Project.toml | awk '{print\$3}'")
+    V: "0.1.0"  
 """
 macro sh_str(s)
     s = Meta.parse("\"$s\"")
-    esc(:($s |> split |> Vector{String} |> Cmd |> read |> String |> chomp))
+    cmd = `bash -c "$s"`
+    esc(:($cmd |> read |> String |> chomp))
 end
 
 README"""
@@ -555,7 +561,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 """
 @db function open(f::Any, cmd::Cmd; check_status=true,
                                     capture_stderr=false)
-    @nospecialize f;
+    @nospecialize
 
     # Create Unix Domain Socket to communicate with Child Process STDIN/STDOUT.
     parent_io, child_io = socketpair()
@@ -563,7 +569,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 
     # Merge STDERR into STDOUT?
     # or leave connected to Parent Process STDERR?
-    child_err = capture_stderr ? child_io : Base.STDERR_NO
+    child_err = capture_stderr ? child_io : RawFD(Base.STDERR_NO)
 
     if true #Sys.isapple()
         pid = posix_spawn(cmd, child_io, child_io, child_err)
@@ -588,7 +594,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
         C.kill(pid, C.SIGHUP)                     ;@db 3 "SIGHUP -> $pid"
 
         # Get child process exit status.
-        status = waitpid(pid; timeout=1)
+        status = waitpid(pid; timeout=5.0)
         if WIFSIGNALED(status) && WTERMSIG(status) == C.SIGHUP
             status = 0
         end
@@ -670,7 +676,7 @@ README"""
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 """
-@db function waitpid(pid; timeout=Inf)
+@db function waitpid(pid::C.pid_t; timeout::Float64=Inf)
     status = Ref{Cint}(0)
     deadline = timeout + time()           ;@db 3 "deadline = $(db_t(deadline))"
     delay = nothing
@@ -720,7 +726,9 @@ Run `cmd` using `posix_spawn`.
 Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
 See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
 """
-@db function posix_spawn(cmd, infd, outfd, errfd; env=nothing)
+@db function posix_spawn(cmd::Cmd, infd::RawFD, outfd::RawFD, errfd::RawFD;
+                         env=nothing)
+    @nospecialize
 
     # Find path to binary.
     cmd_bin = find_cmd_bin(cmd)
@@ -796,7 +804,9 @@ end
 Run `cmd` using `fork` and `execv`.
 Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
 """
-@db function fork_and_exec(cmd, infd, outfd, errfd; env=nothing)
+@db function fork_and_exec(cmd::Cmd, infd::RawFD, outfd::RawFD, errfd::RawFD;
+                           env=nothing)
+    @nospecialize
 
     GC.@preserve cmd begin
 

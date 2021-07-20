@@ -65,9 +65,9 @@ Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
 #FIXME ioctl FIONREAD ?
 
 
-@db 4 function Base.eof(fd::ReadFD; timeout=Inf, kw...)
+@db 4 function Base.eof(fd::ReadFD; timeout=Inf)
     if bytesavailable(fd.buffer) == 0 && isopen(fd)
-        Base.write(fd.buffer, readavailable(fd; timeout=timeout, kw...))
+        Base.write(fd.buffer, readavailable(fd; timeout=timeout))
     end
     r = bytesavailable(fd.buffer) == 0
     @db 4 return r
@@ -75,13 +75,13 @@ end
 
 
 @db 1 function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt;
-                                timeout=fd.timeout, kw...)
+                                timeout=fd.timeout)
     @require !fd.isclosed
 
     @with_timeout fd timeout begin
         nread = 0
         while nread < nbytes
-            n = UnixIO.read(fd, buf + nread, nbytes - nread; kw...)
+            n = UnixIO.read(fd, buf + nread, nbytes - nread)
             if n == 0
                 throw(EOFError())
             end
@@ -107,7 +107,7 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
 
 
 @db 1 function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
-                               all::Bool=true, timeout=fd.timeout, kw...)
+                               all::Bool=true, timeout=fd.timeout)
     @require !fd.isclosed
 
     @with_timeout fd timeout begin
@@ -120,7 +120,7 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
                 resize!(buf, lb)                             ;@db 1 "resize -> $lb"
             end
             @assert lb > nread
-            n = UnixIO.read(fd, view(buf, nread+1:lb); kw...)
+            n = UnixIO.read(fd, view(buf, nread+1:lb))
             if n == 0 || !all
                 break
             end
@@ -156,9 +156,9 @@ end
 end
 
 @db 2 function Base.read(fd::ReadFD, n::Integer=typemax(Int);
-                         timeout=fd.timeout, kw...)
+                         timeout=fd.timeout)
     @with_timeout(fd, timeout,
-                  invoke(Base.read, Tuple{IO, Integer}, fd, n; kw...))
+                  invoke(Base.read, Tuple{IO, Integer}, fd, n))
 end
 
 @db 2 function Base.read(fd::ReadFD, x::Type{String}; kw...)

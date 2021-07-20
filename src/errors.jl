@@ -9,7 +9,9 @@ using Base.Libc: errno
 
 Look up name for C-constant(s) with value `n`.
 """
-function constant_name(n; prefix="")
+function constant_name(n::Integer; prefix="")
+    @nospecialize
+
     v = get(C.constants, n, Symbol[])
     if prefix != ""
         v = filter(x -> startswith(String(x), prefix), v)
@@ -73,6 +75,16 @@ macro cerr0(ex)
         $r != 0 && systemerror(string($f, ($(args...),)), $r)
         nothing
     end))
+end
+
+
+macro gc_safe(ex)
+    quote
+        old_state = @ccall jl_gc_safe_enter()::Int8
+        n = $(esc(ex))
+        @ccall jl_gc_safe_leave(old_state::Int8)::Cvoid
+        n
+    end
 end
 
 

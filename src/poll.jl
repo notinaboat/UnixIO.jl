@@ -93,6 +93,7 @@ wait_for_event(::UnixFD{SleepEvents}) = Base.sleep(0.01)
 
 
 @db 2 function register_for_events(fd::UnixFD{T, PollEvents}) where T
+    @nospecialize
     @dblock poll_queue.lock begin
         push!(poll_queue.set, fd)
         push!(poll_queue.fdvector, C.pollfd(fd, poll_event_type(fd), 0))
@@ -151,12 +152,8 @@ function notify_error(fds, err)
 end
 
 
-@noinline function gc_safe_poll(fds, nfds, timeout_ms)
-    old_state = @ccall jl_gc_safe_enter()::Int8
-    n = C.poll(fds, nfds, timeout_ms)
-    @ccall jl_gc_safe_leave(old_state::Int8)::Cvoid
-    return n
-end
+gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
+
 
 
 """
@@ -164,7 +161,7 @@ Wait for events.
 When events occur, notify waiters and remove entries from queue.
 Return false if the queue is empty.
 """
-@db 4 function poll_wait(f::Function, q::PollQueue, timeout_ms)
+@db 4 function poll_wait(f::Function, q::PollQueue, timeout_ms::Int)
 
     # Wait for events
     v = q.fdvector                                         
@@ -277,7 +274,7 @@ poll_event_type(::WriteFD) = C.POLLOUT
 Call `epoll_wait(7)` to wait for events.
 Call `f(events, fd)` for each event.
 """
-@db 6 function poll_wait(f::Function, q::EPollQueue, timeout_ms)
+@db 6 function poll_wait(f::Function, q::EPollQueue, timeout_ms::Int)
     v = q.cvector
     n = @cerr(allow=C.EINTR,
               gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))
@@ -293,12 +290,8 @@ Call `f(events, fd)` for each event.
 end
 
 
-@noinline function gc_safe_epoll_wait(epfd, events, maxevents, timeout_ms)
-    old_state = @ccall jl_gc_safe_enter()::Int8
-    n = C.epoll_wait(epfd, events, maxevents, timeout_ms)
-    @ccall jl_gc_safe_leave(old_state::Int8)::Cvoid
-    return n
-end
+gc_safe_epoll_wait(epfd, events, maxevents, timeout_ms) = 
+    @gc_safe C.epoll_wait(epfd, events, maxevents, timeout_ms)
 
 
 
@@ -313,9 +306,6 @@ Base.show(io::IO, q::PollQueue) =
     dbprint(io, "(", q.set, ", ", q.fdvector,
                      (islocked(q.lock) ? ", 🔒" : ())...,
                 ")")
-
-
-debug_tiny(q::PollQueue) = debug_long(q)
 
 
 

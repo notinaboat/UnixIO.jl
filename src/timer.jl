@@ -27,7 +27,7 @@ end
 Block the current task for a specified number of seconds.
 (Waits for a timer based on `UnixIO.poll_wait()`).
 """
-@db 1 function sleep(seconds)
+@db 1 function sleep(seconds::Float64)
     deadline = time() + seconds
     t = register_timer(deadline, sleep_condition)
     lock(sleep_condition)
@@ -40,6 +40,7 @@ Block the current task for a specified number of seconds.
         close(t)
     end
 end
+sleep(t) = sleep(convert(Float64, t))
 
 const sleep_condition = Base.ThreadSynchronizer()
 
@@ -62,7 +63,7 @@ end
 Time from now to the next timer deadline in ms.
 If no timers due before `timeout_ms` return `timeout_ms`.
 """
-function next_timer_deadline_ms(timeout_ms)
+function next_timer_deadline_ms(timeout_ms::Int)
     @dblock timer_lock begin
         deadline = next_timer_deadline()
         dt = deadline - time()

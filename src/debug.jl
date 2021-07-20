@@ -3,8 +3,7 @@
 using Crayons
 
 
-const DEBUG_LEVEL = 0
-
+const DEBUG_LEVEL = 3
 
 
 # Abbreviations.
@@ -27,6 +26,11 @@ mutable struct GlobalDebug
 end
 
 const global_debug = GlobalDebug()
+
+
+function debug_init()
+    global_debug.t0 = time()
+end
 
 
 """
@@ -60,7 +64,7 @@ end
 """
 Indent this task's debug messages for new call to `function_name`.
 """
-function debug_indent_push(function_name)
+@noinline function debug_indent_push(function_name::String)
 #    function_name = function_name[1:min(length(function_name), 4)]
     pad = repeat(" ", length(function_name))
     v = task_local_debug().indent
@@ -106,6 +110,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
 @noinline function debug_print(n::Int, lineno::String,
                                message::String, value="";
                                prefix::String=" │ ")
+    @nospecialize
 
     io = IOBuffer()
     ioc = debug_io_context(io)
@@ -186,20 +191,16 @@ end
 """
 String representation of function argument.
 """
-function debug_tiny(x; limit=16)
+function dbtiny(x; limit=16)
     io = IOBuffer()
-    ioc =  debug_io_context(io)
-    #show(ioc, "text/plain", x)
-    dbshow(ioc, x)
+    dbshow(debug_io_context(io), x)
     s =String(take!(io))
     if length(s) > limit
         s = string(s[1:nextind(s,16)], "...")
     end
-    s
+    return s
 end
 
-debug_long(x) = debug_tiny(x; limit=typemax(Int))
-debug_tiny(x::Cmd) = debug_long(x)
 
 
 """
@@ -290,7 +291,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
             _db_level,
             _db_lineno,
             string(_db_fname, " ┬─(", #┌─┐
-                join(((debug_tiny(_x) for _x in ($(args...),))...,), ", "),
+                join(((dbtiny(_x) for _x in ($(args...),))...,), ", "),
             ")"))
 
         debug_indent_push(_db_fname)
