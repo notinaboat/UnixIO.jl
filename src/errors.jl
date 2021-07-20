@@ -12,7 +12,7 @@ Look up name for C-constant(s) with value `n`.
 function constant_name(n; prefix="")
     v = get(C.constants, n, Symbol[])
     if prefix != ""
-        filter!(x -> startswith(String(x), prefix), v)
+        v = filter(x -> startswith(String(x), prefix), v)
     end
     if length(v) == 0
         string(n)
@@ -32,9 +32,9 @@ systemerror(p, errno::Cint=errno(); kw...) =
 
 
 """
-    @cerr [allow=C.EINTR] C.f(args...)
+    @cerr [allow=C.EINTR] f(args...)
 
-If `ex` returns -1 throw SystemError with `errno` info.
+If `f` returns -1 throw SystemError with `errno` info.
 """
 macro cerr(a, b=nothing)
     ex = b == nothing ? a : b
@@ -54,6 +54,24 @@ macro cerr(a, b=nothing)
         $condition && systemerror(string($f, ($(args...),)))
         @assert $r >= -1
         $r
+    end))
+end
+
+
+"""
+    @czero f(args...)
+
+If `f` returns non-zero throw SystemError with return value as `errno`.
+"""
+macro cerr0(ex)
+    @require ex isa Expr && ex.head == :call
+    f = ex.args[1]
+    args = ex.args[2:end]
+    r = gensym()
+    esc(:(begin
+        $r = $ex
+        $r != 0 && systemerror(string($f, ($(args...),)), $r)
+        nothing
     end))
 end
 
