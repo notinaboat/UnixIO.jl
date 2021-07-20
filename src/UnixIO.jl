@@ -476,7 +476,7 @@ See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 @db function socketpair()
     v = fill(RawFD(-1), 2)
     @cerr C.socketpair(C.AF_UNIX, C.SOCK_STREAM, 0, v)
-    @ensure !(-1 in v)
+    @ensure -1 ∉ v
     @db return (v[1], v[2])
 end
 
@@ -901,6 +901,13 @@ function Base.show(io::IO, fd::UnixFD{T}) where T
     end
     print(io, ")")
 end
+
+
+
+# Compiler hints.
+
+include("precompile.jl")
+_precompile_()
 
 
 

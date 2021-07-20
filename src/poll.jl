@@ -249,7 +249,8 @@ See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
 """
 function epoll_ctl(fd, op, events, data=fd)
     e = [epoll_event(events, data)]
-    GC.@preserve e @cerr C.epoll_ctl(epoll_queue.fd, op, fd, pointer(e))
+    GC.@preserve e @cerr(allow=EBADF, #FIXME ?
+                         C.epoll_ctl(epoll_queue.fd, op, fd, pointer(e)))
 end
 
 epoll_ctl(fd::UnixFD, op, events) =
@@ -261,8 +262,10 @@ Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
 @db 4 function register_for_events(fd::UnixFD{T, EPollEvents}) where T
     @dblock epoll_queue.lock begin
-        push!(epoll_queue.set, fd)
-        epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
+        if fd ∉ epoll_queue.set
+            push!(epoll_queue.set, fd)
+            epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
+        end
     end
 end
 

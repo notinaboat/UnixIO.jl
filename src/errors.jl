@@ -48,7 +48,7 @@ macro cerr(a, b=nothing)
     r = gensym()
     condition = allow == nothing ?
                 :($r == -1) :
-                :($r == -1 && !(errno() in $(allow.args[2])))
+                :($r == -1 && errno() ∉ $(allow.args[2]))
     esc(:(begin
         $r = $ex
         $condition && systemerror(string($f, ($(args...),)))

@@ -75,7 +75,7 @@ cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
     @async @test UnixIO.read(`bash -c "sleep 2; echo $i"`, String) == "$i\n"
 end
 
-@test UnixIO.read(`bash -c "ECHO FOO; sleep 4; echo FOO"`,
+@test UnixIO.read(`bash -c "echo FOO; sleep 4; echo FOO"`,
                   String; timeout=2.4) == "FOO\n"
 t0 = time()
 try
