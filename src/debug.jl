@@ -3,7 +3,7 @@
 using Crayons
 
 
-DEBUG_LEVEL = 0
+DEBUG_LEVEL = 4
 
 const BASE_DEBUG_LEVEL = DEBUG_LEVEL
 
@@ -334,11 +334,13 @@ macro debug_return(n::Int, ex::Expr, message, lineno)
     DEBUG_LEVEL < n && return esc(ex)
 
     @require ex.head == :return
-    message = something(message, ex.args[1])
+    v = gensym()
+    message = something(message, v)
     esc(quote
+        $v = $(ex.args[1])
         debug_print(_db_level, $lineno, $message; prefix=" └─▶ ")
         _db_returned = true
-        $ex
+        return $v
     end)
 end
 
@@ -491,6 +493,14 @@ function dbshow(io::IO, v::Union{AbstractVector,AbstractSet})
     else
         print(io, v)
     end
+end
+
+
+function dbstring(args...)
+    io = IOBuffer()
+    ioc = debug_io_context(io)
+    dbprint(ioc, args...)
+    String(take!(io))
 end
 
 

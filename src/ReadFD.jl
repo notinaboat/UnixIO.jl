@@ -7,6 +7,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
     #isdead::Bool
     nwaiting::Int
     ready::Base.ThreadSynchronizer
+    closed::Base.ThreadSynchronizer
     timeout::Float64
     deadline::Float64
     buffer::IOBuffer
@@ -17,6 +18,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
                false,
                #false,
                0,
+               Base.ThreadSynchronizer(),
                Base.ThreadSynchronizer(),
                Inf,
                Inf,
@@ -31,6 +33,19 @@ end
 
 @db 2 function raw_transfer(fd::ReadFD, buf, count)
     n = C.read(fd.fd, buf, count)
+    @db 2 return n
+end
+
+
+"""
+PTS master returns EIO when slave has disconnected.
+Returning 0 here emulates normal end of stream behaviour.
+"""
+@db 2 function raw_transfer(fd::ReadFD{PtsMaster}, buf, count)
+    n = C.read(fd.fd, buf, count)
+    if n == -1 && errno() == C.EIO;                         @db 2 "$fd -> EIO!"
+        n = 0
+    end
     @db 2 return n
 end
 

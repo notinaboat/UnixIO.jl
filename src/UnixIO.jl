@@ -50,9 +50,34 @@ FIXME
       - all options configured on channel, not passed to take!
  - consider @noinline and @nospecialize, @noinline
  - specify types on kw args? check compiler log of methods generated
+
+
+## Related Issues?
+
+https://github.com/JuliaLang/julia/issues/14747
+Intermittent deadlock in readbytes(open(echo \$text)) on Linux ? #14747
+
+Spawning turns IO race into process hang #24440
+https://github.com/JuliaLang/julia/issues/24440
+
+Redirected STDOUT on macOS is hanging when more than 512 bytes are written at once #20812
+https://github.com/JuliaLang/julia/issues/20812
+
+Deadlock in reading stdout from cmd #22832
+https://github.com/JuliaLang/julia/issues/22832
+
+support serial port #1970
+https://github.com/libuv/libuv/issues/1970
+
+Pseudo-tty support #2640
+https://github.com/libuv/libuv/issues/2640
+
+add uv_device_t as stream on windows and Linux to handle device IO #484
+https://github.com/libuv/libuv/pull/484
+
 """
 
-using Base: @lock
+using Base: @lock, C_NULL
 using ReadmeDocs
 using Preconditions
 using AsyncLog
@@ -119,31 +144,36 @@ abstract type SleepEvents end
 
 abstract type UnixFD{S_TYPE,EventSource} <: IO end
 
-abstract type S_IFIFO  end
-abstract type S_IFCHR  end
-abstract type S_IFDIR  end
-abstract type S_IFBLK  end
-abstract type S_IFREG  end
-abstract type S_IFLNK  end
-abstract type S_IFSOCK end
+abstract type MetaFile end
+abstract type File end
+abstract type Stream end
 
-fdtype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
-                            isblockdev(s) ? S_IFBLK  :
-                            ischardev(s)  ? S_IFCHR  :
-                            isdir(s)      ? S_IFDIR  :
-                            isfifo(s)     ? S_IFIFO  :
-                            islink(s)     ? S_IFLNK  :
-                            issocket(s)   ? S_IFSOCK :
-                                            Nothing)
+abstract type PtsMaster <: Stream end
 
-const S_IFMeta = Union{S_IFDIR, S_IFLNK}
-const S_IFFile = Union{S_IFREG, S_IFBLK}
-const S_IFStream = Union{S_IFIFO, S_IFCHR, S_IFSOCK}
+abstract type S_IFIFO <: Stream end
+abstract type S_IFCHR <: Stream end
+abstract type S_IFDIR <: MetaFile end
+abstract type S_IFBLK <: File end
+abstract type S_IFREG <: File end
+abstract type S_IFLNK <: MetaFile end
+abstract type S_IFSOCK <: Stream end
+
+
+fdtype(fd) = isptsmaster(fd) ? PtsMaster : stattype(fd)
+
+stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
+                              isblockdev(s) ? S_IFBLK  :
+                              ischardev(s)  ? S_IFCHR  :
+                              isdir(s)      ? S_IFDIR  :
+                              isfifo(s)     ? S_IFIFO  :
+                              islink(s)     ? S_IFLNK  :
+                              issocket(s)   ? S_IFSOCK :
+                                              Nothing)
 
 default_event_source(fd) = default_event_source(fdtype(fd))
-default_event_source(::Type{<:S_IFFile}) = SleepEvents
+default_event_source(::Type{<:File}) = SleepEvents
 
-function default_event_source(::Type{<:S_IFStream})
+function default_event_source(::Type{<:Stream})
     x = get(ENV, "JULIA_IO_EVENT_SOURCE", nothing)
     x == "epoll"  ? EPollEvents :
     x == "poll"   ? PollEvents :
@@ -329,6 +359,7 @@ end
         #       to prevent sprurious wakeups for this fd after it is closed?
         #       See note after `lookup_unix_fd` in poll.jl
         notify(fd)
+        @lock fd.closed notify(fd.closed)
     end
     @ensure !isopen(fd)
     nothing
@@ -340,15 +371,16 @@ Base.isopen(fd::UnixFD) = !fd.isclosed
 
 @db 1 function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
                                            deadline=timeout+time())
-    @dblock fd begin
-        timer = register_timer(deadline, fd.ready)
+    @dblock fd.closed begin
+        timer = register_timer(deadline, fd.closed)
         try
             while isopen(fd) && time() < deadline           ;@db 3 "waiting..."
-                if fd isa ReadFD
-                    wait_for_event(fd)
-                else
-                    wait(fd) # FIXME reconsider
-                end
+                wait(fd.closed)
+# FIXME               if fd isa ReadFD
+#                    wait_for_event(fd)
+#                else
+#                    wait(fd) # FIXME reconsider
+#                end
             end
         finally
             close(timer)
@@ -430,7 +462,7 @@ Return number of bytes transferred or `0` on timeout.
             timer = register_timer(fd.deadline, fd.ready)
             try
                 while time() < fd.deadline
-                    n = raw_transfer(fd, buf, count);               ;@db 2 n
+                    n = nointr_transfer(fd, buf, count);               ;@db 2 n
                     if n >= 0
                         @db 2 return n
                     end                                        ;@db 2 "wait..."
@@ -448,12 +480,14 @@ end
 
 """
 Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`.
+Keep trying on `C.EINTR`.
 Return number of bytes transferred or `-1` on `C.EAGAIN`.
 """
-@db 2 function raw_transfer(fd::UnixFD, buf, count)
+@db 2 function nointr_transfer(fd::UnixFD, buf, count)
     @require count > 0
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR), raw_transfer(fd, buf, count))
+        @db 2 errno() n
         if n != -1 || errno() == C.EAGAIN
             @ensure n <= count
             @db 2 return n
@@ -523,6 +557,40 @@ See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
     @cerr C.socketpair(C.AF_UNIX, C.SOCK_STREAM, 0, v)
     @ensure -1 ∉ v
     @db return (v[1], v[2])
+end
+
+
+
+@doc README"""
+### `UnixIO.openpt()` -- Open a pseudoterminal device.
+
+    UnixIO.openpt([flags = C._NOCTTY | C.O_RDWR]) -> fd, "/dev/pts/X"
+    UnixIO.ptspair() -> fdmaster, fdslave
+
+Open an unused pseudoterminal master device, returning:
+a file descriptor that can be used to refer to that device,
+and the path of the slave pseudoterminal device.
+
+See [posix_openpt(3)](https://man7.org/linux/man-pages/man2/posix_openpt.3.html)
+and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
+"""
+@db function openpt(flags = C.O_NOCTTY | C.O_RDWR)
+    fd = @cerr C.posix_openpt(flags)
+    @assert isptsmaster(fd)
+    @cerr C.unlockpt(fd)
+    buf = Vector{UInt8}(undef, 100)
+    GC.@preserve buf begin
+        p = pointer(buf)
+        @cerr C.ptsname_r(fd, p, length(buf))
+        @db return RawFD(fd), unsafe_string(p)
+    end
+end
+
+isptsmaster(fd) = C.ptsname(fd) != C_NULL
+
+@db 2 function ptspair()
+    master, path = openpt()
+    return master, RawFD(@cerr C.open(path, C.O_RDWR|C.O_NOCTTY))
 end
 
 
@@ -609,14 +677,14 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 ```
 """
 @db function open(f::Any, cmd::Cmd; check_status=true,
-                                    capture_stderr=false)
+                                    capture_stderr=false,
+                                    pts=false)
     @nospecialize
 
-    # Create Unix Domain Socket to communicate with Child Process STDIN/STDOUT.
-    parent_io, child_io = socketpair()
+    # Create a Pseudoterminal or Unix Domain Socket to communicate
+    # with Child Process STDIN/STDOUT.
+    parent_io, child_io = pts ? ptspair() : socketpair()
     fcntl_setfd(parent_io, C.O_CLOEXEC)
-
-    # FIXME option to use `posix_openpt` ??
 
     # Merge STDERR into STDOUT?
     # or leave connected to Parent Process STDERR?
@@ -888,7 +956,7 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
                                              C.sigemptyset(emptyset)
                                              C.pthread_sigmask(C.SIG_SETMASK,
                                                                emptyset,
-                                                               Base.C_NULL);
+                                                               C_NULL);
 
                                              # Connect STDIN/OUT to socket.
                                              C.dup2(infd,  Base.STDIN_NO)
@@ -901,7 +969,7 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
                                          end
 
         # Restore old signal mask.
-        C.pthread_sigmask(C.SIG_SETMASK, oldmask, Base.C_NULL);
+        C.pthread_sigmask(C.SIG_SETMASK, oldmask, C_NULL);
 
         @assert pid > 0
         register_child(pid)
@@ -938,6 +1006,7 @@ end
 
 type_icon(::Type{S_IFIFO})  = "📥"
 type_icon(::Type{S_IFCHR})  = "📞"
+type_icon(::Type{PtsMaster})  = "⌨️ "
 type_icon(::Type{S_IFDIR})  = "📂"
 type_icon(::Type{S_IFBLK})  = "🧊"
 type_icon(::Type{S_IFREG})  = "📄"

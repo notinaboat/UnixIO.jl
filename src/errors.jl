@@ -53,7 +53,7 @@ macro cerr(a, b=nothing)
                 :($r == -1 && errno() ∉ $(allow.args[2]))
     esc(:(begin
         $r = $ex
-        $condition && systemerror(string($f, ($(args...),)))
+        $condition && systemerror(dbstring($f, ($(args...),)))
         @assert $r >= -1
         $r
     end))
@@ -72,7 +72,7 @@ macro cerr0(ex)
     r = gensym()
     esc(:(begin
         $r = $ex
-        $r != 0 && systemerror(string($f, ($(args...),)), $r)
+        $r != 0 && systemerror(dbstring($f, ($(args...),)), $r)
         nothing
     end))
 end

@@ -7,6 +7,7 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     #isdead::Bool
     nwaiting::Int
     ready::Base.ThreadSynchronizer
+    closed::Base.ThreadSynchronizer
     timeout::Float64
     deadline::Float64
     function WriteFD{T, E}(fd) where {T, E}
@@ -15,6 +16,7 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
                       false,
                       #=false,=# 
                       0,
+                      Base.ThreadSynchronizer(),
                       Base.ThreadSynchronizer(),
                       Inf,
                       Inf)

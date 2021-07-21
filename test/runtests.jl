@@ -14,6 +14,12 @@ julia> readline(buf)
 "xx"
 =# 
 
+#=
+
+Test that readline from /dev/pts reads one line per read(2) call
+even if many lines are written at once.
+
+=# 
 
 cd(@__DIR__)
 
@@ -66,13 +72,15 @@ uio = UnixIO.open("runtests.jl")
 @test [x for x in eachline(jio)] ==
       [x for x in eachline(uio)]
 
-@test UnixIO.open(`hexdump`) do cmdin, cmdout
-    write(cmdin, read(UnixIO.open("runtests.jl")))
-    UnixIO.shutdown(cmdin)
-    read(cmdout)
-end ==
-open(`hexdump`, open("runtests.jl"); read = true) do io
-    read(io)
+for x in (true, false)
+    @test UnixIO.open(`hexdump`; pts=x) do cmdin, cmdout
+        write(cmdin, read(UnixIO.open("runtests.jl")))
+        UnixIO.shutdown(cmdin)
+        read(cmdout)
+    end ==
+    open(`hexdump`, open("runtests.jl"); read = true) do io
+        read(io)
+    end
 end
         
 @test UnixIO.read(`hexdump runtests.jl`) ==

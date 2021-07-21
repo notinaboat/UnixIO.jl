@@ -10,6 +10,7 @@ using CInclude
 @cinclude([
     "<errno.h>",
     "<limits.h>",
+    "<stdlib.h>",
     "<pthread.h>",
     "<termios.h>",
     "<fcntl.h>",
@@ -21,6 +22,8 @@ using CInclude
     "<signal.h>",
     "<sys/wait.h>",
     "<spawn.h>"],
+
+    args = ["-D_GNU_SOURCE"],
 
     quiet,
 
@@ -67,7 +70,7 @@ fcntl(fd, cmd, arg) = @ccall fcntl(fd::Cint, cmd::Cint, arg::Cint)::Cint
 
 
 # Need `Cstring` argumnet for `system`.
-system(command) = @ccall system(command::Cstring)::Cint
+#system(command) = @ccall system(command::Cstring)::Cint
 
 
 
