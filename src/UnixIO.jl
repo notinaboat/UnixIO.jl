@@ -418,6 +418,7 @@ Return number of bytes transferred or `0` on timeout.
 @db 2 function transfer(fd::UnixFD, buf, count)
     @require !fd.isclosed
     @require count > 0
+    @require !(fd isa ReadFD) || bytesavailable(fd.buffer) == 0
 
     n = raw_transfer(fd, buf, count)
     if n >= 0
@@ -614,6 +615,8 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
     # Create Unix Domain Socket to communicate with Child Process STDIN/STDOUT.
     parent_io, child_io = socketpair()
     fcntl_setfd(parent_io, C.O_CLOEXEC)
+
+    # FIXME option to use `posix_openpt` ??
 
     # Merge STDERR into STDOUT?
     # or leave connected to Parent Process STDERR?

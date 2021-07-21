@@ -9,6 +9,7 @@ using CInclude
 
 @cinclude([
     "<errno.h>",
+    "<limits.h>",
     "<pthread.h>",
     "<termios.h>",
     "<fcntl.h>",
@@ -27,6 +28,7 @@ using CInclude
         sv_onstack
       | sched_priority | sigcontext_struct
       | ru_first | ru_last 
+      | NR_OPEN | ARG_MAX | LINK_MAX
       | MACH_MSG_TYPE_INTEGER_T | msgh_reserved | msgh_kind | mach_msg_kind_t
     """x
     )

@@ -145,6 +145,78 @@ end
                   invoke(Base.readline, Tuple{IO}, fd; kw...))
 end
 
+
+"""
+### `readline(::UnixIO.ReadFD{S_IFCHR})`
+
+Character or Terminal devices (`S_IFCHR`) are usually used in
+"canonical mode" (`ICANON`).
+
+> In canonical mode: Input is made available line by line.
+(termios(3))[https://man7.org/linux/man-pages/man3/termios.3.html].
+
+For these devices calling `read(2)` will usually return exactly one line.
+It will only ever return an incomplete line if length exceeded `MAX_CANON`.
+
+This `readline` implementation is optimised for the case where `read(2)`
+returns exactly one line. However it does not assume that behaviour and
+will still work for devices not in canonical mode.
+"""
+@db 2 function Base.readline(fd::ReadFD{S_IFCHR};
+                             timeout=fd.timeout, keep=false)
+    @require !fd.isclosed
+
+    @with_timeout fd timeout while true
+
+        # If the fd buffer contains a complete line, return that.
+        buf = fd.buffer
+        if bytesavailable(buf) > 0
+            i = find_newline(buf.data, buf.ptr, buf.size)
+            if i != 0
+                line = readline(buf)
+                @db 2 return line
+            end
+        end
+
+        # Read from fd into line buffer.
+        linebuf = Vector{UInt8}(undef, C.MAX_CANON)
+        n = UnixIO.transfer(fd, linebuf, length(linebuf))
+
+        # At eof (or timeout) return empty line.
+        if n == 0
+            @db 2 return ""
+        end
+
+        # Search for end of line...
+        i = find_newline(linebuf, 1, n)
+        if i != n
+            # Copy everything after the newline (or after 0) into fd buffer.
+            Base.write(fd.buffer, view(linebuf, i+1:n))
+        end
+        if i != 0
+            # Found end of line.
+            if !keep
+                i -= (i > 1 && linebuf[i-1] == UInt8('\r') ? 2 : 1)
+            end
+            resize!(linebuf, i)
+            line = String(linebuf)
+            @db 2 return line
+        end
+    end
+end
+
+@db 2 function find_newline(buf, i, j)
+    checkbounds(buf, i:j)
+    while i <= j
+        if @inbounds buf[i] == UInt8('\n')
+            @db 2 return i
+        end
+        i += 1
+    end
+    @db 2 return 0
+end
+
+
 @db 2 function Base.readuntil(fd::ReadFD, d::AbstractChar;
                               timeout=fd.timeout, kw...)
     @with_timeout(fd, timeout,

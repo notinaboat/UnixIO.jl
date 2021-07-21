@@ -1,6 +1,20 @@
 using Test
 using UnixIO
 
+# FIXME
+ 
+#= readline returns parital line
+
+julia> buf = PipeBuffer()
+julia> write(buf, "foobar\nxx")
+julia> readline(buf)
+"foobar"
+
+julia> readline(buf)
+"xx"
+=# 
+
+
 cd(@__DIR__)
 
 @testset "UnixIO" begin
