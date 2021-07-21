@@ -23,6 +23,16 @@ Base.unlock(d::DuplexIO) = (Base.unlock(d.in); Base.unlock(d.out))
 
 Base.skipchars(p, d::DuplexIO; k...) = Base.skipchars(p, d.in; k...)
 
+function Base.stat(d::DuplexIO)
+    s1 = stat(d.in)
+    s2 = stat(d.out)
+    s1 == s2 || throw(ArgumentError("""
+        Can't `stat` a DuplexIO unless `.in` and `.out` refer to the same file.
+        Try `stat(io.in)` or `stat(io.out)`.
+        """))
+    return s1
+end
+
 @static if isdefined(Base, :shutdown)
     Base.shutdown(d::DuplexIO) = close(d.out)
 end

@@ -127,8 +127,24 @@ end
 
 # Unix File Descriptor wrapper.
 
-abstract type UnixFD{T,EventSource} <: IO end
+abstract type UnixFD{S_TYPE,EventSource} <: IO end
 
+abstract type S_IFIFO  end
+abstract type S_IFCHR  end
+abstract type S_IFDIR  end
+abstract type S_IFBLK  end
+abstract type S_IFREG  end
+abstract type S_IFLNK  end
+abstract type S_IFSOCK end
+
+fdtype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
+                            isblockdev(s) ? S_IFBLK  :
+                            ischardev(s)  ? S_IFCHR  :
+                            isdir(s)      ? S_IFDIR  :
+                            isfifo(s)     ? S_IFIFO  :
+                            islink(s)     ? S_IFLNK  :
+                            issocket(s)   ? S_IFSOCK :
+                                            Nothing)
 
 @db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=DefaultEvents)
     @nospecialize
@@ -136,11 +152,12 @@ abstract type UnixFD{T,EventSource} <: IO end
     @require lookup_unix_fd(fd) == nothing ||
              lookup_unix_fd(fd).isclosed
 
+    T = fdtype(fd)
     r =
-    flags & C.O_RDWR   != 0 ?  DuplexIO(ReadFD{events}(fd),
-                                        WriteFD{events}(C.dup(fd))) :
-    flags & C.O_RDONLY != 0 ?  ReadFD{events}(fd) :
-    flags & C.O_WRONLY != 0 ?  WriteFD{events}(C.dup(fd)) :
+    flags & C.O_RDWR   != 0 ?  DuplexIO(ReadFD{T}{events}(fd),
+                                        WriteFD{T}{events}(C.dup(fd))) :
+    flags & C.O_RDONLY != 0 ?  ReadFD{T}{events}(fd) :
+    flags & C.O_WRONLY != 0 ?  WriteFD{T}{events}(C.dup(fd)) :
                                @assert false
     @db 3 return r
 end

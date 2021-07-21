@@ -3,7 +3,15 @@
 using Crayons
 
 
-const DEBUG_LEVEL = 3
+DEBUG_LEVEL = 3
+const BASE_DEBUG_LEVEL = DEBUG_LEVEL
+
+function set_debug_level(n)
+    global DEBUG_LEVEL
+    @require n <= BASE_DEBUG_LEVEL
+    DEBUG_LEVEL = n
+end
+
 
 
 # Abbreviations.
@@ -111,6 +119,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
                                message::String, value="";
                                prefix::String=" │ ")
     @nospecialize
+    DEBUG_LEVEL < n && return
 
     io = IOBuffer()
     ioc = debug_io_context(io)
