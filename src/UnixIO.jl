@@ -81,22 +81,6 @@ include("stat.jl")
 end
 
 
-# Event sources.
-
-abstract type EPollEvents end
-abstract type PollEvents end
-abstract type SleepEvents end
-
-DefaultEvents = begin
-    x = get(ENV, "JULIA_IO_EVENT_SOURCE", nothing)
-    x == "epoll"  ? EPollEvents :
-    x == "poll"   ? PollEvents :
-    x == "sleep"  ? SleepEvents :
-    Sys.islinux() ? EPollEvents :
-                    PollEvents
-end
-
-
 
 # Deadlines / Timeouts.
 
@@ -125,6 +109,12 @@ end
 
 
 
+# Event sources.
+
+abstract type EPollEvents end
+abstract type PollEvents end
+abstract type SleepEvents end
+
 # Unix File Descriptor wrapper.
 
 abstract type UnixFD{S_TYPE,EventSource} <: IO end
@@ -146,19 +136,34 @@ fdtype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                             issocket(s)   ? S_IFSOCK :
                                             Nothing)
 
-@db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=DefaultEvents)
+const S_IFMeta = Union{S_IFDIR, S_IFLNK}
+const S_IFFile = Union{S_IFREG, S_IFBLK}
+const S_IFStream = Union{S_IFIFO, S_IFCHR, S_IFSOCK}
+
+default_event_source(fd) = default_event_source(fdtype(fd))
+default_event_source(::Type{<:S_IFFile}) = SleepEvents
+
+function default_event_source(::Type{<:S_IFStream})
+    x = get(ENV, "JULIA_IO_EVENT_SOURCE", nothing)
+    x == "epoll"  ? EPollEvents :
+    x == "poll"   ? PollEvents :
+    x == "sleep"  ? SleepEvents :
+    Sys.islinux() ? EPollEvents :
+                    PollEvents
+end
+
+default_event_source(t::Type) = (@warn "No event source for $t!"; Nothing)
+
+
+@db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=nothing)
     @nospecialize
 
     @require lookup_unix_fd(fd) == nothing ||
              lookup_unix_fd(fd).isclosed
 
-    T = fdtype(fd)
-    r =
-    flags & C.O_RDWR   != 0 ?  DuplexIO(ReadFD{T}{events}(fd),
-                                        WriteFD{T}{events}(C.dup(fd))) :
-    flags & C.O_RDONLY != 0 ?  ReadFD{T}{events}(fd) :
-    flags & C.O_WRONLY != 0 ?  WriteFD{T}{events}(C.dup(fd)) :
-                               @assert false
+    r = flags & C.O_RDWR   != 0 ?  DuplexIO(ReadFD(fd), WriteFD(C.dup(fd))) :
+        flags & C.O_WRONLY != 0 ?  WriteFD(fd) :
+                                   ReadFD(fd)
     @db 3 return r
 end
 
@@ -225,11 +230,23 @@ the standard `Base.IO` functions
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 """
 @db 1 function open(pathname, flags = C.O_RDWR, mode=0o644;
-                    timeout=Inf, events=DefaultEvents)
+                    timeout=Inf, events=nothing)
     @nospecialize
 
-    fd = @cerr C.open(pathname, flags | C.O_NONBLOCK, mode)
-    io = UnixFD(fd, flags; events=events)
+    flags |= C.O_NONBLOCK
+
+    if flags & C.O_RDWR != 0
+        flags &= ~C.O_RDWR
+        fdout = @cerr C.open(pathname, flags | C.O_WRONLY, mode)
+        fdin = @cerr C.open(pathname, flags)
+        io = DuplexIO(ReadFD(fdin), WriteFD(fdout))
+    else
+        fd = @cerr C.open(pathname, flags, mode)
+        io = flags & C.O_WRONLY ? WriteFD(fd) : ReadFD(fd)
+    end
+    if timeout != nothing
+        set_timeout(io, timeout)
+    end
     @ensure isopen(io)
     @db 1 return io
 end
@@ -242,7 +259,9 @@ end
 
 Configure `fd` to limit IO operations to `timeout` seconds.
 """
-set_timeout(fd::UnixFD, timeout) = fd.timeout = timeout
+set_timeout(fd::UnixFD, t) = fd.timeout = t
+set_timeout(fd::DuplexIO, t) = (set_timeout(fd.in, t);
+                                set_timeout(fd.out, t))
 
 
 """

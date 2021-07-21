@@ -9,19 +9,20 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     ready::Base.ThreadSynchronizer
     timeout::Float64
     deadline::Float64
-    function WriteFD{T, E}(fd, timeout=Inf) where {T, E}
+    function WriteFD{T, E}(fd) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
         fd = new{T, E}(RawFD(fd),
-                    false, #=false,=# 0, Base.ThreadSynchronizer(),
-                    timeout, Inf)
+                      false,
+                      #=false,=# 
+                      0,
+                      Base.ThreadSynchronizer(),
+                      Inf,
+                      Inf)
         register_unix_fd(fd)
-        fd
+        return fd
     end
-    function WriteFD{EventSource}(fd, a...) where EventSource
-        T = fdtype(fd)
-        WriteFD{T,EventSource}(fd, a...)
-    end
-    WriteFD(a...) = WriteFD{DefaultEvents}(a...)
+    WriteFD(fd; events = default_event_source(fd)) =
+        WriteFD{fdtype(fd)}{events}(fd)
 end
 
 

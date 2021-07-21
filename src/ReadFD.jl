@@ -10,7 +10,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
     timeout::Float64
     deadline::Float64
     buffer::IOBuffer
-    function ReadFD{T, E}(fd, timeout=Inf) where {T, E}
+    function ReadFD{T, E}(fd) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
         fd = new{T, E}(
                RawFD(fd),
@@ -18,17 +18,14 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
                #false,
                0,
                Base.ThreadSynchronizer(),
-               timeout,
+               Inf,
                Inf,
                PipeBuffer())
         register_unix_fd(fd)
-        fd
+        return fd
     end
-    function ReadFD{EventSource}(fd, a...) where EventSource
-        T = fdtype(fd)
-        ReadFD{T, EventSource}(fd, a...)
-    end
-    ReadFD(a...) = ReadFD{DefaultEvents}(a...)
+    ReadFD(fd; events = default_event_source(fd)) =
+        ReadFD{fdtype(fd)}{events}(fd)
 end
 
 

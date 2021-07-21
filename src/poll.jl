@@ -89,7 +89,10 @@ Wait for an event to occur on `fd`.
     nothing
 end
 
-wait_for_event(::UnixFD{SleepEvents}) = Base.sleep(0.01)
+function wait_for_event(::UnixFD{SleepEvents})
+    get(ENV, "JULIA_IO_EVENT_SOURCE", nothing) == "sleep" || @assert false
+    Base.sleep(0.01)
+end
 
 
 @db 2 function register_for_events(fd::UnixFD{T, PollEvents}) where T
