@@ -95,7 +95,7 @@ include("stat.jl")
     debug_init()
     @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
     poll_queue_init()
-    atexit(terminate_child_pids)
+    atexit(kill_all_processes)
 
     global stdin
     global stdout
@@ -148,7 +148,15 @@ abstract type MetaFile end
 abstract type File end
 abstract type Stream end
 
-abstract type PtsMaster <: Stream end
+mutable struct Process
+    pid::C.pid_t
+    status::Union{Nothing, Cint}
+end
+
+struct Pseudoterminal <: Stream
+    clientfd::RawFD
+    client::Process
+end
 
 abstract type S_IFIFO <: Stream end
 abstract type S_IFCHR <: Stream end
@@ -159,7 +167,7 @@ abstract type S_IFLNK <: MetaFile end
 abstract type S_IFSOCK <: Stream end
 
 
-fdtype(fd) = isptsmaster(fd) ? PtsMaster : stattype(fd)
+fdtype(fd) = ispt(fd) ? Pseudoterminal : stattype(fd)
 
 stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               isblockdev(s) ? S_IFBLK  :
@@ -224,6 +232,7 @@ DuplexIOs.DuplexIO(out::WriteFD, in::ReadFD) =
 const fd_vector = fill(WeakRef(nothing), 100)
 const fd_vector_lock = Threads.SpinLock()
 
+lookup_unix_fd(fd) = lookup_unix_fd(Base.cconvert(Cint, fd))
 lookup_unix_fd(fd::Cint) = @lock fd_vector_lock fd_vector[fd+1].value
 
 @db function register_unix_fd(fd::UnixFD)
@@ -365,6 +374,11 @@ end
     nothing
 end
 
+@db 1 function Base.close(fd::ReadFD{Pseudoterminal})
+    C.close(fd.extra.clientfd)
+    invoke(Base.close, Tuple{UnixFD}, fd)
+end
+
 
 Base.isopen(fd::UnixFD) = !fd.isclosed
 
@@ -399,7 +413,7 @@ Shut down part of a full-duplex connection.
 `how` is one of `C.SHUT_RD`, `C.SHUT_WR` or `C.SHUT_RDWR`.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 """
-@db 1 function shutdown(fd, how)
+@db 1 function shutdown(fd, how);                  @db 1 "$(db_c(how, "SHUT"))"
     @cerr(allow=(C.ENOTCONN, C.EBADF, C.ENOTSOCK),
           C.shutdown(fd, how))
 end
@@ -452,7 +466,7 @@ Return number of bytes transferred or `0` on timeout.
     @require count > 0
     @require !(fd isa ReadFD) || bytesavailable(fd.buffer) == 0
 
-    n = raw_transfer(fd, buf, count)
+    n = nointr_transfer(fd, buf, count)
     if n >= 0
         @db 2 return n
     end
@@ -487,7 +501,7 @@ Return number of bytes transferred or `-1` on `C.EAGAIN`.
     @require count > 0
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR), raw_transfer(fd, buf, count))
-        @db 2 errno() n
+        n != -1 || @db 2 n errno() errname(errno())
         if n != -1 || errno() == C.EAGAIN
             @ensure n <= count
             @db 2 return n
@@ -564,35 +578,36 @@ end
 @doc README"""
 ### `UnixIO.openpt()` -- Open a pseudoterminal device.
 
-    UnixIO.openpt([flags = C._NOCTTY | C.O_RDWR]) -> fd, "/dev/pts/X"
-    UnixIO.ptspair() -> fdmaster, fdslave
+    UnixIO.openpt([flags = C._NOCTTY | C.O_RDWR]) -> ptfd::UnixFD, "/dev/pts/X"
 
-Open an unused pseudoterminal master device, returning:
+Open an unused pseudoterminal device, returning:
 a file descriptor that can be used to refer to that device,
-and the path of the slave pseudoterminal device.
+and the path of the pseudoterminal device.
 
 See [posix_openpt(3)](https://man7.org/linux/man-pages/man2/posix_openpt.3.html)
 and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
 """
 @db function openpt(flags = C.O_NOCTTY | C.O_RDWR)
-    fd = @cerr C.posix_openpt(flags)
-    @assert isptsmaster(fd)
-    @cerr C.unlockpt(fd)
+    pt = @cerr C.posix_openpt(flags)
+    @assert ispt(pt)
+    @cerr C.grantpt(pt)
+    @cerr C.unlockpt(pt)
     buf = Vector{UInt8}(undef, 100)
     GC.@preserve buf begin
         p = pointer(buf)
-        @cerr C.ptsname_r(fd, p, length(buf))
-        @db return RawFD(fd), unsafe_string(p)
+        @cerr C.ptsname_r(pt, p, length(buf))
+        @db return RawFD(pt), unsafe_string(p)
     end
 end
 
-isptsmaster(fd) = C.ptsname(fd) != C_NULL
 
-@db 2 function ptspair()
-    master, path = openpt()
-    return master, RawFD(@cerr C.open(path, C.O_RDWR|C.O_NOCTTY))
+function pseudoterminalpair()
+    pt, path = openpt()
+    return pt, RawFD(@cerr C.open(path, C.O_RDWR | C.O_NOCTTY))
 end
 
+
+ispt(fd) = C.ptsname(fd) != C_NULL
 
 
 README"## Executing Unix Commands."
@@ -640,18 +655,6 @@ end
 system(cmd::Cmd) = system(join(cmd.exec, " "))
 
 
-function waitpid_error(cmd, status)
-    @require !WIFEXITED(status) ||
-              WEXITSTATUS(status) != 0
-    if WIFSTOPPED(status)
-        msg = "stopped by signal $(WSTOPSIG(status))"
-    elseif WIFSIGNALED(status)
-        msg = "killed by signal $(WTERMSIG(status))"
-    elseif WIFEXITED(status)
-        msg = "exited with status $(WEXITSTATUS(status))"
-    end
-    ErrorException("UnixIO.open($cmd) $msg")
-end
 
 
 @doc README"""
@@ -678,49 +681,48 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 """
 @db function open(f::Any, cmd::Cmd; check_status=true,
                                     capture_stderr=false,
-                                    pts=false)
+                                    pseudoterminal=false)
     @nospecialize
 
     # Create a Pseudoterminal or Unix Domain Socket to communicate
     # with Child Process STDIN/STDOUT.
-    parent_io, child_io = pts ? ptspair() : socketpair()
-    fcntl_setfd(parent_io, C.O_CLOEXEC)
+    parent_io, child_io = pseudoterminal ? pseudoterminalpair() : socketpair()
+    cmdin = WriteFD(parent_io)
+    cmdout = ReadFD(C.dup(parent_io))
+    fcntl_setfd(cmdin, C.O_CLOEXEC)
+    fcntl_setfd(cmdout, C.O_CLOEXEC)
 
     # Merge STDERR into STDOUT?
     # or leave connected to Parent Process STDERR?
     child_err = capture_stderr ? child_io : RawFD(Base.STDERR_NO)
 
-    if true #Sys.isapple()
-        pid = posix_spawn(cmd, child_io, child_io, child_err)
+    if true #Sys.isapple
+        process = posix_spawn(cmd, child_io, child_io, child_err)
     else
-        pid = fork_and_exec(cmd, child_io, child_io, child_err)
+        process = fork_and_exec(cmd, child_io, child_io, child_err)
     end
-    @assert pid > 0
 
-    C.close(child_io)
-
-    cmdin = WriteFD(parent_io)
-    cmdout = ReadFD(C.dup(parent_io))
+    # Close the child end of the socketpair.
+    # Or, if `cmdout` is a pseudoterminal, let it manage `child_io`
+    # See notes in ReadFD.jl at  `raw_transfer(::ReadFD{Pseudoterminal})`.
+    if cmdout isa ReadFD{Pseudoterminal}
+        cmdout.extra = Pseudoterminal(child_io, process)
+    else
+        C.close(child_io)
+    end
 
     # Run the IO handling function `f`.
     try                                           ;@db 1 "f ┬─($cmdin,$cmdout)"
                                                   ;@db_indent 1 "f"
         result = f(cmdin, cmdout)                 ;@db_unindent 1
                                                   ;@db 1 "  └─▶ 👍"
-        # Close IO and send TERM signal.
+        # Close IO and send HUP signal.
         close(cmdin)
         close(cmdout)
-        C.kill(pid, C.SIGHUP)                     ;@db 3 "SIGHUP -> $pid"
+        kill_softly(process)
 
         # Get child process exit status.
-        status = waitpid(pid; timeout=5.0)
-        if WIFSIGNALED(status) && WTERMSIG(status) == C.SIGHUP
-            status = 0
-        end
-        if status == nothing
-            C.kill(pid, C.SIGKILL)                ;@db 3 "SIGKILL -> $pid"
-            status = waitpid(pid)
-        end
+        status = waitpid(process)
         if check_status
             if !WIFEXITED(status) || WEXITSTATUS(status) != 0
                 throw(waitpid_error(cmd, status))
@@ -732,7 +734,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
     finally
         C.close(cmdin.fd)
         C.close(cmdout.fd)
-        terminate_child(pid)
+        kill(process)
     end
 end
 
@@ -775,11 +777,15 @@ end
 
 @db function read(cmd::Cmd; timeout=Inf, kw...)
     r = open(cmd; kw...) do cmdin, cmdout
-        close(cmdin)
+        shutdown(cmdin)
         Base.read(cmdout; timeout=timeout)
     end
     @db return r
 end
+
+
+
+# Sub Processes.
 
 
 WIFSIGNALED(x) = (((x & 0x7f) + 1) >> 1) > 0
@@ -789,6 +795,23 @@ WEXITSTATUS(x) = signed(UInt8((x >> 8) & 0xff))
 WIFSTOPPED(x) = (x & 0xff) == 0x7f
 WSTOPSIG(x) = WEXITSTATUS(x)
 
+
+function Process(pid)
+    p = Process(pid, nothing)
+    @lock processes_lock push!(processes, p)
+    return p
+end
+
+Base.convert(::Type{C.pid_t}, p::Process) = p.pid
+
+
+const processes_lock = Threads.SpinLock()
+const processes = Set{Process}()
+
+
+isalive(p::Process) = (waitpid(p; timeout=0.0); p.status == nothing)
+
+
 @doc README"""
 ### `UnixIO.waitpid` -- Wait for a sub-process to terminate.
 
@@ -796,12 +819,18 @@ WSTOPSIG(x) = WEXITSTATUS(x)
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 """
-@db function waitpid(pid::C.pid_t; timeout::Float64=Inf)
+@db function waitpid(p::Process; timeout::Float64=Inf)
+
     status = Ref{Cint}(0)
     deadline = timeout + time()           ;@db 3 "deadline = $(db_t(deadline))"
     delay = nothing
     while true
-        r = C.waitpid(pid, status, C.WNOHANG | C.WUNTRACED)            ;@db 3 r
+
+        if p.status != nothing
+            @db return p.status "Already terminated ($(p.status))."
+        end
+
+        r = C.waitpid(p.pid, status, C.WNOHANG | C.WUNTRACED)          ;@db 3 r
         if r == -1
             err = errno()
             if err in (C.EINTR, C.EAGAIN)               ;@db 3 "EINTR / EAGAIN"
@@ -809,10 +838,12 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
             elseif err == C.ECHILD
                 @db return nothing "ECHILD (No child process)"
             end
-            systemerror(string("C.waitpid($pid)"), err)
+            systemerror(string("C.waitpid($(p.pid))"), err)
         end
-        if r == pid
-            @db return status[]
+        if r == p.pid
+            p.status = status[]
+            @lock processes_lock delete!(processes, p)
+            @db return p.status
         end
         if time() >= deadline
             @db return nothing "timeout!"
@@ -828,8 +859,53 @@ exponential_delay() =
     Iterators.Stateful(ExponentialBackOff(n=typemax(Int); factor=2))
 
 
+@db function kill(p::Process)
+    if isalive(p)
+        C.kill(p, C.SIGKILL)                       ;@db 3 "SIGKILL -> $process"
+        @asynclog "UnixIO.kill(::Process) -> waitpid()" waitpid(p)
+    else
+        @db "Already terminated!"
+    end
+end
 
-# Sub Processes.
+
+@db function kill_softly(p::Process)
+    if !isalive(p)
+        return
+    end
+    C.kill(p, C.SIGHUP)                            ;@db 3 "SIGHUP -> $process"
+    status = waitpid(p; timeout=5.0)
+    if status != nothing
+        if WIFSIGNALED(status) && WTERMSIG(status) == C.SIGHUP
+            p.status = 0
+        end
+    else
+        kill(p)
+    end
+    nothing
+end
+
+
+@db 1 function kill_all_processes()
+    @sync for p in processes                             ;@db 1 "SIGKILL -> $p"
+        C.kill(p, C.SIGKILL)
+        @async waitpid(p)
+    end
+end
+
+
+function waitpid_error(cmd, status)
+    @require !WIFEXITED(status) ||
+              WEXITSTATUS(status) != 0
+    if WIFSTOPPED(status)
+        msg = "stopped by signal $(WSTOPSIG(status))"
+    elseif WIFSIGNALED(status)
+        msg = "killed by signal $(WTERMSIG(status))"
+    elseif WIFEXITED(status)
+        msg = "exited with status $(WEXITSTATUS(status))"
+    end
+    ErrorException("UnixIO.open($cmd) $msg")
+end
 
 
 function find_cmd_bin(cmd::Cmd)
@@ -846,8 +922,10 @@ Run `cmd` using `posix_spawn`.
 Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
 See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
 """
-@db function posix_spawn(cmd::Cmd, infd::RawFD, outfd::RawFD, errfd::RawFD;
-                         env=nothing)
+@db function posix_spawn(cmd::Cmd, infd::Union{String,RawFD},
+                                   outfd::Union{String,RawFD,Nothing}=nothing,
+                                   errfd::Union{String,RawFD,Nothing}=nothing;
+                                   env=nothing)
     @nospecialize
 
     # Find path to binary.
@@ -897,19 +975,27 @@ See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
         @cerr0 C.posix_spawnattr_setpgroup(attr, 0)
 
         # Connect Child Process STDIN/OUT to socket.
-        dup2(a, b) = @cerr0 C.posix_spawn_file_actions_adddup2(actions, a, b)
-        dup2(infd,  Base.STDIN_NO)
-        dup2(outfd, Base.STDOUT_NO)
-        dup2(errfd, Base.STDERR_NO)
+        previous_stdno=-1
+        for (fd, stdno) in ( infd => Base.STDIN_NO,
+                            outfd => Base.STDOUT_NO,
+                            errfd => Base.STDERR_NO)
+            if fd isa String
+                @cerr C.posix_spawn_file_actions_addopen(
+                    actions, stdno, fd, C.O_RDWR | C.O_NOCTTY, 0)
+            else
+                @cerr0 C.posix_spawn_file_actions_adddup2(
+                    actions, something(fd, previous_stdno), stdno)
+                previous_stdno = stdno
+            end
+        end
 
         # Start the Child Process
         GC.@preserve cmd env_vector begin
             @cerr0 C.posix_spawn(pid, cmd_bin, actions, attr, argv, envp)
         end
         @assert pid[] > 0
-        register_child(pid[])
 
-        @db return pid[]
+        @db return Process(pid[])
 
     finally
         @cerr0 C.posix_spawn_file_actions_destroy(actions)
@@ -972,30 +1058,8 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
         C.pthread_sigmask(C.SIG_SETMASK, oldmask, C_NULL);
 
         @assert pid > 0
-        register_child(pid)
 
-        @db return pid
-    end
-end
-
-
-const child_pids_lock = Threads.SpinLock()
-const child_pids = Set{Cint}()
-
-@db 1 function register_child(pid)
-    @lock child_pids_lock push!(child_pids, pid)
-end
-
-@db 1 function terminate_child(pid)
-    @lock child_pids_lock delete!(child_pids, pid)
-    C.kill(pid, C.SIGKILL)
-    @asynclog "UnixIO.terminate_child(::Cmd)" waitpid(pid)
-end
-
-@db 1 function terminate_child_pids()
-    @sync for pid in child_pids                        ;@db 1 "SIGKILL -> $pid"
-        C.kill(pid, C.SIGKILL)
-        @async waitpid(pid)
+        @db return Process(pid)
     end
 end
 
@@ -1004,14 +1068,14 @@ end
 # Pretty Printing.
 
 
-type_icon(::Type{S_IFIFO})  = "📥"
-type_icon(::Type{S_IFCHR})  = "📞"
-type_icon(::Type{PtsMaster})  = "⌨️ "
-type_icon(::Type{S_IFDIR})  = "📂"
-type_icon(::Type{S_IFBLK})  = "🧊"
-type_icon(::Type{S_IFREG})  = "📄"
-type_icon(::Type{S_IFLNK})  = "🔗"
-type_icon(::Type{S_IFSOCK}) = "🧦"
+type_icon(::Type{S_IFIFO})         = "📥"
+type_icon(::Type{S_IFCHR})         = "📞"
+type_icon(::Type{S_IFDIR})         = "📂"
+type_icon(::Type{S_IFBLK})         = "🧊"
+type_icon(::Type{S_IFREG})         = "📄"
+type_icon(::Type{S_IFLNK})         = "🔗"
+type_icon(::Type{S_IFSOCK})        = "🧦"
+type_icon(::Type{Pseudoterminal})  = "⌨️ "
 
 
 function Base.show(io::IO, fd::UnixFD{T}) where T
@@ -1019,12 +1083,12 @@ function Base.show(io::IO, fd::UnixFD{T}) where T
     t = type_icon(T)
 
     print(io, "$(Base.typename(typeof(fd)).name){$t}($fdint")
-    #fd.isdead && print(io, "☠️ ")
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("👀", fd.nwaiting))
     islocked(fd) && print(io, "🔒")
     fd.timeout == Inf || print(io, ", ⏱", fd.timeout)
     if fd isa ReadFD
+        fd.gothup && print(io, "☠️ ")
         n = bytesavailable(fd.buffer)
         if n > 0
             print(io, ", $n-byte buf")

@@ -3,7 +3,7 @@
 using Crayons
 
 
-DEBUG_LEVEL = 4
+DEBUG_LEVEL = 0
 
 const BASE_DEBUG_LEVEL = DEBUG_LEVEL
 

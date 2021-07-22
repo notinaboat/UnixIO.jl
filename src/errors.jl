@@ -24,14 +24,16 @@ function constant_name(n::Integer; prefix="")
         string("Maybe: ", join(("$(n)?" for n in v), ", "))
     end
 end
+constant_name(n; kw...) = constant_name(Int(n); kw...)
 
 
 """
 Throw SystemError with `errno` info for failed C call.
 """
 systemerror(p, errno::Cint=errno(); kw...) =
-    Base.systemerror(p, errno; extrainfo=constant_name(errno; prefix="E"))
+    Base.systemerror(p, errno; extrainfo=errname(errno))
 
+errname(n) = constant_name(n; prefix="E")
 
 """
     @cerr [allow=C.EINTR] f(args...)

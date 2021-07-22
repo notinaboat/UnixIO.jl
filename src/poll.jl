@@ -86,7 +86,7 @@ Wait for an event to occur on `fd`.
     finally
         fd.nwaiting -= 1
     end
-    nothing
+    @db 3 return nothing "Ready: $fd"
 end
 
 function wait_for_event(::UnixFD{SleepEvents})
@@ -120,14 +120,14 @@ Run `poll_wait()` in a loop.
               """
         timeout_ms = 100
     else
-        timeout_ms = 10000
+        timeout_ms = 60_000
     end
 
     while true
         try
             poll_wait(q, timeout_ms) do events, fd
                 if events & (C.POLLHUP | C.POLLNVAL) != 0
-                    #=  fd.isdead = true =#;
+                    fd.gothup = true
                     @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
                 @dblock q.lock delete!(q.set, fd)
@@ -277,7 +277,7 @@ poll_event_type(::WriteFD) = C.POLLOUT
 Call `epoll_wait(7)` to wait for events.
 Call `f(events, fd)` for each event.
 """
-@db 6 function poll_wait(f::Function, q::EPollQueue, timeout_ms::Int)
+@db 4 function poll_wait(f::Function, q::EPollQueue, timeout_ms::Int)
     v = q.cvector
     n = @cerr(allow=C.EINTR,
               gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))
