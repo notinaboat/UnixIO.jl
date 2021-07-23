@@ -76,7 +76,7 @@ end
 
 @db function Base.close(fd::ReadFD)
     take!(fd.buffer)
-    invoke(Base.close, Tuple{UnixFD}, fd)
+    @invoke Base.close(fd::UnixFD)
 end
 
 
@@ -153,7 +153,7 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
             @assert nread <= lb
             if (lb - nread) == 0
                 lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
-                resize!(buf, lb)                             ;@db 1 "resize -> $lb"
+                resize!(buf, lb)                         ;@db 1 "resize -> $lb"
             end
             @assert lb > nread
             n = UnixIO.read(fd, view(buf, nread+1:lb))
@@ -180,8 +180,7 @@ end
 
 @db 2 function Base.readline(fd::ReadFD;
                              timeout=fd.timeout, kw...)
-    @with_timeout(fd, timeout,
-                  invoke(Base.readline, Tuple{IO}, fd; kw...))
+    @with_timeout(fd, timeout, @invoke Base.readline(fd::IO; kw...))
 end
 
 
@@ -259,14 +258,12 @@ end
 @db 2 function Base.readuntil(fd::ReadFD, d::AbstractChar;
                               timeout=fd.timeout, kw...)
     @with_timeout(fd, timeout,
-                  invoke(Base.readuntil, Tuple{IO, AbstractChar},
-                                               fd, d; kw...))
+                  @invoke Base.readuntil(fd::IO, d::AbstractChar; kw...))
 end
 
 @db 2 function Base.read(fd::ReadFD, n::Integer=typemax(Int);
                          timeout=fd.timeout)
-    @with_timeout(fd, timeout,
-                  invoke(Base.read, Tuple{IO, Integer}, fd, n))
+    @with_timeout(fd, timeout, @invoke Base.read(fd::IO, n::Integer))
 end
 
 @db 2 function Base.read(fd::ReadFD, x::Type{String}; kw...)

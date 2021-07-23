@@ -4,22 +4,24 @@ Write-only Unix File Descriptor.
 mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     fd::RawFD 
     isclosed::Bool
-    #isdead::Bool
     nwaiting::Int
     ready::Base.ThreadSynchronizer
     closed::Base.ThreadSynchronizer
     timeout::Float64
     deadline::Float64
+    gothup::Bool
+    extra::Union{T,Nothing}
     function WriteFD{T, E}(fd) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
         fd = new{T, E}(RawFD(fd),
                       false,
-                      #=false,=# 
                       0,
                       Base.ThreadSynchronizer(),
                       Base.ThreadSynchronizer(),
                       Inf,
-                      Inf)
+                      Inf,
+                      false,
+                      nothing)
         register_unix_fd(fd)
         return fd
     end
@@ -54,6 +56,9 @@ Base.isreadable(::WriteFD) = false
     @ensure nwritten == nbytes
     @db 1 return Int(nwritten)
 end
+
+
+Base.write(fd::WriteFD, x::UInt8) = UnixIO.write(fd, Ref(x), 1)
 
 
 

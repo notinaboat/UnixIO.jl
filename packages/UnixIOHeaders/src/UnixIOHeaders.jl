@@ -72,6 +72,15 @@ fcntl(fd, cmd, arg) = @ccall fcntl(fd::Cint, cmd::Cint, arg::Cint)::Cint
 # Need `Cstring` argumnet for `system`.
 #system(command) = @ccall system(command::Cstring)::Cint
 
+# Need _m struct
+tcsetattr_m(fd, action, p) =
+    @ccall tcsetattr(fd::Cint, action::Cint, p::Ptr{termios_m})::Cint
+
+tcgetattr_m(fd, p) =
+    @ccall tcgetattr(fd::Cint, p::Ptr{termios_m})::Cint
+
+cfsetspeed_m(p, speed) =
+    @ccall cfsetspeed(p::Ptr{termios_m}, speed::speed_t)::Cint
 
 
 end # module

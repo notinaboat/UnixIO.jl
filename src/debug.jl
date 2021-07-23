@@ -1,17 +1,57 @@
 # Debug.
 
 using Crayons
+using TextWrap
+
+using REPL
 
 
-DEBUG_LEVEL = 0
+if get(ENV, "JULIA_UNIX_IO_EXPORT_DEBUG", "0") != "0"
+    export @db,
+           @debug_print,
+           @debug_show,
+           dbshow,
+           dbprint,
+           debug_print,
+           _db_prefix
+end
 
-const BASE_DEBUG_LEVEL = DEBUG_LEVEL
+include("debug_recompile_trigger.jl") # The Makefile touches this file to force
+                                      # recompilation. e.g. for ENV changes.
 
+
+
+# Debug Level.
+
+
+const DEFAULT_DEBUG_LEVEL = 0
+
+"""
+Set `ENV["JULIA_UNIX_IO_DEBUG_LEVEL"]` at compile time to control
+the verbosity of debug messages.
+Use `set_debug_level(n)` to change the debug level at runtime.
+"""
+DEBUG_LEVEL = parse(Int, get(ENV, "JULIA_UNIX_IO_DEBUG_LEVEL",
+                                  "$DEFAULT_DEBUG_LEVEL"))
+
+
+"""
+### `set_debug_level` -- Control the verbosity of debug messages.
+
+    set_debug_level(n)
+
+`n` can't be higher than the compiled in `BASE_DEBUG_LEVEL`
+(because the `@db` marcro reduces these messages to `:()` at compile time.)
+
+Defaults to `ENV["JULIA_UNIX_IO_DEBUG_LEVEL"]`.
+"""
 function set_debug_level(n)
     global DEBUG_LEVEL
     @require n <= BASE_DEBUG_LEVEL
     DEBUG_LEVEL = n
 end
+
+const BASE_DEBUG_LEVEL = DEBUG_LEVEL
 
 
 
@@ -31,7 +71,8 @@ db_c(c,p) = constant_name(c;prefix=p)
 mutable struct GlobalDebug
     task::Int
     t0::Float64
-    GlobalDebug() = new(-1, Inf)
+    lock::Base.ThreadSynchronizer
+    GlobalDebug() = new(-1, Inf, Base.ThreadSynchronizer())
 end
 
 const global_debug = GlobalDebug()
@@ -70,11 +111,13 @@ function task_local_debug()
 end
 
 
+const DEBUG_MIN_INDENT=6
 """
 Indent this task's debug messages for new call to `function_name`.
 """
 @noinline function debug_indent_push(function_name::String)
-#    function_name = function_name[1:min(length(function_name), 4)]
+    function_name = function_name[1:min(length(function_name),
+                                    DEBUG_MIN_INDENT)]
     pad = repeat(" ", length(function_name))
     v = task_local_debug().indent
     i, j = v[end]
@@ -118,6 +161,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
 
 @noinline function debug_print(n::Int, lineno::String,
                                message::String, value="";
+                               new_function="",
                                prefix::String=" │ ")
     @nospecialize
     DEBUG_LEVEL < n && return
@@ -127,6 +171,8 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
 
     color = debug_level_colors[max(1,n)]
     bg_color = task_local_debug().bg_color
+
+@lock global_debug.lock begin
 
     # Create a Task ID and check for task-switch.
     task = Int(pointer_from_objref(current_task())) & 0xffff
@@ -139,7 +185,12 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
         indent *= prefix
     end
 
+    thread_offset = repeat("   ", Threads.threadid()-1)
+    extra_newline = task_switched ? "\n" : ""
+
     dbprint(ioc,
+        extra_newline,
+
         bg_color,
 
         color, "[ UnixIO $n: ", inv(color),
@@ -156,13 +207,52 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
                        : (repeat(" ", 8),))...,
 
         # Indented message.
-        indent, message, value,
+        thread_offset, indent, message, value,
 
-        # Clear to end of line
+        # C=ear to end of line
         "\e[0K",
-        inv(bg_color), "\n")
+        inv(bg_color),
+        "\n")
 
-    GC.@preserve io debug_write(pointer(io.data), io.size)
+    # Wrap long lines.
+    width = displaysize(Base.stdout)[2] - 1
+    if io.size > width
+        line = String(take!(io))
+#        id = task_local_debug().indent[end][2]
+        pad = string(repeat(" ", 47), thread_offset, indent)
+        if new_function != ""
+            pad = string(pad, repeat(" ", length(new_function)), prefix)
+        else
+            pad *= "    "
+        end
+        if (width - length(pad)) < 16
+            pad = ""
+        end
+        lines = string(extra_newline,
+                       wrap(line; width = width, subsequent_indent = pad),
+                       "\n")
+        GC.@preserve io debug_write(pointer(lines), ncodeunits(lines))
+    else
+        GC.@preserve io debug_write(pointer(io.data), io.size)
+    end
+
+
+# ╰╯ ╮
+    if length(new_function) > DEBUG_MIN_INDENT
+        io.size = 0
+        io.ptr = 1
+        print(ioc,
+              bg_color,
+              repeat(" ", 47), thread_offset, indent,
+              repeat(" ", DEBUG_MIN_INDENT),
+              " ╭", repeat("─", length(new_function) - 1
+                                - DEBUG_MIN_INDENT), "╯",
+              "\e[0K",
+              inv(bg_color),
+              "\n")
+        GC.@preserve io debug_write(pointer(io.data), io.size)
+    end
+end # lock
 end
 
 
@@ -211,6 +301,15 @@ function dbtiny(x; limit=16)
     return s
 end
 
+
+"""
+Function argument types (for arguments that have types).
+"""
+function argtypes(ex)
+  f, args, kwargs = destructure_callex(ex)
+  args = map(x->Base.is_expr(x, :(::)) ? (x.args...,) : missing, args)
+  last.(skipmissing(args))
+end
 
 
 """
@@ -281,9 +380,17 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
     call, body = ex.args
     @require call.head in (:call, :where)
     @require body.head == :block
+    if call.head != :call
+        call = call.args[1]
+    end
+    @assert call.head == :call
 
     # Split function Expr into parts.
     name = string(call.args[1])
+    types = join(argtypes(call), ", ")
+    if types != ""
+        types = "($types)"
+    end
     args = tuple((skipmissing(argsym(a) for a in call.args[2:end]))...)
     head, body = body_split(body)
 
@@ -300,9 +407,10 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
         debug_print(
             _db_level,
             _db_lineno,
-            string(_db_fname, " ┬─(", #┌─┐
+            string(_db_fname, " ┬", $types, " <- (", #┌─┐
                 join(((dbtiny(_x) for _x in ($(args...),))...,), ", "),
-            ")"))
+            ")");
+            new_function=_db_fname)
 
         debug_indent_push(_db_fname)
 
@@ -315,7 +423,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
             rethrow(_db_err)
         finally
             if ! _db_returned
-                debug_print(_db_level, _db_lineno, _db_status; prefix=" └─ ");
+                debug_print(_db_level, _db_lineno, _db_status; prefix=" ╰─ ");
                                                                         # ▶
             end
             debug_indent_pop()
@@ -338,7 +446,7 @@ macro debug_return(n::Int, ex::Expr, message, lineno)
     message = something(message, v)
     esc(quote
         $v = $(ex.args[1])
-        debug_print(_db_level, $lineno, $message; prefix=" └─▶ ")
+        debug_print(_db_level, $lineno, $message; prefix=" ╰─▶ ")
         _db_returned = true
         return $v
     end)
@@ -432,7 +540,7 @@ end
 # Colors.
 
 const debug_level_colors = [
-    crayon"bold fg:196",
+    crayon"bold fg:202",
     crayon"bold fg:208",
     crayon"bold fg:220",
     crayon"bold fg:46",

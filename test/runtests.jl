@@ -25,6 +25,8 @@ cd(@__DIR__)
 
 @testset "UnixIO" begin
 
+include("pseudoterminal.jl")
+
 #for mode in ["poll(2)", "epoll(7)", "sleep(0.1)"]
 
 #@testset "UnixIO $mode" begin
@@ -72,16 +74,17 @@ uio = UnixIO.open("runtests.jl")
 @test [x for x in eachline(jio)] ==
       [x for x in eachline(uio)]
 
-for x in (true, false)
-    @test UnixIO.open(`hexdump`; pts=x) do cmdin, cmdout
+@test UnixIO.open(`hexdump` ) do cmdin, cmdout
+    @async begin
         write(cmdin, read(UnixIO.open("runtests.jl")))
-        UnixIO.shutdown(cmdin)
-        read(cmdout)
-    end ==
-    open(`hexdump`, open("runtests.jl"); read = true) do io
-        read(io)
+        close(cmdin)
     end
+    read(cmdout)
+end ==
+open(`hexdump`, open("runtests.jl"); read = true) do io
+    read(io)
 end
+
         
 @test UnixIO.read(`hexdump runtests.jl`) ==
              read(`hexdump runtests.jl`)
@@ -107,16 +110,16 @@ end
 @test abs((time() - t0) - 2.4) < 0.2
 
 sleep(1)
-@test isempty(UnixIO.child_pids)
+@test isempty(UnixIO.processes)
 cmdin, cmdout = UnixIO.open(`bash -c "while true; do date ; sleep 1; done"`)
 close(cmdin)
-@test !isempty(UnixIO.child_pids)
+@test !isempty(UnixIO.processes)
 @test readline(cmdout) != ""
 @test readline(cmdout) != ""
 @test readline(cmdout) != ""
 close(cmdout)
 sleep(5)
-@test isempty(UnixIO.child_pids)
+@test isempty(UnixIO.processes)
 
 
 #end #testset

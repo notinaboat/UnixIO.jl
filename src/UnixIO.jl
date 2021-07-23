@@ -43,6 +43,11 @@ module UnixIO
 
 export UnixFD, DuplexIO, @sh_str
 
+if get(ENV, "JULIA_UNIX_IO_EXPORT_ALL", "0") != "0"
+    ENV["JULIA_UNIX_IO_EXPORT_DEBUG"] = "1"
+    export C, constant_name
+end
+
 
 """
 FIXME
@@ -77,7 +82,7 @@ https://github.com/libuv/libuv/pull/484
 
 """
 
-using Base: @lock, C_NULL
+using Base: assert_havelock, @lock, C_NULL
 using ReadmeDocs
 using Preconditions
 using AsyncLog
@@ -150,12 +155,14 @@ abstract type Stream end
 
 mutable struct Process
     pid::C.pid_t
+    in::UnixFD
+    out::UnixFD
     status::Union{Nothing, Cint}
 end
 
-struct Pseudoterminal <: Stream
+mutable struct Pseudoterminal <: Stream
     clientfd::RawFD
-    client::Process
+    client::Union{Nothing,Process}
 end
 
 abstract type S_IFIFO <: Stream end
@@ -211,7 +218,7 @@ Base.stat(fd::UnixFD) = stat(fd.fd)
 Base.wait(fd::UnixFD) = wait(fd.ready)
 Base.lock(fd::UnixFD) = lock(fd.ready)
 Base.unlock(fd::UnixFD) = unlock(fd.ready)
-Base.notify(fd::UnixFD) = notify(fd.ready)
+Base.notify(fd::UnixFD, a...) = notify(fd.ready, a...)
 Base.islocked(fd::UnixFD) = islocked(fd.ready)
 Base.assert_havelock(fd::UnixFD) = Base.assert_havelock(fd.ready)
 
@@ -221,10 +228,8 @@ Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 include("ReadFD.jl")
 include("WriteFD.jl")
 
-DuplexIOs.DuplexIO(in::ReadFD, out::WriteFD) =
-    invoke(DuplexIO, Tuple{IO,IO}, in, out)
-DuplexIOs.DuplexIO(out::WriteFD, in::ReadFD) =
-    invoke(DuplexIO, Tuple{IO,IO}, in, out)
+DuplexIOs.DuplexIO(i::ReadFD, o::WriteFD) = @invoke DuplexIO(i::IO, o::IO)
+DuplexIOs.DuplexIO(o::WriteFD, i::ReadFD) = @invoke DuplexIO(i::IO, o::IO)
 
 
 # Reigistry of UnixFDs indexed by FD number.
@@ -332,7 +337,11 @@ fcntl_setfd(fd, flag) = fcntl_setfl(fd, flag; get=C.F_GETFD, set=C.F_SETFD)
 ### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
 
     UnixIO.tcsetattr(tty::UnixFD;
-                     [iflag=0], [oflag=0], [cflag=C.CS8], [lflag=0], [speed=0])
+                     [iflag=IUTF8],
+                     [oflag=0],
+                     [cflag=C.CS8],
+                     [lflag=0],
+                     [speed=0])
 
 Set terminal device options.
 
@@ -344,18 +353,20 @@ e.g.
     io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 """
-@db 2 function tcsetattr(tty::UnixFD; iflag = 0,
-                                      oflag = 0,
-                                      cflag = C.CS8,
-                                      lflag = 0,
-                                      speed = 0)
-    conf = termios()
+@db 2 function tcsetattr(tty; iflag = C.IUTF8,
+                              oflag = 0,
+                              cflag = C.CS8,
+                              lflag = 0,
+                              speed = 0)
+    conf = C.termios_m()
+    @cerr C.tcgetattr_m(tty, Ref(conf))
     conf.c_iflag = iflag
     conf.c_oflag = oflag
     conf.c_cflag = cflag
     conf.c_lflag = lflag
-    cfsetspeed(Ref(conf), eval(Symbol("B$speed")))
-    tcsetattr(tty, TCSANOW, Ref(conf))
+    speed == 0 || @cerr C.cfsetspeed_m(Ref(conf),
+                                       eval(:(C.$(Symbol("B$speed")))))
+    @cerr C.tcsetattr_m(tty, C.TCSANOW, Ref(conf))
 end
 
 
@@ -374,8 +385,39 @@ end
     nothing
 end
 
+@db function wait_for_event(fd::ReadFD{Pseudoterminal})
+    assert_havelock(fd)
+
+    while true
+        timer = register_timer(time() + 1) do
+            @lock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
+        end
+        try
+            event = @invoke wait_for_event(fd::ReadFD)
+            if event != :poll_isalive
+                return event
+            end
+            if !isalive(fd.extra.client)
+                return nothing
+            end
+            @db event isalive(fd.extra.client)
+        finally
+            close(timer)
+        end
+    end
+end
+
+    
 @db 1 function Base.close(fd::ReadFD{Pseudoterminal})
     C.close(fd.extra.clientfd)
+    @invoke Base.close(fd::UnixFD)
+end
+
+@db 1 function Base.close(fd::WriteFD{Pseudoterminal})
+    if !fd.isclosed                                           ;@db 1 "-> ^D 🛑"
+        fd.gothup = true
+        Base.write(fd, UInt8(C.CEOF))                            
+    end
     invoke(Base.close, Tuple{UnixFD}, fd)
 end
 
@@ -386,7 +428,9 @@ Base.isopen(fd::UnixFD) = !fd.isclosed
 @db 1 function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
                                            deadline=timeout+time())
     @dblock fd.closed begin
-        timer = register_timer(deadline, fd.closed)
+        timer = register_timer(deadline) do
+            @lock fd nofify(fd.closed)
+        end
         try
             while isopen(fd) && time() < deadline           ;@db 3 "waiting..."
                 wait(fd.closed)
@@ -473,7 +517,10 @@ Return number of bytes transferred or `0` on timeout.
 
     if time() < fd.deadline
         @dblock fd begin
-            timer = register_timer(fd.deadline, fd.ready)
+            # FIXME pass deadline to wait_for_event?
+            timer = register_timer(fd.deadline) do
+                @lock fd notify(fd)
+            end
             try
                 while time() < fd.deadline
                     n = nointr_transfer(fd, buf, count);               ;@db 2 n
@@ -588,26 +635,33 @@ See [posix_openpt(3)](https://man7.org/linux/man-pages/man2/posix_openpt.3.html)
 and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
 """
 @db function openpt(flags = C.O_NOCTTY | C.O_RDWR)
+
     pt = @cerr C.posix_openpt(flags)
     @assert ispt(pt)
     @cerr C.grantpt(pt)
     @cerr C.unlockpt(pt)
-    buf = Vector{UInt8}(undef, 100)
-    GC.@preserve buf begin
-        p = pointer(buf)
-        @cerr C.ptsname_r(pt, p, length(buf))
-        @db return RawFD(pt), unsafe_string(p)
-    end
+
+    path = ptsname(pt)
+    clientfd = RawFD(@cerr C.open(path, C.O_RDWR | C.O_NOCTTY))
+    tcsetattr(clientfd; lflag = C.ICANON)
+
+    fd = UnixFD(pt)
+    fd.in.extra = Pseudoterminal(clientfd, nothing)
+
+    @db return fd, path
 end
 
 
-function pseudoterminalpair()
-    pt, path = openpt()
-    return pt, RawFD(@cerr C.open(path, C.O_RDWR | C.O_NOCTTY))
+function ptsname(fd)
+    buf = Vector{UInt8}(undef, 100)
+    p = pointer(buf)
+    GC.@preserve @cerr C.ptsname_r(fd, p, length(buf))
+    unsafe_string(p)
 end
 
 
 ispt(fd) = C.ptsname(fd) != C_NULL
+
 
 
 README"## Executing Unix Commands."
@@ -679,50 +733,38 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 0000000c
 ```
 """
-@db function open(f::Any, cmd::Cmd; check_status=true,
-                                    capture_stderr=false,
-                                    pseudoterminal=false)
+@db function open(f, cmd::Cmd; capture_stderr=false, kw...)
+    process = socketpair_spawn(cmd; capture_stderr=capture_stderr)
+    run_cmd_function(f, cmd, process; kw...)
+end
+
+
+@doc README"""
+### `UnixIO.ptopen(::Cmd) do...` -- Run a sub-process in a pseudoterminal.
+
+FIXME
+"""
+@db function ptopen(f, cmd::Cmd; kw...)
+    process = pseudoterminal_spawn(cmd)
+    run_cmd_function(f, cmd, process; kw...)
+end
+
+
+@db function run_cmd_function(f, cmd, p; check_status=true)
     @nospecialize
 
-    # Create a Pseudoterminal or Unix Domain Socket to communicate
-    # with Child Process STDIN/STDOUT.
-    parent_io, child_io = pseudoterminal ? pseudoterminalpair() : socketpair()
-    cmdin = WriteFD(parent_io)
-    cmdout = ReadFD(C.dup(parent_io))
-    fcntl_setfd(cmdin, C.O_CLOEXEC)
-    fcntl_setfd(cmdout, C.O_CLOEXEC)
-
-    # Merge STDERR into STDOUT?
-    # or leave connected to Parent Process STDERR?
-    child_err = capture_stderr ? child_io : RawFD(Base.STDERR_NO)
-
-    if true #Sys.isapple
-        process = posix_spawn(cmd, child_io, child_io, child_err)
-    else
-        process = fork_and_exec(cmd, child_io, child_io, child_err)
-    end
-
-    # Close the child end of the socketpair.
-    # Or, if `cmdout` is a pseudoterminal, let it manage `child_io`
-    # See notes in ReadFD.jl at  `raw_transfer(::ReadFD{Pseudoterminal})`.
-    if cmdout isa ReadFD{Pseudoterminal}
-        cmdout.extra = Pseudoterminal(child_io, process)
-    else
-        C.close(child_io)
-    end
-
     # Run the IO handling function `f`.
-    try                                           ;@db 1 "f ┬─($cmdin,$cmdout)"
-                                                  ;@db_indent 1 "f"
-        result = f(cmdin, cmdout)                 ;@db_unindent 1
-                                                  ;@db 1 "  └─▶ 👍"
+    try                                         ;@db 1 "f ┬─($(p.in),$(p.out))"
+                                                ;@db_indent 1 "f"
+        result = f(p.in, p.out)                 ;@db_unindent 1
+                                                ;@db 1 "  └─▶ 👍"
         # Close IO and send HUP signal.
-        close(cmdin)
-        close(cmdout)
-        kill_softly(process)
+        close(p.in)
+        close(p.out)
+        kill_softly(p)
 
         # Get child process exit status.
-        status = waitpid(process)
+        status = waitpid(p)
         if check_status
             if !WIFEXITED(status) || WEXITSTATUS(status) != 0
                 throw(waitpid_error(cmd, status))
@@ -732,9 +774,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
             @db return status, result
         end
     finally
-        C.close(cmdin.fd)
-        C.close(cmdout.fd)
-        kill(process)
+        kill(p)
     end
 end
 
@@ -796,8 +836,8 @@ WIFSTOPPED(x) = (x & 0xff) == 0x7f
 WSTOPSIG(x) = WEXITSTATUS(x)
 
 
-function Process(pid)
-    p = Process(pid, nothing)
+function Process(pid, infd, outfd)
+    p = Process(pid, infd, outfd, nothing)
     @lock processes_lock push!(processes, p)
     return p
 end
@@ -861,7 +901,9 @@ exponential_delay() =
 
 @db function kill(p::Process)
     if isalive(p)
-        C.kill(p, C.SIGKILL)                       ;@db 3 "SIGKILL -> $process"
+        C.close(p.in)
+        C.close(p.out)
+        C.kill(p, C.SIGKILL)                             ;@db 3 "SIGKILL -> $p"
         @asynclog "UnixIO.kill(::Process) -> waitpid()" waitpid(p)
     else
         @db "Already terminated!"
@@ -873,7 +915,7 @@ end
     if !isalive(p)
         return
     end
-    C.kill(p, C.SIGHUP)                            ;@db 3 "SIGHUP -> $process"
+    C.kill(p, C.SIGHUP)                                   ;@db 3 "SIGHUP -> $p"
     status = waitpid(p; timeout=5.0)
     if status != nothing
         if WIFSIGNALED(status) && WTERMSIG(status) == C.SIGHUP
@@ -912,6 +954,51 @@ function find_cmd_bin(cmd::Cmd)
     bin = Base.Sys.which(cmd.exec[1])
     bin != nothing || throw(ArgumentError("Command not found: $(cmd.exec[1])"))
     bin
+end
+
+function pseudoterminal_spawn(cmd)
+
+    # Create a Pseudoterminal to communicate with Child Process STDIN/OUT.
+    parent_io, devpath = openpt()
+    cmdin = parent_io.out
+    cmdout = parent_io.in
+    fcntl_setfd(cmdin, C.O_CLOEXEC)
+    fcntl_setfd(cmdout, C.O_CLOEXEC)
+
+    pid = spawn_process(cmd, devpath)
+
+    process = Process(pid, cmdin, cmdout)
+    cmdout.extra.client = process
+    return process
+end
+
+function socketpair_spawn(cmd; capture_stderr=false)
+
+    # Create a Unix Domain Socket to communicate with Child Process STDIN/OUT.
+    parent_io, child_io = socketpair()
+    cmdin = WriteFD(parent_io)
+    cmdout = ReadFD(C.dup(parent_io))
+    fcntl_setfd(cmdin, C.O_CLOEXEC)
+    fcntl_setfd(cmdout, C.O_CLOEXEC)
+
+    # Merge STDERR into STDOUT?
+    # or leave connected to Parent Process STDERR?
+    child_err = capture_stderr ? child_io : RawFD(Base.STDERR_NO)
+
+    pid = spawn_process(cmd, child_io, child_io, child_err)
+
+    # Close the child end of the socketpair.
+    C.close(child_io)
+
+    return Process(pid, cmdin, cmdout)
+end
+
+@db function spawn_process(cmd, infd, outfd=infd, errfd=outfd)
+    if true #Sys.isapple
+        posix_spawn(cmd, infd, outfd, errfd)
+    else
+        fork_and_exec(cmd, infd, outfd, errfd)
+    end
 end
 
 
@@ -957,7 +1044,7 @@ See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
         # Set flags.
         @cerr0 C.posix_spawnattr_setflags(attr, C.POSIX_SPAWN_SETSIGDEF |
                                                 C.POSIX_SPAWN_SETSIGMASK |
-                                                C.POSIX_SPAWN_SETPGROUP)
+                                                C.POSIX_SPAWN_SETSID )
 
         # Set all signals to default behaviour.
         sigset = Ref{C.sigset_t}()
@@ -971,18 +1058,17 @@ See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
         @cerr0 C.sigemptyset(emptyset)
         @cerr0 C.posix_spawnattr_setsigmask(attr, emptyset)
 
-        # Create a new process group.
-        @cerr0 C.posix_spawnattr_setpgroup(attr, 0)
-
         # Connect Child Process STDIN/OUT to socket.
         previous_stdno=-1
         for (fd, stdno) in ( infd => Base.STDIN_NO,
                             outfd => Base.STDOUT_NO,
                             errfd => Base.STDERR_NO)
             if fd isa String
+                @db 4 "addopen($stdno, $fd)"
                 @cerr C.posix_spawn_file_actions_addopen(
-                    actions, stdno, fd, C.O_RDWR | C.O_NOCTTY, 0)
+                    actions, stdno, fd, C.O_RDWR, 0)
             else
+                @db 4 "adddup2($stdno, $fd, $stdno)"
                 @cerr0 C.posix_spawn_file_actions_adddup2(
                     actions, something(fd, previous_stdno), stdno)
                 previous_stdno = stdno
@@ -995,7 +1081,7 @@ See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
         end
         @assert pid[] > 0
 
-        @db return Process(pid[])
+        @db return pid[]
 
     finally
         @cerr0 C.posix_spawn_file_actions_destroy(actions)
@@ -1059,7 +1145,7 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
 
         @assert pid > 0
 
-        @db return Process(pid)
+        @db return pid
     end
 end
 

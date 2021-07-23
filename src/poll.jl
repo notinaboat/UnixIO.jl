@@ -77,30 +77,35 @@ end
 Wait for an event to occur on `fd`.
 """
 @db 3 function wait_for_event(fd::UnixFD)
-    Base.assert_havelock(fd)
+    assert_havelock(fd)
 
     fd.nwaiting += 1
-    try
+    event = try
         register_for_events(fd)              ;@db 3 "$(fd.nwaiting) waiting..."
-        wait(fd)
+        wait(fd) # Wait for: `poll_task()`
     finally
         fd.nwaiting -= 1
     end
-    @db 3 return nothing "Ready: $fd"
+    @db 3 return event "Ready: $fd"
 end
 
-function wait_for_event(::UnixFD{SleepEvents})
+function wait_for_event(fd::UnixFD{SleepEvents})
     get(ENV, "JULIA_IO_EVENT_SOURCE", nothing) == "sleep" || @assert false
     Base.sleep(0.01)
+    return poll_event_type(fd)
 end
 
 
 @db 2 function register_for_events(fd::UnixFD{T, PollEvents}) where T
     @nospecialize
     @dblock poll_queue.lock begin
-        push!(poll_queue.set, fd)
-        push!(poll_queue.fdvector, C.pollfd(fd, poll_event_type(fd), 0))
-        wakeup_poll(poll_queue)                               ;@db 5 poll_queue
+        if fd ∉ poll_queue.set
+            push!(poll_queue.set, fd)
+            push!(poll_queue.fdvector, C.pollfd(fd, poll_event_type(fd), 0))
+            wakeup_poll(poll_queue)                           ;@db 5 poll_queue
+        else
+            @db 2 "Already registered!"
+        end
     end
     nothing
 end
@@ -135,7 +140,7 @@ Run `poll_wait()` in a loop.
                     @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
                 else
                     @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
-                    @dblock fd notify(fd);
+                    @dblock fd notify(fd, events); # Wake: `wait_for_event()`
                 end
             end
         catch err
@@ -265,6 +270,8 @@ Register `fd` to wake up `epoll_wait(7)` on `event`:
         if fd ∉ epoll_queue.set
             push!(epoll_queue.set, fd)
             epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
+        else
+            @db 2 "Already registered!"
         end
     end
 end

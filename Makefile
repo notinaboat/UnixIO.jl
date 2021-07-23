@@ -1,14 +1,29 @@
 PACKAGE := $(shell basename $(PWD))
+export JULIA_PKG_OFFLINE = true
+export JULIA_DEPOT_PATH = $(CURDIR)/../jl_depot
+export JULIA_NUM_THREADS = 8
+export JULIA_UNIX_IO_EXPORT_ALL = 1
 
 all: README.md test
 
+JL := julia --project
+
 README.md: src/$(PACKAGE).jl
-	julia --project -e "using $(PACKAGE); \
-		                println($(PACKAGE).readme())" > $@
+	$(JL) -e "using $(PACKAGE); \
+		      println($(PACKAGE).readme())" > $@
 
 .PHONY: test
 test: src/$(PACKAGE).jl
-	julia --project \
-		  --threads 10 \
-		  -e "using Pkg; \
+	$(JL) -e "using Pkg; \
               Pkg.test()"
+test2:
+	$(JL) test/runtests.jl
+
+jl:
+	$(JL) -i -e "using $(PACKAGE)"
+
+.PHONY: db
+db: db4
+db%:
+	touch src/debug_recompile_trigger.jl
+	JULIA_UNIX_IO_DEBUG_LEVEL=$* $(JL) -i -e "using $(PACKAGE)"
