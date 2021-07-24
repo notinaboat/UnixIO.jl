@@ -11,7 +11,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
     deadline::Float64
     gothup::Bool
     buffer::IOBuffer
-    extra::Union{T,Nothing}
+    extra::ImmutableDict{Symbol,Any}
     function ReadFD{T, E}(fd) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
         fd = new{T, E}(
@@ -24,12 +24,25 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
                Inf,
                false,
                PipeBuffer(),
-               nothing)
+               ImmutableDict{Symbol,Any}())
         register_unix_fd(fd)
         return fd
     end
     ReadFD(fd; events = default_event_source(fd)) =
         ReadFD{fdtype(fd)}{events}(fd)
+end
+
+
+set_extra(fd::UnixFD, key::Symbol, value) =
+    fd.extra = ImmutableDict(fd.extra, key => value)
+
+function get_extra(fd::UnixFD, key::Symbol, default)
+    x = get(fd.extra, key, nothing)
+    if x == nothing
+        x = default()
+        set_extra(fd, key, x)
+    end
+    return x
 end
 
 
@@ -53,7 +66,7 @@ If a client connects, writes some data and then disconnects before `read(2)`
 is called: `read(2)` simply returns `0` and the data is lost.
 
 To avoid this situation a a duplicate client fd is held open for the lifetime
-of the pseudoterminal device (`fd.extra.clientfd`). This has the effect that
+of the pseudoterminal device (`fd.extra[:pt_clientfd]`). This has the effect that
 `read(2)` will always return `EAGAIN` if there is no data available.
 (The reader then waits for `poll(2)` to indicate when data is ready as usual.)
 
@@ -62,11 +75,11 @@ is no way to detect when the client has closed the terminal.
 This `raw_transfer` method handles this by checking if the client process
 is still alive and returning `0` if it has terminated.
 """
-@db 2 function raw_transfer(fd::ReadFD{Pseudoterminal}, buf, count)
+@db 2 function raw_transfer(fd::ReadFD{<:Pseudoterminal}, buf, count)
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
-        if err == C.EAGAIN && !isalive(fd.extra.client)
+        if err == C.EAGAIN && !isalive(fd.extra[:pt_client])
             @db 2 return 0 "Pseudoterminal client process died. -> HUP!"
         end
     end
@@ -195,53 +208,73 @@ Character or Terminal devices (`S_IFCHR`) are usually used in
 
 For these devices calling `read(2)` will usually return exactly one line.
 It will only ever return an incomplete line if length exceeded `MAX_CANON`.
+Note that in canonical mode a line can be terminated by `CEOF` rather than
+"\n", but `read(2)` does not return the `CEOF` character (e.g. when the
+shell sends a "bash\$ " prompt without a newline).
 
 This `readline` implementation is optimised for the case where `read(2)`
 returns exactly one line. However it does not assume that behaviour and
 will still work for devices not in canonical mode.
 """
-@db 2 function Base.readline(fd::ReadFD{S_IFCHR};
+@db 1 function Base.readline(fd::ReadFD{<:S_IFCHR};
                              timeout=fd.timeout, keep=false)
     @require !fd.isclosed
 
+    linebuf = Vector{UInt8}(undef, C.MAX_CANON)
+    fdbuf = fd.buffer
+
     @with_timeout fd timeout while true
 
-        # If the fd buffer contains a complete line, return that.
-        buf = fd.buffer
-        if bytesavailable(buf) > 0
-            i = find_newline(buf.data, buf.ptr, buf.size)
-            if i != 0
-                line = readline(buf)
-                @db 2 return line
+        # If the fd buffer already contains a complete line, return it.
+        fdbuf_n = bytesavailable(fdbuf)
+        if fdbuf_n > 0
+            if iscanon(fd) ||
+               find_newline(fdbuf.data, fdbuf.ptr, fdbuf.size) != 0
+                @db 1 return readline(fdbuf; keep=keep)
             end
         end
 
-        # Read from fd into line buffer.
-        linebuf = Vector{UInt8}(undef, C.MAX_CANON)
+        # Read new data from fd into line buffer.
         n = UnixIO.transfer(fd, linebuf, length(linebuf))
-
-        # At eof (or timeout) return empty line.
         if n == 0
-            @db 2 return ""
+            @db 1 return String(take!(fdbuf)) "EOF or timeout!"
+        end
+
+        # Prepend old data from the fd buffer.
+        if fdbuf_n > 0
+            prepend!(linebuf, take!(fdbuf))
+            n += fdbuf_n
         end
 
         # Search for end of line...
         i = find_newline(linebuf, 1, n)
+
+        # In canonical mode, `read(2)` never returns partial lines and
+        # may return lines without a newline character (if C.CEOF was sent).
+        if i == 0 && iscanon(fd)
+            i = n
+        end
+
         if i != n
             # Copy everything after the newline (or after 0) into fd buffer.
             Base.write(fd.buffer, view(linebuf, i+1:n))
+            @db 1 "\"$(String(take!(copy(fd.buffer))))\" -> buffer"
         end
+
         if i != 0
             # Found end of line.
-            if !keep
-                i -= (i > 1 && linebuf[i-1] == UInt8('\r') ? 2 : 1)
+            while !keep && (linebuf[i] == UInt8('\r') ||
+                            linebuf[i] == UInt8('\n'))
+                i -= 1
             end
             resize!(linebuf, i)
+
             line = String(linebuf)
-            @db 2 return line
+            @db 1 return line
         end
     end
 end
+
 
 @db 2 function find_newline(buf, i, j)
     checkbounds(buf, i:j)

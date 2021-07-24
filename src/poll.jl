@@ -96,7 +96,7 @@ function wait_for_event(fd::UnixFD{SleepEvents})
 end
 
 
-@db 2 function register_for_events(fd::UnixFD{T, PollEvents}) where T
+@db 2 function register_for_events(fd::UnixFD{<:Any, PollEvents})
     @nospecialize
     @dblock poll_queue.lock begin
         if fd ∉ poll_queue.set
@@ -265,7 +265,7 @@ epoll_ctl(fd::UnixFD, op, events) =
 """
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
-@db 4 function register_for_events(fd::UnixFD{T, EPollEvents}) where T
+@db 4 function register_for_events(fd::UnixFD{<:Any, EPollEvents})
     @dblock epoll_queue.lock begin
         if fd ∉ epoll_queue.set
             push!(epoll_queue.set, fd)

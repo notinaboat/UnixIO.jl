@@ -13,11 +13,11 @@ README.md: src/$(PACKAGE).jl
 		      println($(PACKAGE).readme())" > $@
 
 .PHONY: test
-test: src/$(PACKAGE).jl
-	$(JL) -e "using Pkg; \
-              Pkg.test()"
-test2:
+test:
 	$(JL) test/runtests.jl
+
+testpt:
+	$(JL) test/pseudoterminal.jl
 
 jl:
 	$(JL) -i -e "using $(PACKAGE)"

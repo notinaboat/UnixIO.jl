@@ -10,7 +10,7 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     timeout::Float64
     deadline::Float64
     gothup::Bool
-    extra::Union{T,Nothing}
+    extra::ImmutableDict{Symbol,Any}
     function WriteFD{T, E}(fd) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
         fd = new{T, E}(RawFD(fd),
@@ -21,7 +21,7 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
                       Inf,
                       Inf,
                       false,
-                      nothing)
+                      ImmutableDict{Symbol,Any}())
         register_unix_fd(fd)
         return fd
     end

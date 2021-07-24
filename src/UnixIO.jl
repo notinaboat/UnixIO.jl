@@ -82,7 +82,7 @@ https://github.com/libuv/libuv/pull/484
 
 """
 
-using Base: assert_havelock, @lock, C_NULL
+using Base: assert_havelock, @lock, C_NULL, ImmutableDict
 using ReadmeDocs
 using Preconditions
 using AsyncLog
@@ -160,11 +160,6 @@ mutable struct Process
     status::Union{Nothing, Cint}
 end
 
-mutable struct Pseudoterminal <: Stream
-    clientfd::RawFD
-    client::Union{Nothing,Process}
-end
-
 abstract type S_IFIFO <: Stream end
 abstract type S_IFCHR <: Stream end
 abstract type S_IFDIR <: MetaFile end
@@ -173,6 +168,7 @@ abstract type S_IFREG <: File end
 abstract type S_IFLNK <: MetaFile end
 abstract type S_IFSOCK <: Stream end
 
+abstract type Pseudoterminal <: S_IFCHR end
 
 fdtype(fd) = ispt(fd) ? Pseudoterminal : stattype(fd)
 
@@ -286,7 +282,7 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
         io = DuplexIO(ReadFD(fdin), WriteFD(fdout))
     else
         fd = @cerr C.open(pathname, flags, mode)
-        io = flags & C.O_WRONLY ? WriteFD(fd) : ReadFD(fd)
+        io = (flags & C.O_WRONLY) != 0 ? WriteFD(fd) : ReadFD(fd)
     end
     if timeout != nothing
         set_timeout(io, timeout)
@@ -336,7 +332,7 @@ fcntl_setfd(fd, flag) = fcntl_setfl(fd, flag; get=C.F_GETFD, set=C.F_SETFD)
 @doc README"""
 ### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
 
-    UnixIO.tcsetattr(tty::UnixFD;
+    UnixIO.tcsetattr(tty::UnixFD{S_IFCHR};
                      [iflag=IUTF8],
                      [oflag=0],
                      [cflag=C.CS8],
@@ -353,13 +349,14 @@ e.g.
     io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
 """
-@db 2 function tcsetattr(tty; iflag = C.IUTF8,
-                              oflag = 0,
-                              cflag = C.CS8,
-                              lflag = 0,
-                              speed = 0)
-    conf = C.termios_m()
-    @cerr C.tcgetattr_m(tty, Ref(conf))
+@db 2 function tcsetattr(tty::UnixFD{<:S_IFCHR};
+                         iflag = C.IUTF8,
+                         oflag = 0,
+                         cflag = C.CS8,
+                         lflag = 0,
+                         speed = 0)
+
+    conf = tcgetattr(tty)
     conf.c_iflag = iflag
     conf.c_oflag = oflag
     conf.c_cflag = cflag
@@ -368,6 +365,24 @@ e.g.
                                        eval(:(C.$(Symbol("B$speed")))))
     @cerr C.tcsetattr_m(tty, C.TCSANOW, Ref(conf))
 end
+
+@doc README"""
+    UnixIO.tcgetattr(tty::UnixFD{S_IFCHR}) -> C.termios_m
+
+Get terminal device options.
+See [tcgetattr(3)](https://man7.org/linux/man-pages/man3/tcgetattr.3.html).
+"""
+@db 2 function tcgetattr(tty::UnixFD{<:S_IFCHR}, conf=nothing)
+    conf = conf != nothing ? conf : termios(tty)
+    @cerr C.tcgetattr_m(tty, Ref(conf))
+    @db 2 return conf
+end
+
+function termios(tty::UnixFD{<:S_IFCHR})
+    get_extra(tty, :termios, ()->tcgetattr(tty, C.termios_m()))
+end
+
+iscanon(tty::UnixFD{<:S_IFCHR}) = (termios(tty).c_lflag & C.ICANON) != 0
 
 
 @db 1 function Base.close(fd::UnixFD)
@@ -385,7 +400,7 @@ end
     nothing
 end
 
-@db function wait_for_event(fd::ReadFD{Pseudoterminal})
+@db function wait_for_event(fd::ReadFD{<:Pseudoterminal})
     assert_havelock(fd)
 
     while true
@@ -397,10 +412,10 @@ end
             if event != :poll_isalive
                 return event
             end
-            if !isalive(fd.extra.client)
+            if !isalive(fd.extra[:pt_client])
                 return nothing
             end
-            @db event isalive(fd.extra.client)
+            @db event isalive(fd.extra[:pt_client])
         finally
             close(timer)
         end
@@ -408,15 +423,19 @@ end
 end
 
     
-@db 1 function Base.close(fd::ReadFD{Pseudoterminal})
-    C.close(fd.extra.clientfd)
+@db 1 function Base.close(fd::ReadFD{<:Pseudoterminal})
+    C.close(fd.extra[:pt_clientfd])
     @invoke Base.close(fd::UnixFD)
 end
 
-@db 1 function Base.close(fd::WriteFD{Pseudoterminal})
+@db 1 function Base.close(fd::WriteFD{<:Pseudoterminal})
     if !fd.isclosed                                           ;@db 1 "-> ^D 🛑"
         fd.gothup = true
-        Base.write(fd, UInt8(C.CEOF))                            
+        if iscanon(fd) 
+            # FIXME need to send "\n" as well?
+            Base.write(fd, UInt8(C.CEOF))                            
+            # FIXME do this in a shutdown method?
+        end
     end
     invoke(Base.close, Tuple{UnixFD}, fd)
 end
@@ -508,7 +527,6 @@ Return number of bytes transferred or `0` on timeout.
 @db 2 function transfer(fd::UnixFD, buf, count)
     @require !fd.isclosed
     @require count > 0
-    @require !(fd isa ReadFD) || bytesavailable(fd.buffer) == 0
 
     n = nointr_transfer(fd, buf, count)
     if n >= 0
@@ -642,11 +660,11 @@ and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
     @cerr C.unlockpt(pt)
 
     path = ptsname(pt)
-    clientfd = RawFD(@cerr C.open(path, C.O_RDWR | C.O_NOCTTY))
-    tcsetattr(clientfd; lflag = C.ICANON)
+    clientfd = @cerr C.open(path, C.O_RDONLY | C.O_NOCTTY)
 
     fd = UnixFD(pt)
-    fd.in.extra = Pseudoterminal(clientfd, nothing)
+    tcsetattr(fd.in; lflag = C.ICANON)
+    set_extra(fd.in, :pt_clientfd, clientfd)
 
     @db return fd, path
 end
@@ -889,7 +907,9 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
             @db return nothing "timeout!"
         end
 
-        delay = something(delay, exponential_delay())
+        if delay == nothing
+            delay = exponential_delay()
+        end
         t = popfirst!(delay)                                 ;@db 3 "sleep($t)"
         sleep(t)
     end
@@ -968,7 +988,7 @@ function pseudoterminal_spawn(cmd)
     pid = spawn_process(cmd, devpath)
 
     process = Process(pid, cmdin, cmdout)
-    cmdout.extra.client = process
+    set_extra(cmdout, :pt_client, process)
     return process
 end
 
