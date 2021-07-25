@@ -110,19 +110,40 @@ Base.iswritable(::ReadFD) = false
 
 
 Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
-#FIXME getsockopt - SO_NREAD ?
-#FIXME ioctl FIONREAD ?
-# SIOCINQ for sockets?
+
+@db 1 function Base.bytesavailable(fd::ReadFD{<:File}) 
+    n = bytesavailable(fd.buffer)
+    pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
+    if pos != -1
+        n += stat(fd).size - pos
+    end
+    @db 1 return n
+end
+
+@db 1 function Base.bytesavailable(fd::ReadFD{<:Stream}) 
+    n = bytesavailable(fd.buffer)
+    x = Cint(0)
+    @cerr C.ioctl(fd, C.FIONREAD, Ref(x))
+    # FXIME untested !!
+    n += x
+    @db 1 return n
+end
+
 
 fionread(fd) = (x = Cint(0); @cerr C.ioctl(fd, C.FIONREAD, Ref(x)) ; x[])
 
-# FIXME call wait_for_events instead of readavailable ??
-@db 4 function Base.eof(fd::ReadFD; timeout=Inf)
-    if bytesavailable(fd.buffer) == 0 && isopen(fd)
-        Base.write(fd.buffer, readavailable(fd; timeout=timeout))
+Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
+
+@db 1 function Base.eof(fd::ReadFD; kw...)
+    if bytesavailable(fd.buffer) > 0
+        @db 1 return false
     end
-    r = bytesavailable(fd.buffer) == 0
-    @db 4 return r
+    event = @lock fd wait_for_event(fd)                            ;@db 1 event
+    if event == C.POLLIN
+        @db 1 return false
+    end
+    Base.write(fd.buffer, readavailable(fd; kw...))
+    @db 1 return bytesavailable(fd.buffer) == 0
 end
 
 
@@ -148,7 +169,9 @@ end
 @db 2 function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)
     @require !fd.isclosed
     eof(fd; kw...) && throw(EOFError())
-    @assert bytesavailable(fd.buffer) > 0
+    if bytesavailable(fd.buffer) == 0
+        Base.write(fd.buffer, readavailable(fd; kw...))
+    end
     r = Base.read(fd.buffer, UInt8)
     @db 2 return r                                "$(repr(Char(r))) $(repr(r))"
 end
@@ -188,7 +211,11 @@ const BUFFER_SIZE = 65536
 
 @db 5 function Base.readavailable(fd::ReadFD; timeout=0)
     @require !fd.isclosed
-    buf = Vector{UInt8}(undef, BUFFER_SIZE)
+    n = bytesavailable(fd)
+    if n == 0
+        n = BUFFER_SIZE
+    end
+    buf = Vector{UInt8}(undef, n)
     n = UnixIO.read(fd, buf; timeout=timeout)                          ;@db 5 n
     resize!(buf, n)
 end

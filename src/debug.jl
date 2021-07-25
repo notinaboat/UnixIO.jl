@@ -335,9 +335,7 @@ end
 String representation of function argument.
 """
 function dbtiny(x; limit=16)
-    io = IOBuffer()
-    dbshow(debug_io_context(io), x)
-    s =String(take!(io))
+    s = dbshort(x)
     if length(s) > limit
         s = string(s[1:nextind(s,16)], "...")
     end
@@ -345,6 +343,12 @@ function dbtiny(x; limit=16)
 end
 
 dbtiny(x::Cmd) = repr(x)
+
+function dbshort(x)
+    io = IOBuffer()
+    dbshow(debug_io_context(io), x)
+    String(take!(io))
+end
 
 
 """
@@ -469,7 +473,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
         finally
             if ! _db_returned
                 debug_print(_db_level, _db_lineno,
-                            _db_result == nothing ? "👍" : repr(_db_result);
+                            _db_result == nothing ? "👍" : dbshort(_db_result);
                             function_lineno = _db_lineno,
                             function_return = _db_fname)
             end
@@ -491,7 +495,7 @@ macro debug_return(n::Int, ex::Expr, message, lineno)
 
     @require ex.head == :return
     v = gensym()
-    message = something(message, :(repr($v)))
+    message = something(message, :(dbshort($v)))
     esc(quote
         $v = $(ex.args[1])
         debug_print(_db_level, $lineno, $message; function_lineno = _db_lineno,

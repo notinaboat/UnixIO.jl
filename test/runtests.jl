@@ -25,8 +25,6 @@ cd(@__DIR__)
 
 @testset "UnixIO" begin
 
-include("pseudoterminal.jl")
-
 #for mode in ["poll(2)", "epoll(7)", "sleep(0.1)"]
 
 #@testset "UnixIO $mode" begin
@@ -120,6 +118,8 @@ close(cmdin)
 close(cmdout)
 sleep(5)
 @test isempty(UnixIO.processes)
+
+include("pseudoterminal.jl")
 
 
 #end #testset

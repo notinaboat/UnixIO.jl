@@ -546,24 +546,12 @@ Return number of bytes transferred or `0` on timeout.
         @db 2 return n
     end
 
-    if time() < fd.deadline
-        @dblock fd begin
-            # FIXME pass deadline to wait_for_event?
-            timer = register_timer(fd.deadline) do
-                @lock fd notify(fd)
-            end
-            try
-                while time() < fd.deadline
-                    n = nointr_transfer(fd, buf, count);               ;@db 2 n
-                    if n >= 0
-                        @db 2 return n
-                    end                                        ;@db 2 "wait..."
-                    wait_for_event(fd)
-                end
-            finally
-                close(timer)
-            end
-        end
+    @dblock fd while time() < fd.deadline
+        wait_for_event(fd)
+        n = nointr_transfer(fd, buf, count);                           ;@db 2 n
+        if n >= 0
+            @db 2 return n
+        end                                                    ;@db 2 "wait..."
     end
 
     @db 2 return 0 "timeout!"

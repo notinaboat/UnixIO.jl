@@ -79,17 +79,21 @@ Wait for an event to occur on `fd`.
 @db 2 function wait_for_event(fd::UnixFD)
     assert_havelock(fd)
 
+    timer = register_timer(fd.deadline) do
+        @lock fd notify(fd, :timeout)
+    end
     fd.nwaiting += 1
     event = try
         register_for_events(fd)              ;@db 2 "$(fd.nwaiting) waiting..."
         wait(fd) # Wait for: `poll_task()`
     finally
         fd.nwaiting -= 1
+        close(timer)
     end
-    x = fionread(fd)
-    if x > 0
-        @warn "fionread -> $x for $fd!"
-    end
+                                            x = fionread(fd)
+                                            if x > 0
+                                                @warn "fionread -> $x for $fd!"
+                                            end
     @db 2 return event "Ready: $fd"
 end
 
