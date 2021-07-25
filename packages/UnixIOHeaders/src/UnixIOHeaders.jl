@@ -5,6 +5,8 @@ using Base:@ccall, Cstring, Cint, Sys, Vector
 
 const __spawn_action = Cvoid
 
+ioctl(fd, cmd, arg) = @ccall ioctl(fd::Cint, cmd::Cint, arg::Ptr{Cint})::Cint
+
 using CInclude
 
 @cinclude([
@@ -12,6 +14,7 @@ using CInclude
     "<limits.h>",
     "<stdlib.h>",
     "<pthread.h>",
+    "<sys/ioctl.h>",
     "<termios.h>",
     "<fcntl.h>",
     "<poll.h>",
@@ -33,6 +36,7 @@ using CInclude
       | ru_first | ru_last 
       | NR_OPEN | ARG_MAX | LINK_MAX
       | MACH_MSG_TYPE_INTEGER_T | msgh_reserved | msgh_kind | mach_msg_kind_t
+      | ^SIOC | TC[SG]ETS[FW]?2
     """x
     )
 

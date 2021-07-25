@@ -80,6 +80,14 @@ const global_debug = GlobalDebug()
 
 function debug_init()
     global_debug.t0 = time()
+
+    env_level = parse(Int, get(ENV, "JULIA_UNIX_IO_DEBUG_LEVEL", "0"))
+    if env_level > DEBUG_LEVEL
+        @error "ENV[\"JULIA_UNIX_IO_DEBUG_LEVEL\"] = $env_level, " *
+               "but compiled-in DEBUG_LEVEL = $DEBUG_LEVEL.\n" *
+               "Debug messages above $DEBUG_LEVEL will not be displayed " *
+               "until the the UnixIO module is re-compiled."
+    end
 end
 
 
@@ -93,7 +101,9 @@ The second string is padded with whitespace.
 mutable struct TaskDebug
     indent::Vector{Tuple{String,String}}
     bg_color::Crayon
-    TaskDebug() = new([("","")], popfirst!(debug_background_colors))
+    prev::Tuple
+    leader::String
+    TaskDebug() = new([("","")], popfirst!(debug_background_colors), (), "")
 end
 
 
@@ -162,6 +172,8 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
 @noinline function debug_print(n::Int, lineno::String,
                                message::String, value="";
                                new_function="",
+                               function_lineno="",
+                               function_return="",
                                prefix::String=" │ ")
     @nospecialize
     DEBUG_LEVEL < n && return
@@ -172,6 +184,11 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
     color = debug_level_colors[max(1,n)]
     bg_color = task_local_debug().bg_color
 
+    # Has anything been logged since function entry?
+    task_local = task_local_debug()
+    function_indented = task_local.prev != (function_return, function_lineno)
+    task_local.prev = (new_function, lineno)
+
 @lock global_debug.lock begin
 
     # Create a Task ID and check for task-switch.
@@ -180,13 +197,37 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
     global_debug.task = task
 
     # Use verbose indentation if there was a task-switch.
-    indent = task_local_debug().indent[end][2] # FIXMEtask_switched ? 1 : 2]
+    indent = task_local.indent[end][2] # FIXMEtask_switched ? 1 : 2]
+
+    if function_return != ""
+        task_local.leader = ""
+        if length(function_return) > DEBUG_MIN_INDENT
+            if function_indented
+                prefix = " ╰" *
+                         repeat("─", length(function_return) - 1
+                                     - DEBUG_MIN_INDENT) *
+                         "▶ "
+            else
+                prefix = repeat(" ", length(function_return)
+                                     - DEBUG_MIN_INDENT) *
+                         " ╰▶ "
+            end
+        else
+            prefix = " ╰▶ "
+        end
+    end
+
     if indent != "" 
         indent *= prefix
     end
 
     thread_offset = repeat("   ", Threads.threadid()-1)
     extra_newline = task_switched ? "\n" : ""
+
+    if function_indented && task_local.leader != ""
+        debug_write(task_local.leader)
+        task_local.leader = ""
+    end
 
     dbprint(ioc,
         extra_newline,
@@ -231,7 +272,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
         lines = string(extra_newline,
                        wrap(line; width = width, subsequent_indent = pad),
                        "\n")
-        GC.@preserve io debug_write(pointer(lines), ncodeunits(lines))
+        debug_write(lines)
     else
         GC.@preserve io debug_write(pointer(io.data), io.size)
     end
@@ -250,7 +291,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
               "\e[0K",
               inv(bg_color),
               "\n")
-        GC.@preserve io debug_write(pointer(io.data), io.size)
+        task_local.leader = String(take!(io))
     end
 end # lock
 end
@@ -259,9 +300,9 @@ end
 """
 Write directly to STDERR.
 """
-function debug_write(p, l)
+function debug_write(fd, p, l)
     while l > 0
-        n = C.write(Base.STDERR_NO, p, l)
+        n = C.write(fd, p, l)
         if n > 0
             l -= n;
             p += n;
@@ -270,6 +311,8 @@ function debug_write(p, l)
         end
     end
 end
+debug_write(p, l) = debug_write(Base.STDIN_NO, p, l)
+debug_write(s::String) = GC.@preserve s debug_write(pointer(s), ncodeunits(s))
 
 
 debug_time(t) = round(t - global_debug.t0; digits=4)
@@ -300,6 +343,8 @@ function dbtiny(x; limit=16)
     end
     return s
 end
+
+dbtiny(x::Cmd) = repr(x)
 
 
 """
@@ -401,7 +446,6 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
         _db_fname::String = $name
         _db_level::Int = $n
         _db_returned::Bool = false
-        _db_status::String = "👍"
         _db_prefix::String = " │ "
 
         debug_print(
@@ -414,20 +458,24 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
 
         debug_indent_push(_db_fname)
 
+        _db_result = nothing
         try
             # Original function body.
-            $body
+            _db_result = $body
 
         catch _db_err
-            _db_status = "⚠️  $_db_err"
+            _db_result = "⚠️  $_db_err"
             rethrow(_db_err)
         finally
             if ! _db_returned
-                debug_print(_db_level, _db_lineno, _db_status; prefix=" ╰─ ");
-                                                                        # ▶
+                debug_print(_db_level, _db_lineno,
+                            _db_result == nothing ? "👍" : repr(_db_result);
+                            function_lineno = _db_lineno,
+                            function_return = _db_fname)
             end
             debug_indent_pop()
         end
+        _db_result
     end
     append!(head.args, body.args)
     esc(ex)
@@ -443,10 +491,11 @@ macro debug_return(n::Int, ex::Expr, message, lineno)
 
     @require ex.head == :return
     v = gensym()
-    message = something(message, v)
+    message = something(message, :(repr($v)))
     esc(quote
         $v = $(ex.args[1])
-        debug_print(_db_level, $lineno, $message; prefix=" ╰─▶ ")
+        debug_print(_db_level, $lineno, $message; function_lineno = _db_lineno,
+                                                  function_return = _db_fname)
         _db_returned = true
         return $v
     end)

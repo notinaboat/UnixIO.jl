@@ -99,6 +99,14 @@ include("stat.jl")
 @db function __init__()
     debug_init()
     @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
+    @db 1 "                     0: All `@db` messages off (replaced by `:()`)."
+    @db 1 "                     1: high level API calls."
+    @db 1 "                     2: Log event registration and polling."
+    @db 1 "                     3: Log extra internal functions."
+    @db 1 "                     4: Log event polling detail."
+    @db 1 "                     5: Log local variable state."
+    @db 1 "                     6: Extra verbose."
+
     poll_queue_init()
     atexit(kill_all_processes)
 
@@ -236,7 +244,7 @@ const fd_vector_lock = Threads.SpinLock()
 lookup_unix_fd(fd) = lookup_unix_fd(Base.cconvert(Cint, fd))
 lookup_unix_fd(fd::Cint) = @lock fd_vector_lock fd_vector[fd+1].value
 
-@db function register_unix_fd(fd::UnixFD)
+@db 2 function register_unix_fd(fd::UnixFD)
     @nospecialize
     i = 1 + convert(Cint, fd)
     @lock fd_vector_lock begin
@@ -274,6 +282,8 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
     @nospecialize
 
     flags |= C.O_NONBLOCK
+
+    # FIXME |= O_CLOEXEC ?
 
     if flags & C.O_RDWR != 0
         flags &= ~C.O_RDWR
@@ -431,10 +441,13 @@ end
 @db 1 function Base.close(fd::WriteFD{<:Pseudoterminal})
     if !fd.isclosed                                           ;@db 1 "-> ^D 🛑"
         fd.gothup = true
+        # FIXME tcdrain ? 
         if iscanon(fd) 
-            # FIXME need to send "\n" as well?
-            Base.write(fd, UInt8(C.CEOF))                            
-            # FIXME do this in a shutdown method?
+            # First CEOF terminates a possible un-terminated line.
+            # Second CEOF signals terminal closing.
+            for _ in 1:2
+                @cerr allow=C.EIO C.write(fd, Ref(UInt8(C.CEOF)), 1)
+            end
         end
     end
     invoke(Base.close, Tuple{UnixFD}, fd)
@@ -608,13 +621,13 @@ end
 Write directly to `STDOUT` or `STDERR`.
 Does not yield control from the current task.
 """
-println(x...) = raw_println(Base.STDERR_NO, x...)
+println(x...) = raw_println(Base.STDOUT_NO, x...)
 printerr(x...) = raw_println(Base.STDERR_NO, x...)
 function raw_println(fd, x...)
     io = IOBuffer()
     Base.println(io, x...)
     buf = take!(io)
-    C.write(fd, buf, length(buf))
+    GC.@preserve buf debug_write(fd, pointer(buf), length(buf))
     nothing
 end
 
@@ -661,6 +674,7 @@ and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
 
     path = ptsname(pt)
     clientfd = @cerr C.open(path, C.O_RDONLY | C.O_NOCTTY)
+    @assert !ispt(clientfd)
 
     fd = UnixFD(pt)
     tcsetattr(fd.in; lflag = C.ICANON)
@@ -751,8 +765,8 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 0000000c
 ```
 """
-@db function open(f, cmd::Cmd; capture_stderr=false, kw...)
-    process = socketpair_spawn(cmd; capture_stderr=capture_stderr)
+@db function open(f, cmd::Cmd; capture_stderr=false, env=nothing, kw...)
+    process = socketpair_spawn(cmd; env=env, capture_stderr=capture_stderr)
     run_cmd_function(f, cmd, process; kw...)
 end
 
@@ -762,8 +776,8 @@ end
 
 FIXME
 """
-@db function ptopen(f, cmd::Cmd; kw...)
-    process = pseudoterminal_spawn(cmd)
+@db function ptopen(f, cmd::Cmd; env=nothing, kw...)
+    process = pseudoterminal_spawn(env=env, cmd)
     run_cmd_function(f, cmd, process; kw...)
 end
 
@@ -976,7 +990,7 @@ function find_cmd_bin(cmd::Cmd)
     bin
 end
 
-function pseudoterminal_spawn(cmd)
+@db 3 function pseudoterminal_spawn(cmd; kw...)
 
     # Create a Pseudoterminal to communicate with Child Process STDIN/OUT.
     parent_io, devpath = openpt()
@@ -985,14 +999,14 @@ function pseudoterminal_spawn(cmd)
     fcntl_setfd(cmdin, C.O_CLOEXEC)
     fcntl_setfd(cmdout, C.O_CLOEXEC)
 
-    pid = spawn_process(cmd, devpath)
+    pid = spawn_process(cmd, devpath; kw...)
 
     process = Process(pid, cmdin, cmdout)
     set_extra(cmdout, :pt_client, process)
     return process
 end
 
-function socketpair_spawn(cmd; capture_stderr=false)
+@db 3 function socketpair_spawn(cmd; capture_stderr=false, kw...)
 
     # Create a Unix Domain Socket to communicate with Child Process STDIN/OUT.
     parent_io, child_io = socketpair()
@@ -1005,7 +1019,7 @@ function socketpair_spawn(cmd; capture_stderr=false)
     # or leave connected to Parent Process STDERR?
     child_err = capture_stderr ? child_io : RawFD(Base.STDERR_NO)
 
-    pid = spawn_process(cmd, child_io, child_io, child_err)
+    pid = spawn_process(cmd, child_io, child_io, child_err; kw...)
 
     # Close the child end of the socketpair.
     C.close(child_io)
@@ -1013,11 +1027,11 @@ function socketpair_spawn(cmd; capture_stderr=false)
     return Process(pid, cmdin, cmdout)
 end
 
-@db function spawn_process(cmd, infd, outfd=infd, errfd=outfd)
+@db 3 function spawn_process(cmd, infd, outfd=infd, errfd=outfd; kw...)
     if true #Sys.isapple
-        posix_spawn(cmd, infd, outfd, errfd)
+        posix_spawn(cmd, infd, outfd, errfd; kw...)
     else
-        fork_and_exec(cmd, infd, outfd, errfd)
+        fork_and_exec(cmd, infd, outfd, errfd; kw...)
     end
 end
 
@@ -1197,12 +1211,13 @@ function Base.show(io::IO, fd::UnixFD{T}) where T
         fd.gothup && print(io, "☠️ ")
         n = bytesavailable(fd.buffer)
         if n > 0
-            print(io, ", $n-byte buf")
+            print(io, ", $(n)📥")
         end
     end
     print(io, ")")
 end
 
+dbtiny(fd::UnixFD) = string(fd)
 
 
 # Compiler hints.

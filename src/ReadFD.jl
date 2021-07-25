@@ -112,8 +112,11 @@ Base.iswritable(::ReadFD) = false
 Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
 #FIXME getsockopt - SO_NREAD ?
 #FIXME ioctl FIONREAD ?
+# SIOCINQ for sockets?
 
+fionread(fd) = (x = Cint(0); @cerr C.ioctl(fd, C.FIONREAD, Ref(x)) ; x[])
 
+# FIXME call wait_for_events instead of readavailable ??
 @db 4 function Base.eof(fd::ReadFD; timeout=Inf)
     if bytesavailable(fd.buffer) == 0 && isopen(fd)
         Base.write(fd.buffer, readavailable(fd; timeout=timeout))
@@ -142,12 +145,12 @@ end
 end
 
 
-@db 3 function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)
+@db 2 function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)
     @require !fd.isclosed
     eof(fd; kw...) && throw(EOFError())
     @assert bytesavailable(fd.buffer) > 0
-    r = Base.read(fd.buffer, UInt8)          ;@db 2 "from buffer: '$(Char(r))'"
-    @db 3 return r
+    r = Base.read(fd.buffer, UInt8)
+    @db 2 return r                                "$(repr(Char(r))) $(repr(r))"
 end
 
 
@@ -215,20 +218,27 @@ shell sends a "bash\$ " prompt without a newline).
 This `readline` implementation is optimised for the case where `read(2)`
 returns exactly one line. However it does not assume that behaviour and
 will still work for devices not in canonical mode.
+
+Notes:
+ - TIOCSTI could be used to Insert a byte into the input queue
 """
 @db 1 function Base.readline(fd::ReadFD{<:S_IFCHR};
-                             timeout=fd.timeout, keep=false)
+                             timeout=fd.timeout,
+                             wait=true,
+                             keep::Bool=false)
     @require !fd.isclosed
 
     linebuf = Vector{UInt8}(undef, C.MAX_CANON)
     fdbuf = fd.buffer
+
+    canonical_mode = iscanon(fd) && !(fd isa ReadFD{Pseudoterminal})
 
     @with_timeout fd timeout while true
 
         # If the fd buffer already contains a complete line, return it.
         fdbuf_n = bytesavailable(fdbuf)
         if fdbuf_n > 0
-            if iscanon(fd) ||
+            if canonical_mode || !wait ||
                find_newline(fdbuf.data, fdbuf.ptr, fdbuf.size) != 0
                 @db 1 return readline(fdbuf; keep=keep)
             end
@@ -237,7 +247,8 @@ will still work for devices not in canonical mode.
         # Read new data from fd into line buffer.
         n = UnixIO.transfer(fd, linebuf, length(linebuf))
         if n == 0
-            @db 1 return String(take!(fdbuf)) "EOF or timeout!"
+            line = take!(fdbuf)
+            @db 1 return String(line) "EOF or timeout!"
         end
 
         # Prepend old data from the fd buffer.
@@ -251,20 +262,20 @@ will still work for devices not in canonical mode.
 
         # In canonical mode, `read(2)` never returns partial lines and
         # may return lines without a newline character (if C.CEOF was sent).
-        if i == 0 && iscanon(fd)
+        if i == 0 && (canonical_mode || !wait)
             i = n
         end
 
         if i != n
             # Copy everything after the newline (or after 0) into fd buffer.
             Base.write(fd.buffer, view(linebuf, i+1:n))
-            @db 1 "\"$(String(take!(copy(fd.buffer))))\" -> buffer"
+            @db 1 "$(repr(String(take!(copy(fd.buffer))))) -> buffer"
         end
 
         if i != 0
             # Found end of line.
-            while !keep && (linebuf[i] == UInt8('\r') ||
-                            linebuf[i] == UInt8('\n'))
+            while !keep && i > 0 && (linebuf[i] == UInt8('\r') ||
+                                     linebuf[i] == UInt8('\n'))
                 i -= 1
             end
             resize!(linebuf, i)

@@ -76,27 +76,30 @@ end
 """
 Wait for an event to occur on `fd`.
 """
-@db 3 function wait_for_event(fd::UnixFD)
+@db 2 function wait_for_event(fd::UnixFD)
     assert_havelock(fd)
 
     fd.nwaiting += 1
     event = try
-        register_for_events(fd)              ;@db 3 "$(fd.nwaiting) waiting..."
+        register_for_events(fd)              ;@db 2 "$(fd.nwaiting) waiting..."
         wait(fd) # Wait for: `poll_task()`
     finally
         fd.nwaiting -= 1
     end
-    @db 3 return event "Ready: $fd"
+    x = fionread(fd)
+    if x > 0
+        @warn "fionread -> $x for $fd!"
+    end
+    @db 2 return event "Ready: $fd"
 end
 
-function wait_for_event(fd::UnixFD{SleepEvents})
-    get(ENV, "JULIA_IO_EVENT_SOURCE", nothing) == "sleep" || @assert false
+@db 2 function wait_for_event(fd::UnixFD{<:Any,SleepEvents})
     Base.sleep(0.01)
     return poll_event_type(fd)
 end
 
 
-@db 2 function register_for_events(fd::UnixFD{<:Any, PollEvents})
+@db 4 function register_for_events(fd::UnixFD{<:Any, PollEvents})
     @nospecialize
     @dblock poll_queue.lock begin
         if fd ∉ poll_queue.set
@@ -104,7 +107,7 @@ end
             push!(poll_queue.fdvector, C.pollfd(fd, poll_event_type(fd), 0))
             wakeup_poll(poll_queue)                           ;@db 5 poll_queue
         else
-            @db 2 "Already registered!"
+            @db 4 "Already registered!"
         end
     end
     nothing
