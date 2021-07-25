@@ -56,6 +56,24 @@ FIXME
  - consider @noinline and @nospecialize, @noinline
  - specify types on kw args? check compiler log of methods generated
 
+Traits?
+
+ Base.IteratorSize
+    HasLength, SizeUnknown, HasShape, IsInfinite
+
+ Base.IteratorEltype
+
+ 
+ Base.IndexStyle(::Type{<:MyArray}) = IndexLinear
+
+
+map(f, a::AbstractArray, b::AbstractArray) = map(Base.IndexStyle(a, b), f, a, b)
+# generic implementation:
+map(::Base.IndexCartesian, f, a::AbstractArray, b::AbstractArray) = ...
+# linear-indexing implementation (faster)
+map(::Base.IndexLinear, f, a::AbstractArray, b::AbstractArray) = ...
+ 
+
 
 ## Related Issues?
 

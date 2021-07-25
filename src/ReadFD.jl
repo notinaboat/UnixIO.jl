@@ -122,15 +122,11 @@ end
 
 @db 1 function Base.bytesavailable(fd::ReadFD{<:Stream}) 
     n = bytesavailable(fd.buffer)
-    x = Cint(0)
-    @cerr C.ioctl(fd, C.FIONREAD, Ref(x))
-    # FXIME untested !!
-    n += x
+    n += fionread(fd)                                  ;@db 1 " [ fionread: $n"
     @db 1 return n
 end
 
-
-fionread(fd) = (x = Cint(0); @cerr C.ioctl(fd, C.FIONREAD, Ref(x)) ; x[])
+fionread(fd) = (x = Ref(Cint(0)); @cerr C.ioctl(fd, C.FIONREAD, x) ; x[])
 
 Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
 

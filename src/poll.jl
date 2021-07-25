@@ -90,10 +90,6 @@ Wait for an event to occur on `fd`.
         fd.nwaiting -= 1
         close(timer)
     end
-                                            x = fionread(fd)
-                                            if x > 0
-                                                @warn "fionread -> $x for $fd!"
-                                            end
     @db 2 return event "Ready: $fd"
 end
 
