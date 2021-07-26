@@ -222,7 +222,10 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
     end
 
     thread_offset = repeat("   ", Threads.threadid()-1)
-    extra_newline = task_switched ? "\n" : ""
+
+    if task_switched
+        debug_write("\n")
+    end
 
     if function_indented && task_local.leader != ""
         debug_write(task_local.leader)
@@ -230,8 +233,6 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
     end
 
     dbprint(ioc,
-        extra_newline,
-
         bg_color,
 
         color, "[ UnixIO $n: ", inv(color),
@@ -269,8 +270,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
         if (width - length(pad)) < 16
             pad = ""
         end
-        lines = string(extra_newline,
-                       wrap(line; width = width, subsequent_indent = pad),
+        lines = string(wrap(line; width = width, subsequent_indent = pad),
                        "\n")
         debug_write(lines)
     else
@@ -379,6 +379,9 @@ function body_split(body)
     line1(e::Expr) = e.args[1] != Symbol("@nospecialize")
     line1(::Any) = true
     i = findfirst(line1, body.args)
+    while i > 2 && body.args[i-1] isa LineNumberNode
+        i -= 1
+    end
     head = body
     body = copy(head)
     deleteat!(head.args, i:length(head.args))

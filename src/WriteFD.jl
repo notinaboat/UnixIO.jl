@@ -13,6 +13,7 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     extra::ImmutableDict{Symbol,Any}
     function WriteFD{T, E}(fd) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
+        fcntl_setfd(fd, C.O_CLOEXEC)
         fd = new{T, E}(RawFD(fd),
                       false,
                       0,
@@ -22,7 +23,6 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
                       Inf,
                       false,
                       ImmutableDict{Symbol,Any}())
-        register_unix_fd(fd)
         return fd
     end
     WriteFD(fd; events = default_event_source(fd)) =

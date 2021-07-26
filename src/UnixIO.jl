@@ -175,9 +175,6 @@ default_event_source(t::Type) = (@warn "No event source for $t!"; Nothing)
 @db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=nothing)
     @nospecialize
 
-    @require lookup_unix_fd(fd) == nothing ||
-             lookup_unix_fd(fd).isclosed
-
     r = flags & C.O_RDWR   != 0 ?  DuplexIO(ReadFD(fd), WriteFD(C.dup(fd))) :
         flags & C.O_WRONLY != 0 ?  WriteFD(fd) :
                                    ReadFD(fd)
@@ -205,35 +202,13 @@ DuplexIOs.DuplexIO(o::WriteFD, i::ReadFD) = @invoke DuplexIO(i::IO, o::IO)
 
 
 
-# Reigistry of UnixFDs indexed by FD number.
-
-const fd_vector = fill(WeakRef(nothing), 100)
-const fd_vector_lock = Threads.SpinLock()
-
-lookup_unix_fd(fd) = lookup_unix_fd(Base.cconvert(Cint, fd))
-lookup_unix_fd(fd::Cint) = @lock fd_vector_lock fd_vector[fd+1].value
-
-@db 2 function register_unix_fd(fd::UnixFD)
-    @nospecialize
-    i = 1 + convert(Cint, fd)
-    @lock fd_vector_lock begin
-        if i > length(fd_vector)
-            resize!(fd_vector, max(i, length(fd_vector) * 2))
-        end
-        fd_vector[i] = WeakRef(fd)
-    end
-    @ensure lookup_unix_fd(convert(Cint,fd)) == fd
-end
-
-
-
 README"## Opening and Closing Unix Files."
 
 
 @doc README"""
 ### `UnixIO.open` -- Open Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR | C.O_CLOEXEC],
+    UnixIO.open(pathname, [flags = C.O_RDWR],
                           [mode = 0o644]];
                           [timeout=Inf]) -> IO
 
@@ -251,7 +226,7 @@ _Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
 [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html).
 A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 """
-@db 1 function open(pathname, flags = C.O_CLOEXEC | C.O_RDWR, mode=0o644;
+@db 1 function open(pathname, flags = C.O_RDWR, mode=0o644;
                     timeout=Inf, events=nothing)
     @nospecialize
 
@@ -287,7 +262,7 @@ set_timeout(fd::DuplexIO, t) = (set_timeout(fd.in, t);
 
 
 """
-Set the file status flags.
+Get the file status flags.
 Uses `F_GETFL` to read the current flags.
 See [fcntl(2)](https://man7.org/linux/man-pages/man2/fcntl.2.html).
 """
@@ -368,16 +343,12 @@ iscanon(tty::UnixFD{<:S_IFCHR}) = (termios(tty).c_lflag & C.ICANON) != 0
 
 
 @db 1 function Base.close(fd::UnixFD)
-    @dblock fd begin
-        fd.isclosed = true
-        shutdown(fd)
-        @cerr allow=C.EBADF C.close(fd)
-        # FIXME Should we call wakeup_poll(poll_queue) here
-        #       to prevent sprurious wakeups for this fd after it is closed?
-        #       See note after `lookup_unix_fd` in poll.jl
-        notify(fd)
-        @lock fd.closed notify(fd.closed)
-    end
+    fd.isclosed = true
+    @dblock fd notify(fd)
+    yield()
+    shutdown(fd)
+    @cerr allow=C.EBADF C.close(fd)
+    @dblock fd.closed notify(fd.closed)
     @ensure !isopen(fd)
     nothing
 end
@@ -387,7 +358,7 @@ end
 
     while true
         timer = register_timer(time() + 1) do
-            @lock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
+            @dblock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
         end
         try
             event = @invoke wait_for_event(fd::ReadFD)
@@ -407,7 +378,7 @@ end
     
 @db 1 function Base.close(fd::ReadFD{<:Pseudoterminal})
     C.close(fd.extra[:pt_clientfd])
-    @invoke Base.close(fd::UnixFD)
+    @invoke Base.close(fd::ReadFD)
 end
 
 @db 1 function Base.close(fd::WriteFD{<:Pseudoterminal})
@@ -422,7 +393,7 @@ end
             end
         end
     end
-    invoke(Base.close, Tuple{UnixFD}, fd)
+    @invoke Base.close(fd::WriteFD)
 end
 
 
@@ -825,7 +796,7 @@ WSTOPSIG(x) = WEXITSTATUS(x)
 
 function Process(pid, infd, outfd)
     p = Process(pid, infd, outfd, nothing)
-    @lock processes_lock push!(processes, p)
+    @dblock processes_lock push!(processes, p)
     return p
 end
 
@@ -869,7 +840,7 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
         end
         if r == p.pid
             p.status = status[]
-            @lock processes_lock delete!(processes, p)
+            @dblock processes_lock delete!(processes, p)
             @db return p.status
         end
         if time() >= deadline
@@ -951,8 +922,6 @@ end
     parent_io, devpath = openpt()
     cmdin = parent_io.out
     cmdout = parent_io.in
-    fcntl_setfd(cmdin, C.O_CLOEXEC)
-    fcntl_setfd(cmdout, C.O_CLOEXEC)
 
     pid = spawn_process(cmd, devpath; kw...)
 
@@ -967,8 +936,7 @@ end
     parent_io, child_io = socketpair()
     cmdin = WriteFD(parent_io)
     cmdout = ReadFD(C.dup(parent_io))
-    fcntl_setfd(cmdin, C.O_CLOEXEC)
-    fcntl_setfd(cmdout, C.O_CLOEXEC)
+    @db 3 "dup($parent_io) -> $(cmdout.fd)"
 
     # Merge STDERR into STDOUT?
     # or leave connected to Parent Process STDERR?

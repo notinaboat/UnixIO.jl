@@ -14,6 +14,7 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
     extra::ImmutableDict{Symbol,Any}
     function ReadFD{T, E}(fd) where {T, E}
         fcntl_setfl(fd, C.O_NONBLOCK)
+        fcntl_setfd(fd, C.O_CLOEXEC)
         fd = new{T, E}(
                RawFD(fd),
                false,
@@ -25,7 +26,6 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
                false,
                PipeBuffer(),
                ImmutableDict{Symbol,Any}())
-        register_unix_fd(fd)
         return fd
     end
     ReadFD(fd; events = default_event_source(fd)) =
@@ -131,7 +131,7 @@ Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
     if bytesavailable(fd.buffer) > 0
         @db 1 return false
     end
-    event = @lock fd wait_for_event(fd)                            ;@db 1 event
+    event = @dblock fd wait_for_event(fd)                          ;@db 1 event
     if event == C.POLLIN
         @db 1 return false
     end

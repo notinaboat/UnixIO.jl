@@ -53,6 +53,12 @@ struct ReadsBytes end
 
 ReadStyle(::Type{S_IFIFO}) = ReadsLines()
 
+speed:
+ - fast mmap - ok for small and large requests
+ - fast local - but slow for small requests
+ - fast network - but slow for small requests
+ - slow serial - no problem with small requests
+
 event sources:
  - can be polled
  - can be selected

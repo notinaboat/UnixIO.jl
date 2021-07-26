@@ -2,50 +2,43 @@
 # Polling
 """
 
-const MAX_POLL_FD_COUNT = 1000
-
 """
 Global queue of file descriptors to poll.
 
-`register_for_events()` puts new FDs in `set`.
+`register_for_events()` puts new FDs in `fd_new`.
 
 `poll_task()` calls `poll_wait(::PollQueue)`.
 
-`poll_wait(::PollQueue)` passes `cvector` (containing C `struct pollfd`s) to
+`poll_wait(::PollQueue)` copies new FDs from `fd_new` to `poll_vector`
+then passes `poll_vector` (containing C `struct pollfd`s) to
 [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html) to wait
 for IO activity.
 
 `register_for_events()` uses `wakeup_pipe` to wake `poll(2)` when there is
-a new FD to wait for.
+a new FD waiting in `fd_new`.
 """
-mutable struct PollQueue
-    set::Set{UnixFD}
-    fdvector::Vector{C.pollfd}
+struct PollQueue
+    fd_new::Channel{UnixFD}
+    fd_del::Channel{UnixFD}
+    fd_vector::Vector{UnixFD}
+    poll_vector::Vector{C.pollfd}
     wakeup_pipe::Vector{Cint}
-    lock::Threads.SpinLock
 end
 
-const poll_queue = PollQueue(Set{UnixFD}(),
-                             fill(C.pollfd(), MAX_POLL_FD_COUNT),
+const poll_queue = PollQueue(Channel{UnixFD}(Inf),
+                             Channel{UnixFD}(Inf),
                              [],
-                             Threads.SpinLock())
+                             [],
+                             [])
 
 
 @db function poll_queue_init()
 
-    # Check that fdvector does not get reallocated when emptied and refilled.
-    fdvector_p = pointer(poll_queue.fdvector)
-    empty!(poll_queue.fdvector)
-    for i in 1:MAX_POLL_FD_COUNT
-        push!(poll_queue.fdvector, C.pollfd(1,2,3))
-    end
-    empty!(poll_queue.fdvector)
-    @assert pointer(poll_queue.fdvector) == fdvector_p
-
     # Pipe for asking `poll(2)` to return before timeout.
-    poll_queue.wakeup_pipe = wakeup_pipe()
-    push!(poll_queue.fdvector,
-          C.pollfd(poll_queue.wakeup_pipe[1], C.POLLIN, 0))
+    copy!(poll_queue.wakeup_pipe, wakeup_pipe())
+    fd = poll_queue.wakeup_pipe[1]
+    push!(poll_queue.poll_vector, C.pollfd(fd, C.POLLIN, 0))
+    push!(poll_queue.fd_vector, ReadFD(fd))
 
     # Global Task to run `poll(2)`.
     Threads.@spawn poll_task(poll_queue)              ;@db "@spawn poll_task()"
@@ -70,6 +63,7 @@ Write a byte to the pipe to wake up `poll(2)` before its timeout.
 """
 function wakeup_poll(q::PollQueue);                       @db 3 "wakeup_poll()"
     @cerr C.write(q.wakeup_pipe[2], Ref(0), 1)
+    nothing
 end
 
 
@@ -80,15 +74,20 @@ Wait for an event to occur on `fd`.
     assert_havelock(fd)
 
     timer = register_timer(fd.deadline) do
-        @lock fd notify(fd, :timeout)
+        @dblock fd notify(fd, :timeout)
     end
     fd.nwaiting += 1
     event = try
-        register_for_events(fd)              ;@db 2 "$(fd.nwaiting) waiting..."
+        register_for_events(fd)
+        @db 2 "$(fd.nwaiting) waiting for $fd..."
         wait(fd) # Wait for: `poll_task()`
     finally
-        fd.nwaiting -= 1
         close(timer)
+        @assert fd.nwaiting > 0
+        fd.nwaiting -= 1
+        if fd.nwaiting == 0
+            unregister_for_events(fd)
+        end
     end
     @db 2 return event "Ready: $fd"
 end
@@ -100,17 +99,14 @@ end
 
 
 @db 4 function register_for_events(fd::UnixFD{<:Any, PollEvents})
-    @nospecialize
-    @dblock poll_queue.lock begin
-        if fd ∉ poll_queue.set
-            push!(poll_queue.set, fd)
-            push!(poll_queue.fdvector, C.pollfd(fd, poll_event_type(fd), 0))
-            wakeup_poll(poll_queue)                           ;@db 5 poll_queue
-        else
-            @db 4 "Already registered!"
-        end
-    end
-    nothing
+    put!(poll_queue.fd_new, fd)
+    wakeup_poll(poll_queue)                                   ;@db 5 poll_queue
+end
+
+
+@db 4 function unregister_for_events(fd::UnixFD{<:Any, PollEvents})
+    put!(poll_queue.fd_del, fd)
+    wakeup_poll(poll_queue)
 end
 
 
@@ -138,7 +134,6 @@ Run `poll_wait()` in a loop.
                     fd.gothup = true
                     @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
-                @dblock q.lock delete!(q.set, fd)
                 if fd.nwaiting <= 0
                     @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
                 else
@@ -147,7 +142,7 @@ Run `poll_wait()` in a loop.
                 end
             end
         catch err
-            notify_error(q.set, err)
+            notify_error(q, err)
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
         end
@@ -156,9 +151,10 @@ Run `poll_wait()` in a loop.
     @assert false
 end
 
-function notify_error(fds, err)
-    for fd in fds
-        @lock fd Base.notify_error(fd.ready, err)
+
+function notify_error(q::PollQueue, err)
+    for fd in q.fd_vector
+        @lock fd.ready Base.notify_error(fd.ready, err)
     end
 end
 
@@ -166,36 +162,54 @@ end
 gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
 
 
-
 """
-Wait for events.
-When events occur, notify waiters and remove entries from queue.
-Return false if the queue is empty.
+- Update `poll_vector` based on `fd_del` and `fd_new`.
+- Wait for events.
+- Call `f(events, fd)` for each event.
 """
 @db 4 function poll_wait(f::Function, q::PollQueue, timeout_ms::Int)
 
-    # Wait for events
-    v = q.fdvector                                         
+    fdv = q.fd_vector                                         
+    pollv = q.poll_vector                                         
     timeout_ms = next_timer_deadline_ms(timeout_ms)
     @db 4 " [ poll($timeout_ms ms)..."
-    n = @cerr(allow=C.EINTR, gc_safe_poll(v, length(v), timeout_ms))   ;@db 5 n
-                                                                       ;@db 3 v
+
+    # Remove old entries from fd_vector and poll_vector.
+    while !isempty(q.fd_del)
+        fd = take!(q.fd_del)
+        i = findfirst(isequal(fd), fdv)
+        if i != nothing                                        ;@db 4 "del $fd"
+            deleteat!(pollv, i)
+            deleteat!(fdv, i)
+        end
+    end
+
+    # Add new entries to fd_vector and poll_vector.
+    while !isempty(q.fd_new)
+        fd = take!(q.fd_new)                                   ;@db 4 "add $fd"
+        pushfirst!(fdv, fd)
+        pushfirst!(pollv, C.pollfd(fd, poll_event_type(fd), 0))
+    end
+
+    # Wait for events
+    n = @cerr(allow=C.EINTR,
+              gc_safe_poll(pollv, length(pollv), timeout_ms))          ;@db 5 n
+                                                                   ;@db 4 pollv
     # Check poll vector for events.
-    del = Int[]
-    for (i, e) in enumerate(v)
+    indexes_to_delete = Int[]
+    for (i, e) in enumerate(pollv)
         if e.revents != 0
             if e.fd == q.wakeup_pipe[1]
                 C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 4 "got wakeup!"
             else
-                push!(del, i)
-                fd = lookup_unix_fd(e.fd)
-                @assert fd != nothing "Can't find UnixFD for $e!" *
-                                      " (Need wakeup_poll() in close?)"
-                f(e.revents, fd)
+                push!(indexes_to_delete, i)
+                @assert RawFD(e.fd) == fdv[i].fd
+                f(e.revents, fdv[i])
             end
         end
     end
-    @dblock q.lock deleteat!(v, del)                               ;@db 6 del v
+    deleteat!(pollv, indexes_to_delete)                        ;@db 6 del pollv
+    deleteat!(fdv, indexes_to_delete)
 
     # Check for timeouts.
     notify_timers()
@@ -221,13 +235,13 @@ See PollQueue above.
 """
 mutable struct EPollQueue
     fd::RawFD
-    set::Set{UnixFD}
+    dict::Dict{RawFD,UnixFD}
     cvector::Vector{epoll_event}
     lock::Threads.SpinLock
 end
 
 const epoll_queue = EPollQueue(RawFD(-1),
-                               Set{UnixFD}(),
+                               Dict{RawFD,UnixFD}(),
                                Vector{epoll_event}(undef, 10),
                                Threads.SpinLock())
 
@@ -256,14 +270,15 @@ end
 Add, modify or delete epoll target FDs.
 See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
 """
-function epoll_ctl(fd, op, events, data=fd)
-    e = [epoll_event(events, data)]
-    GC.@preserve e @cerr(allow=C.EBADF, #FIXME just ignore EBADF?
+@db 4 function epoll_ctl(fd, op, events=0, data=fd; allow=())
+                                                  @db 4 fd db_c(op,"EPOLL_CTL")
+    e = [epoll_event(events, fd)]             
+    GC.@preserve e @cerr(allow=allow,
                          C.epoll_ctl(epoll_queue.fd, op, fd, pointer(e)))
 end
 
-epoll_ctl(fd::UnixFD, op, events) =
-    epoll_ctl(fd.fd, op, events, pointer_from_objref(fd))
+epoll_ctl(fd::UnixFD, op, events=0; kw...) =
+    epoll_ctl(convert(Cint, fd), op, events; kw...)
 
 
 """
@@ -271,11 +286,20 @@ Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
 @db 4 function register_for_events(fd::UnixFD{<:Any, EPollEvents})
     @dblock epoll_queue.lock begin
-        if fd ∉ epoll_queue.set
-            push!(epoll_queue.set, fd)
+        if !haskey(epoll_queue.dict, fd.fd)
+            epoll_queue.dict[fd.fd] = fd
             epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
         else
             @db 2 "Already registered!"
+        end
+    end
+end
+
+@db 4 function unregister_for_events(fd::UnixFD{<:Any, EPollEvents})
+    @dblock epoll_queue.lock begin
+        if haskey(epoll_queue.dict, fd.fd)
+            delete!(epoll_queue.dict, fd.fd)
+            epoll_ctl(fd, C.EPOLL_CTL_DEL)#; allow=C.ENOENT)
         end
     end
 end
@@ -289,18 +313,29 @@ Call `epoll_wait(7)` to wait for events.
 Call `f(events, fd)` for each event.
 """
 @db 4 function poll_wait(f::Function, q::EPollQueue, timeout_ms::Int)
-    v = q.cvector
+    v = q.cvector                                                 ;@db 6 q.dict
     n = @cerr(allow=C.EINTR,
-              gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))
+              gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))    ;@db 6 n v
     if n >= 0
         for i in 1:n
-            p = Ptr{Cvoid}(UInt(v[i].data))
-            fd = unsafe_pointer_to_objref(p)
-            epoll_ctl(fd, C.EPOLL_CTL_DEL, 0)
-            f(v[i].events, fd)
+            fd = get(q.dict, RawFD(v[i].data), nothing)             ;@db 6 i fd
+            if fd == nothing
+                @error "Ignoring epoll_wait() notification v[$i] = $(v[i]) " *
+                       "for unknown FD (already deleted?)." v[i] q.dict
+            else
+                unregister_for_events(fd)
+                f(v[i].events, fd)
+            end
         end
     end
     nothing
+end
+
+
+function notify_error(q::EPollQueue, err)
+    for fd in values(q.dict)
+        @lock fd Base.notify_error(fd.ready, err)
+    end
 end
 
 
@@ -317,9 +352,7 @@ Base.show(io::IO, fd::C.pollfd) =
 
 
 Base.show(io::IO, q::PollQueue) =
-    dbprint(io, "(", q.set, ", ", q.fdvector,
-                     (islocked(q.lock) ? ", 🔒" : ())...,
-                ")")
+    dbprint(io, "(", q.fd_vector, ", ", q.poll_vector, ")")
 
 
 

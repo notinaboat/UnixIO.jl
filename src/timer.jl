@@ -153,7 +153,7 @@ If `predicate()` is false, repeatently `wait(condition)` until
     end
     @dblock condition begin
         timer = register_timer(deadline) do
-            @lock condition notify(condition)
+            @dblock condition notify(condition)
         end
         try
             while !predicate() && time() < deadline         ;@db 3 "waiting..."

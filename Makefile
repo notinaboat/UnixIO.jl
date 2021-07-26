@@ -15,7 +15,7 @@ README.md: src/$(PACKAGE).jl
 
 .PHONY: test
 test:
-	$(JL) test/runtests.jl
+	JULIA_UNIX_IO_DEBUG_LEVEL=0 $(JL) test/runtests.jl
 
 testptdb:
 	JULIA_UNIX_IO_DEBUG_LEVEL=2 $(JL) test/pseudoterminal.jl
