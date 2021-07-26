@@ -126,5 +126,17 @@ function destructure_callex(ex)
 end
 
 
+macro selfdoc(ex)
+    @require ex isa Expr && ex.head == Symbol("=")
+    docex = copy(ex)
+    Base.remove_linenums!(docex)
+    body = docex.args[2]
+    if body.head == :block && length(body.args) == 1
+        docex.args[2] = body.args[1]
+    end
+    doc = string("```\n", docex, "\n```\n")
+    esc(:(@doc($doc, $ex)))
+end
+
 
 # End of file: errors.jl

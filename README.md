@@ -36,7 +36,8 @@ If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `sleep` IO polling is done by a dumb
 
 ### `UnixIO.open` -- Open Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
+    UnixIO.open(pathname, [flags = C.O_RDWR | O_CLOEXEC],
+                          [mode = 0o644]];
                           [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
@@ -49,6 +50,10 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
+_Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
+[`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html).
+A `RawFD` can be opened in blocking mode by calling `C.open` directly._
+
 
 ### `UnixIO.set_timeout` -- Configure Timeouts.
 
@@ -59,8 +64,12 @@ Configure `fd` to limit IO operations to `timeout` seconds.
 
 ### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
 
-    UnixIO.tcsetattr(tty::UnixFD;
-                     [iflag=0], [oflag=0], [cflag=C.CS8], [lflag=0], [speed=0])
+    UnixIO.tcsetattr(tty::UnixFD{S_IFCHR};
+                     [iflag=IUTF8],
+                     [oflag=0],
+                     [cflag=C.CS8],
+                     [lflag=0],
+                     [speed=0])
 
 Set terminal device options.
 
@@ -71,6 +80,12 @@ e.g.
 
     io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
     UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
+
+
+    UnixIO.tcgetattr(tty::UnixFD{S_IFCHR}) -> C.termios_m
+
+Get terminal device options.
+See [tcgetattr(3)](https://man7.org/linux/man-pages/man3/tcgetattr.3.html).
 
 
 ### `UnixIO.shutdown` -- Signal end of transmission or reception.
@@ -125,6 +140,18 @@ Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 
 
+### `UnixIO.openpt()` -- Open a pseudoterminal device.
+
+    UnixIO.openpt([flags = C._NOCTTY | C.O_RDWR]) -> ptfd::UnixFD, "/dev/pts/X"
+
+Open an unused pseudoterminal device, returning:
+a file descriptor that can be used to refer to that device,
+and the path of the pseudoterminal device.
+
+See [posix_openpt(3)](https://man7.org/linux/man-pages/man2/posix_openpt.3.html)
+and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
+
+
 ## Executing Unix Commands.
 
 ### `sh"cmd"` -- Shell command string.
@@ -173,6 +200,11 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64 21              |Hello World!|
 0000000c
 ```
+
+
+### `UnixIO.ptopen(::Cmd) do...` -- Run a sub-process in a pseudoterminal.
+
+FIXME
 
 
 ### `UnixIO.read(::Cmd)` -- Read sub-process output.

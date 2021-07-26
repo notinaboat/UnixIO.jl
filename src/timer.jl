@@ -27,23 +27,9 @@ end
 Block the current task for a specified number of seconds.
 (Waits for a timer based on `UnixIO.poll_wait()`).
 """
-@db 1 function sleep(seconds::Float64)
-    deadline = time() + seconds
-    t = register_timer(notify_sleep_condition, deadline)
-    lock(sleep_condition)
-    try
-        while time() < deadline;                             @db 5 "waiting..."
-            wait(sleep_condition)
-        end
-    finally
-        unlock(sleep_condition)
-        close(t)
-    end
-end
-sleep(t) = sleep(convert(Float64, t))
+sleep(seconds::Float64) = wait_timeout(sleep_condition, seconds)
 
 const sleep_condition = Base.ThreadSynchronizer()
-notify_sleep_condition() = @lock sleep_condition notify(sleep_condition)
 
 
 """
@@ -152,6 +138,36 @@ Notify timers whos `deadline` has passed and remove from vector.
     nothing
 end
 
+
+"""
+    wait_until(condition, [predicate=()->false], deadline)
+
+If `predicate()` is false, repeatently `wait(condition)` until
+`predicate()` is true (or until `deadline` is reached).
+"""
+@db 3 function wait_until(condition::Base.GenericCondition,
+                          predicate,
+                          deadline::Float64)
+    if predicate()
+        return
+    end
+    @dblock condition begin
+        timer = register_timer(deadline) do
+            @lock condition notify(condition)
+        end
+        try
+            while !predicate() && time() < deadline         ;@db 3 "waiting..."
+                wait(condition)
+            end
+        finally
+            close(timer)
+        end
+    end
+    nothing
+end
+
+wait_until(c, d) = wait_until(c, ()->false, d)
+@selfdoc wait_timeout(c, t) = wait_until(c, time() + Float64(t))
 
 
 # Pretty Printing.

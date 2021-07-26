@@ -2,7 +2,7 @@
 
 
 function fstat(fd)
-    #FIXME 
+    FIXME 
     s = Ref(C.stat64())
     @cerr C.fstat64(fd, s)
     return s[]

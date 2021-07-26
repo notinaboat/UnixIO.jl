@@ -49,57 +49,6 @@ if get(ENV, "JULIA_UNIX_IO_EXPORT_ALL", "0") != "0"
 end
 
 
-"""
-FIXME
-  - Channel API?
-      - all options configured on channel, not passed to take!
- - consider @noinline and @nospecialize, @noinline
- - specify types on kw args? check compiler log of methods generated
-
-Traits?
-
- Base.IteratorSize
-    HasLength, SizeUnknown, HasShape, IsInfinite
-
- Base.IteratorEltype
-
- 
- Base.IndexStyle(::Type{<:MyArray}) = IndexLinear
-
-
-map(f, a::AbstractArray, b::AbstractArray) = map(Base.IndexStyle(a, b), f, a, b)
-# generic implementation:
-map(::Base.IndexCartesian, f, a::AbstractArray, b::AbstractArray) = ...
-# linear-indexing implementation (faster)
-map(::Base.IndexLinear, f, a::AbstractArray, b::AbstractArray) = ...
- 
-
-
-## Related Issues?
-
-https://github.com/JuliaLang/julia/issues/14747
-Intermittent deadlock in readbytes(open(echo \$text)) on Linux ? #14747
-
-Spawning turns IO race into process hang #24440
-https://github.com/JuliaLang/julia/issues/24440
-
-Redirected STDOUT on macOS is hanging when more than 512 bytes are written at once #20812
-https://github.com/JuliaLang/julia/issues/20812
-
-Deadlock in reading stdout from cmd #22832
-https://github.com/JuliaLang/julia/issues/22832
-
-support serial port #1970
-https://github.com/libuv/libuv/issues/1970
-
-Pseudo-tty support #2640
-https://github.com/libuv/libuv/issues/2640
-
-add uv_device_t as stream on windows and Linux to handle device IO #484
-https://github.com/libuv/libuv/pull/484
-
-"""
-
 using Base: assert_havelock, @lock, C_NULL, ImmutableDict
 using ReadmeDocs
 using Preconditions
@@ -196,6 +145,7 @@ abstract type S_IFSOCK <: Stream end
 
 abstract type Pseudoterminal <: S_IFCHR end
 
+
 fdtype(fd) = ispt(fd) ? Pseudoterminal : stattype(fd)
 
 stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
@@ -254,6 +204,7 @@ DuplexIOs.DuplexIO(i::ReadFD, o::WriteFD) = @invoke DuplexIO(i::IO, o::IO)
 DuplexIOs.DuplexIO(o::WriteFD, i::ReadFD) = @invoke DuplexIO(i::IO, o::IO)
 
 
+
 # Reigistry of UnixFDs indexed by FD number.
 
 const fd_vector = fill(WeakRef(nothing), 100)
@@ -282,7 +233,8 @@ README"## Opening and Closing Unix Files."
 @doc README"""
 ### `UnixIO.open` -- Open Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR, [mode = 0o644]];
+    UnixIO.open(pathname, [flags = C.O_RDWR | C.O_CLOEXEC],
+                          [mode = 0o644]];
                           [timeout=Inf]) -> IO
 
 Open the file specified by pathname.
@@ -294,14 +246,16 @@ The `IO` returned by `UnixIO.open` can be used with
 the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
+
+_Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
+[`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html).
+A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 """
-@db 1 function open(pathname, flags = C.O_RDWR, mode=0o644;
+@db 1 function open(pathname, flags = C.O_CLOEXEC | C.O_RDWR, mode=0o644;
                     timeout=Inf, events=nothing)
     @nospecialize
 
     flags |= C.O_NONBLOCK
-
-    # FIXME |= O_CLOEXEC ?
 
     if flags & C.O_RDWR != 0
         flags &= ~C.O_RDWR
@@ -477,24 +431,7 @@ Base.isopen(fd::UnixFD) = !fd.isclosed
 
 @db 1 function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
                                            deadline=timeout+time())
-    @dblock fd.closed begin
-        timer = register_timer(deadline) do
-            @lock fd nofify(fd.closed)
-        end
-        try
-            while isopen(fd) && time() < deadline           ;@db 3 "waiting..."
-                wait(fd.closed)
-# FIXME               if fd isa ReadFD
-#                    wait_for_event(fd)
-#                else
-#                    wait(fd) # FIXME reconsider
-#                end
-            end
-        finally
-            close(timer)
-        end
-    end
-    nothing
+    wait_until(fd.closed, ()->!isopen(fd), deadline)
 end
 
 
@@ -756,9 +693,12 @@ system(cmd::Cmd) = system(join(cmd.exec, " "))
 
 Run `cmd` using `posix_spawn`.
 
-Connect (STDIN, STDOUT) to (`cmdin`, `cmdout`).
+Call `f(cmdin, cmdout)`
+with (STDIN, STDOUT) of `cmd` connected to (`cmdin`, `cmdout`).
 
-Call `f(cmdin, cmdout)`.
+If `capture_stderr` is `true` STDERR of `cmd` is merged into `cmdout`.
+
+If `check_status` is `true` an exception is thrown on non-zero exit status.
 
 e.g.
 ```
@@ -780,7 +720,16 @@ end
 @doc README"""
 ### `UnixIO.ptopen(::Cmd) do...` -- Run a sub-process in a pseudoterminal.
 
-FIXME
+    UnixIO.ptopen(f, cmd::Cmd; [env=ENV, check_status=true])
+
+Run `cmd` using `posix_spawn`.
+
+Call `f(cmdin, cmdout)` with (STDIN, STDOUT and STDERR) of `cmd`
+connected to (`cmdin`, `cmdout`) via a pseudoterminal.
+
+If `check_status` is `true` an exception is thrown on non-zero exit status.
+
+Run `cmd` using `posix_spawn`.
 """
 @db function ptopen(f, cmd::Cmd; env=nothing, kw...)
     process = pseudoterminal_spawn(env=env, cmd)

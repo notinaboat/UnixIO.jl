@@ -93,9 +93,6 @@ end
 end
 
 
-# FIXME can be !isopen() but not yet eof().
-#Base.isopen(fd::ReadFD) = !eof(fd) || !isclosed(fd)
-
 shutdown(fd::ReadFD) = shutdown(fd, C.SHUT_RD)
 
 @static if isdefined(Base, :shutdown)

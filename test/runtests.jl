@@ -1,25 +1,13 @@
 using Test
 using UnixIO
 
-# FIXME
+"""
+# Test Cases to add
+
+- Close while transfer is waiting.
+
+"""
  
-#= readline returns parital line
-
-julia> buf = PipeBuffer()
-julia> write(buf, "foobar\nxx")
-julia> readline(buf)
-"foobar"
-
-julia> readline(buf)
-"xx"
-=# 
-
-#=
-
-Test that readline from /dev/pts reads one line per read(2) call
-even if many lines are written at once.
-
-=# 
 
 cd(@__DIR__)
 
@@ -105,6 +93,7 @@ try
     UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
 catch
 end
+@show time() - t0
 @test abs((time() - t0) - 2.4) < 0.2
 
 sleep(1)

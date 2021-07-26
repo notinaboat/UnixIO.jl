@@ -234,9 +234,10 @@ const epoll_queue = EPollQueue(RawFD(-1),
 @db function epoll_queue_init()
 
     @assert Sys.ARCH != :x86_64 """
-        FIXME: UnixIO does not support epoll on x86_64!
+        FIXME: UnixIO does not support epoll on x86_64 because
         `struct epoll_event` has `__attribute__((packed))` on x86.
         See https://git.io/JCGMK and https://git.io/JCGDz
+        This is not difficult to work around but is not handled yet.
     """
     @assert C.EPOLLIN == C.POLLIN
     @assert C.EPOLLOUT == C.POLLOUT
@@ -257,7 +258,7 @@ See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
 """
 function epoll_ctl(fd, op, events, data=fd)
     e = [epoll_event(events, data)]
-    GC.@preserve e @cerr(allow=C.EBADF, #FIXME ?
+    GC.@preserve e @cerr(allow=C.EBADF, #FIXME just ignore EBADF?
                          C.epoll_ctl(epoll_queue.fd, op, fd, pointer(e)))
 end
 
