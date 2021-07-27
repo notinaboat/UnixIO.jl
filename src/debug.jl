@@ -6,16 +6,6 @@ using TextWrap
 using REPL
 
 
-if get(ENV, "JULIA_UNIX_IO_EXPORT_DEBUG", "0") != "0"
-    export @db,
-           @debug_print,
-           @debug_show,
-           dbshow,
-           dbprint,
-           debug_print,
-           _db_prefix
-end
-
 include("debug_recompile_trigger.jl") # The Makefile touches this file to force
                                       # recompilation. e.g. for ENV changes.
 
@@ -177,6 +167,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
                                prefix::String=" │ ")
     @nospecialize
     DEBUG_LEVEL < n && return
+    @ccall(jl_generating_output()::Cint) == 1 && return
 
     io = IOBuffer()
     ioc = debug_io_context(io)
@@ -310,8 +301,9 @@ function debug_write(fd, p, l)
             @assert errno() in (C.EAGAIN, C.EINTR)
         end
     end
+    tcdrain(fd)
 end
-debug_write(p, l) = debug_write(Base.STDIN_NO, p, l)
+debug_write(p, l) = debug_write(Base.STDERR_NO, p, l)
 debug_write(s::String) = GC.@preserve s debug_write(pointer(s), ncodeunits(s))
 
 
@@ -678,6 +670,28 @@ end
 ║  ║  ║ │  │  │ │  │ ┃  ┃  ┃ ╍┅┄│┆┊╎  ▁▂▃▄▅▆▇█▉▊▋▌▍▎▏
 ╚══╩══╝ └──┴──┘ ╰──╯ ┗━━┻━━┛    ▼                    
 """
+
+
+
+# Optional Exports.
+
+module Debug
+
+    for x in (Symbol("@db"),
+              Symbol("@debug_print"),
+              Symbol("@debug_function"),
+              Symbol("@debug_show"),
+              :dbshow,
+              :dbtiny,
+              :dbprint,
+              :debug_print,
+              :debug_indent_push,
+              :debug_indent_pop,
+              :_db_prefix)
+
+       eval(:(import ..UnixIO:$x; export $x))
+   end
+end
 
 
 

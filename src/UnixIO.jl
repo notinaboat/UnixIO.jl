@@ -8,7 +8,7 @@ For Julia programs that need to interact with Unix-specific IO interfaces.
 e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
 
     using UnixIO
-    const C = UnixIO.C
+    using UnixIO: C
 
     UnixIO.read(`curl https://julialang.org`, String; timeout=5)
 
@@ -44,7 +44,6 @@ module UnixIO
 export UnixFD, DuplexIO, @sh_str
 
 if get(ENV, "JULIA_UNIX_IO_EXPORT_ALL", "0") != "0"
-    ENV["JULIA_UNIX_IO_EXPORT_DEBUG"] = "1"
     export C, constant_name
 end
 
@@ -58,12 +57,16 @@ using DuplexIOs
 using UnixIOHeaders
 const C = UnixIOHeaders
 
+include("ccall.jl")
 include("errors.jl")
 include("debug.jl")
 include("stat.jl")
 
 
 @db function __init__()
+
+    @ccall(jl_generating_output()::Cint) == 1 && return
+
     debug_init()
     @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
     @db 1 "                     0: All `@db` messages off (replaced by `:()`)."
@@ -234,11 +237,11 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 
     if flags & C.O_RDWR != 0
         flags &= ~C.O_RDWR
-        fdout = @cerr C.open(pathname, flags | C.O_WRONLY, mode)
-        fdin = @cerr C.open(pathname, flags)
+        fdout = @cerr gc_safe_open(pathname, flags | C.O_WRONLY, mode)
+        fdin = @cerr gc_safe_open(pathname, flags)
         io = DuplexIO(ReadFD(fdin), WriteFD(fdout))
     else
-        fd = @cerr C.open(pathname, flags, mode)
+        fd = @cerr gc_safe_open(pathname, flags, mode)
         io = (flags & C.O_WRONLY) != 0 ? WriteFD(fd) : ReadFD(fd)
     end
     if timeout != nothing
@@ -247,6 +250,8 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
     @ensure isopen(io)
     @db 1 return io
 end
+
+gc_safe_open(a...) = @gc_safe C.open(a...)
 
 
 @doc README"""
@@ -257,8 +262,7 @@ end
 Configure `fd` to limit IO operations to `timeout` seconds.
 """
 set_timeout(fd::UnixFD, t) = fd.timeout = t
-set_timeout(fd::DuplexIO, t) = (set_timeout(fd.in, t);
-                                set_timeout(fd.out, t))
+DuplexIOs.@wrap set_timeout
 
 
 """
@@ -323,6 +327,9 @@ e.g.
     @cerr C.tcsetattr_m(tty, C.TCSANOW, Ref(conf))
 end
 
+DuplexIOs.@wrap tcsetattr
+
+
 @doc README"""
     UnixIO.tcgetattr(tty::UnixFD{S_IFCHR}) -> C.termios_m
 
@@ -340,6 +347,34 @@ function termios(tty::UnixFD{<:S_IFCHR})
 end
 
 iscanon(tty::UnixFD{<:S_IFCHR}) = (termios(tty).c_lflag & C.ICANON) != 0
+
+
+@doc README"""
+### `UnixIO.flush` -- Discard untransmitted data.
+
+    tcflush(tty, flags)
+
+See [tcflush(3p)](https://man7.org/linux/man-pages/man3/tcflush.3p.html)
+"""
+tcflush(tty, flags) = @cerr C.tcflush(tty, flags)
+
+DuplexIOs.@wrap tcflush
+
+tcdrain(tty) = @cerr C.tcdrain(tty)
+
+DuplexIOs.@wrap tcdrain
+
+
+@doc README"""
+### `UnixIO.tiocgwinsz` -- Get Terminal size.
+
+    tiocgwinsz(tty) -> C.winsize
+
+See [tty_ioctl(4)](https://man7.org/linux/man-pages/man4/tty_ioctl.4.html)
+"""
+tiocgwinsz(tty) = (x=[C.winsize()]; @cerr C.ioctl(tty, C.TIOCGWINSZ, x); x[1])
+
+tiocgwinsz(tty::DuplexIO) = tiocgwinsz(tty.out)
 
 
 @db 1 function Base.close(fd::UnixFD)
@@ -645,7 +680,7 @@ Darwin 20.3.0 x86_64
 ```
 """
 @db function system(command)
-    r = @cerr C.system(command)
+    r = @cerr gc_safe_system(command)
     if r != 0
         throw(ErrorException("UnixIO.system termination status: $r"))
     end
@@ -654,6 +689,7 @@ end
 
 system(cmd::Cmd) = system(join(cmd.exec, " "))
 
+gc_safe_system(c) = @gc_safe C.system(c)
 
 
 

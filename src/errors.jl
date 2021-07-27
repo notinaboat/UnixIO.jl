@@ -80,15 +80,6 @@ macro cerr0(ex)
 end
 
 
-macro gc_safe(ex)
-    quote
-        old_state = @ccall jl_gc_safe_enter()::Int8
-        n = $(esc(ex))
-        @ccall jl_gc_safe_leave(old_state::Int8)::Cvoid
-        n
-    end
-end
-
 # FIXME copy/paste from base/util.jl: https://git.io/J8vC5
 """
     @invoke f(arg::T, ...; kwargs...)

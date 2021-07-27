@@ -15,6 +15,9 @@
 
 ### Waiting for Child Processes
 
+ - P_PIDFD -  https://man7.org/linux/man-pages/man2/waitpid.2.html
+        #define P_PIDFD		3
+
  - SIGCHILD ? 
  - sleep poll ?
  - signalfd ?

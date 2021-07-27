@@ -4,6 +4,7 @@ export JULIA_PROJECT = $(PWD)
 export JULIA_DEPOT_PATH = $(CURDIR)/../jl_depot
 export JULIA_NUM_THREADS = 8
 export JULIA_UNIX_IO_EXPORT_ALL = 1
+export JULIA_DEBUG=loading
 
 all: README.md test
 
