@@ -104,9 +104,11 @@ Base.isreadable(fd::ReadFD) = Base.isopen(fd)
 Base.iswritable(::ReadFD) = false
 
 
-Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
+Base.bytesavailable(fd::ReadFD) = bytesavailable_with(ReadBuffering(fd), fd)
 
-@db 1 function Base.bytesavailable(fd::ReadFD{<:File}) 
+bytesavailable_with(::NotBuffered, fd) = bytesavaliable(fd.buffer)
+
+@db 1 function bytesavailable_with(::KnownFileSize, fd)
     n = bytesavailable(fd.buffer)
     pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
     if pos != -1
@@ -115,13 +117,13 @@ Base.bytesavailable(fd::ReadFD) = bytesavailable(fd.buffer)
     @db 1 return n
 end
 
-@db 1 function Base.bytesavailable(fd::ReadFD{<:Stream}) 
-    n = bytesavailable(fd.buffer)
-    n += fionread(fd)                                  ;@db 1 " [ fionread: $n"
-    @db 1 return n
+@db 1 function bytesavailable_with(::KnownBufferSize, fd)
+    @assert bytesavailable(fd.buffer) == 0
+    x = Ref(Cint(0))
+    @cerr C.ioctl(fd, C.FIONREAD, x)
+    @db 1 return x[]
 end
 
-fionread(fd) = (x = Ref(Cint(0)); @cerr C.ioctl(fd, C.FIONREAD, x) ; x[])
 
 Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
 
@@ -186,7 +188,7 @@ Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
                 resize!(buf, lb)                         ;@db 1 "resize -> $lb"
             end
             @assert lb > nread
-            n = UnixIO.read(fd, view(buf, nread+1:lb))
+            n = UnixIO.read(fd, buf, nread + 1, lb - nread)
             if n == 0 || !all
                 break
             end
@@ -212,10 +214,14 @@ const BUFFER_SIZE = 65536
 end
 
 
-@db 2 function Base.readline(fd::ReadFD;
+@db 2 function Base.readline(fd::ReadFD{<:Any};
                              timeout=fd.timeout, kw...)
-    @with_timeout(fd, timeout, @invoke Base.readline(fd::IO; kw...))
+    @with_timeout fd timeout begin
+        @db 2 return readline_with(ReadFragmentation(fd), fd; kw...)
+    end
 end
+
+readline_with(::ReadsBytes, fd; kw...) = @invoke Base.readline(fd::IO; kw...)
 
 
 """
@@ -240,6 +246,30 @@ will still work for devices not in canonical mode.
 Notes:
  - TIOCSTI could be used to Insert a byte into the input queue
 """
+@db 1 function readline_with(::ReadsLines, fd; keep::Bool=false)
+    @require !fd.isclosed
+    @assert bytesavailable(fd.buffer) == 0
+
+    linebuf = Vector{UInt8}(undef, C.MAX_CANON)
+    n = UnixIO.transfer(fd, linebuf)
+    if n == 0
+        @db 1 return "" "EOF or timeout!"
+    end
+
+    # Check for '\n'.
+    i = find_newline(linebuf, 1, n)
+    @assert i == 0 || i == n
+
+    # Trim end of line characters.
+    while !keep && n > 0 && (linebuf[n] == UInt8('\r') ||
+                             linebuf[n] == UInt8('\n'))
+        n -= 1
+    end
+    resize!(linebuf, n)
+    @db 1 return String(linebuf)
+end
+
+#=
 @db 1 function Base.readline(fd::ReadFD{<:S_IFCHR};
                              timeout=fd.timeout,
                              wait=true,
@@ -263,7 +293,7 @@ Notes:
         end
 
         # Read new data from fd into line buffer.
-        n = UnixIO.transfer(fd, linebuf, length(linebuf))
+        n = UnixIO.transfer(fd, linebuf, 1, length(linebuf))
         if n == 0
             line = take!(fdbuf)
             @db 1 return String(line) "EOF or timeout!"
@@ -303,6 +333,7 @@ Notes:
         end
     end
 end
+=#
 
 
 @db 2 function find_newline(buf, i, j)

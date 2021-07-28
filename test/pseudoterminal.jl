@@ -9,17 +9,32 @@ using Crayons
 
 function ptdump(f, cmd, cin, cout)
 
-    color = crayon"bold fg:blue"
+    blue = crayon"fg:blue"
+    red = crayon"bold fg:red"
 
-    println("┌ ", color, cmd, inv(color), ":")
+    println("┌ ", blue, cmd, inv(blue), ":")
     pad =   "│ "
     needpad = Ref(false)
+    neednl = Ref(false)
 
-    function fin(;wait=false)
-        x = readline(cout; keep=true, wait=wait)
+    function fin()
+        x = ""
+        for _ in 1:100
+            x = readline(cout; keep=true, timeout=0.1)
+            if x != ""
+                break
+            end
+        end
+        if x == ""
+            return nothing
+        end
+        if neednl[]
+            print(red, "!", inv(red), "\n")
+        end
+        neednl[] = false
         print(pad)
-        needpad[] = false
-        print(x)
+        print(blue, x, inv(blue))
+        needpad[] = x[end] == '\n'
         x
     end
 
@@ -27,12 +42,15 @@ function ptdump(f, cmd, cin, cout)
         if needpad[]
             print(pad)
         end
-        for c in x * "\n"
+        for c in x
             write(cin, c)
-            print(c)
+            if c isa Char
+                print(c)
+            end
             sleep(0.05 * rand())
         end
-        needpad[] = true
+        needpad[] = x[end] == '\n'
+        neednl[] = x[end] != '\n'
     end
 
     f(fin, fout)
@@ -49,8 +67,10 @@ mktempdir() do d
     write(jlfile, """
         using UnixIO
         io = UnixIO.stdin
-        @assert io isa UnixIO.ReadFD{UnixIO.S_IFCHR}
+        @show typeof(io)
+        @assert io isa UnixIO.ReadFD{UnixIO.CanonicalMode}
         @assert !(io isa UnixIO.ReadFD{UnixIO.Pseudoterminal})
+        @show UnixIO.ReadFragmentation(io)
         println("go!")
         while true
             l = readline(io; keep=true)
@@ -60,36 +80,39 @@ mktempdir() do d
         """)
 
     @info "readline() from pseudoterminal with fragmented writes."
-    UnixIO.ptopen(`julia $jlfile`; opts...) do cin, cout
-        while readline(cout) != "go!" end
-        write(cin, "Hello1\nHello2\n")
-        @test readline(cout) == """7:"Hello1\\n":0"""
-        @test readline(cout) == """7:"Hello2\\n":0"""
+    env = merge(ENV, Dict("JULIA_UNIX_IO_DEBUG_LEVEL" => "0",
+                          "JULIA_DEBUG" => ""))
+    UnixIO.ptopen(`julia $jlfile`; env=env, opts...) do cin, cout
+    ptdump(`julia`, cin, cout) do fin, fout
+        while !contains(fin(), r"go!") end
+        fout("Hello1\n")
+        fout("Hello2\n")
+        @test fin() == """7:"Hello1\\n":0\n"""
+        @test fin() == """7:"Hello2\\n":0\n"""
 
-        write(cin, "Hel")
-        UnixIO.@cerr C.tcdrain(cin.fd)
+        fout("Hel")
 
         # Even after draining and waiting, the client read() has not returned
         # because of canonical mode.
-        @test readline(cout, timeout=1) == ""
-        write(cin, "lo3\n")
-        @test readline(cout) == """7:"Hello3\\n":0"""
+        @test fin() == nothing
+        fout("lo3\n")
+        @test fin() == """7:"Hello3\\n":0\n"""
 
         # `CEOF` and sends a line with no "\n" (e.g. like the "bash$ " prompt)
-        write(cin, "Hello4")
-        write(cin, UInt8(C.CEOF))
-        @test readline(cout) == """6:"Hello4":0"""
-        write(cin, "Hello5\x04Hello6\n")
-        @test readline(cout) == """6:"Hello5":0"""
-        @test readline(cout) == """7:"Hello6\\n":0"""
+        fout("Hello4")
+        fout([UInt8(C.CEOF)])
+        @test fin() == """6:"Hello4":0\n"""
+        fout("Hello5\x04Hello6\n")
+        @test fin() == """6:"Hello5":0\n"""
+        @test fin() == """7:"Hello6\\n":0\n"""
 
-        write(cin, "Hello7\r")
-        @test readline(cout, timeout=1) == ""
-        write(cin, UInt8(C.CEOF))
-        @test readline(cout) == """7:"Hello7\\r":0"""
+        fout("Hello7\r")
+        @test fin() == nothing
+        fout("\x04")
+        @test fin() == """7:"Hello7\\r":0\n"""
+    end
     end
 end
-
 
 @info "Testing with C blocking read(2) from C-code"
 mktempdir() do d
@@ -260,7 +283,7 @@ UnixIO.ptopen(`cat`; opts...) do cin, cout
             write(cin, UInt8(C.CEOF)) # Singal end of file
         end
         @test readline(cout; keep=true) == "Hello0\n"
-        # In canonical mode, the parial "Hel" line is buffered by the OS
+        # In canonical mode, the partial "Hel" line is buffered by the OS
         # in cat's output buffer so only "Hello2\n" line is in the fd buffer.
         @test bytesavailable(cout.buffer) == 7
         @test String(take!(copy(cout.buffer))) == "Hello1\n"
@@ -354,17 +377,17 @@ UnixIO.ptopen(`bash`; opts...) do cin, cout
         # Wait for "bash-3.2$" prompt.
         while !contains(fin(), r"\$") end
 
-        fout(raw"""i=1""")                 ;
+        fout(raw"""i=1""" * "\n")                 ;
         @test contains(fin(), r"\$")
-        fout(raw"""while [ $i -lt 11 ]""") ; @test fin() == "> "
-        fout(raw"""do""")                  ; @test fin() == "> "
-        fout(raw"""    sleep 0.2""")       ; @test fin() == "> "
-        fout(raw"""    echo "COUNT$i" """) ; @test fin() == "> "
-        fout(raw"""    i=$(($i+1))""")     ; @test fin() == "> "
-        fout(raw"""done""")
+        fout(raw"""while [ $i -lt 11 ]""" * "\n") ; @test fin() == "> "
+        fout(raw"""do""" * "\n")                  ; @test fin() == "> "
+        fout(raw"""    sleep 0.2""" * "\n")       ; @test fin() == "> "
+        fout(raw"""    echo "COUNT$i" """ * "\n") ; @test fin() == "> "
+        fout(raw"""    i=$(($i+1))""" * "\n")     ; @test fin() == "> "
+        fout(raw"""done""" * "\n")
 
         for i in 1:10
-            @test fin(wait=true) == "COUNT$i\n"
+            @test fin() == "COUNT$i\n"
         end
         @test contains(fin(), r"\$")
     end
@@ -381,26 +404,26 @@ UnixIO.ptopen(`julia --color=yes`; env=env) do cin, cout
         # Wait for "julia>" prompt.
         while !contains(fin(), r"julia> ") end
 
-        fout(raw"""ENV["TERM"]""")
-        @test fin(wait=true) == "\"dumb\"\n"
+        fout(raw"""ENV["TERM"]""" * "\n")
+        @test fin() == "\"dumb\"\n"
         @test fin() == "\n"
         @test fin() == "julia> "
 
-        fout(raw"""i=1""")
-        @test fin(wait=true) == "1\n"
-        @test fin(wait=true) == "\n"
+        fout(raw"""i=1""" * "\n")
+        @test fin() == "1\n"
+        @test fin() == "\n"
         @test fin() == "julia> "
 
-        fout(raw"""while i < 11""")
-        fout(raw"""    sleep(0.2)""")
-        fout(raw"""    println("COUNT$i")""")
-        fout(raw"""    i += 1""")
-        fout(raw"""end""")
+        fout(raw"""while i < 11""" * "\n")
+        fout(raw"""    sleep(0.2)""" * "\n")
+        fout(raw"""    println("COUNT$i")""" * "\n")
+        fout(raw"""    i += 1""" * "\n")
+        fout(raw"""end""" * "\n")
 
         for i in 1:10
-            @test fin(wait=true) == "COUNT$i\n"
+            @test fin() == "COUNT$i\n"
         end
-        @test fin(wait=true) == "\n"
+        @test fin() == "\n"
         @test fin() == "julia> "
     end
 end

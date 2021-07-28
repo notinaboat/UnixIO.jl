@@ -61,7 +61,7 @@ for _ in 1:1
         c = UnixIO.read(`hexdump $f`)
         d = UnixIO.open(`hexdump`) do cin, cout
             @sync begin
-                @asynclog "hexdump input task" begin
+                @async begin
                     write(cin, UnixIO.open(f))
                     close(cin)
                 end
@@ -118,21 +118,29 @@ cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
 
 
 @info "Test @async read(::Cmd) with delay"
+results = []
 @sync for i in 1:5
-    @async @test UnixIO.read(`bash -c "sleep 2; echo $i"`, String) == "$i\n"
+    @async push!(results, (i, UnixIO.read(`bash -c "sleep 2; echo $i"`, String)))
+end
+for (i, r) in results
+    @test r == "$i\n"
 end
 
 @info "Test read(::Cmd) with timeout."
 @test UnixIO.read(`bash -c "echo FOO; sleep 4; echo FOO"`,
                   String; timeout=2.4) == "FOO\n"
 
+times = []
 @sync for i in 1:4
     @async begin
         t0 = time()
         UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
-        @show time() - t0
-        @test abs((time() - t0) - 2.4) < 0.2
+        push!(times, time() - t0)
     end
+end
+@show times
+for t in times
+    @test abs(t - 2.4) < 0.2
 end
 
 

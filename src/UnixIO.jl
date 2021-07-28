@@ -116,6 +116,64 @@ macro with_timeout(fd, timeout, ex)
 end
 
 
+#-- Data Readyness Trait.
+
+abstract type ReadBuffering end
+struct KnownFileSize     <: ReadBuffering end
+struct KnownBufferSize   <: ReadBuffering end
+struct UnknownBufferSize <: ReadBuffering end
+struct NotBuffered       <: ReadBuffering end
+
+"""
+### `ReadBuffering` -- Data Readyness Trait.
+
+TODO
+"""
+ReadBuffering(x) = ReadBuffering(typeof(x))
+ReadBuffering(::Type) = NotBuffered()
+
+
+
+# Data Fragmentation Trait.
+
+abstract type ReadFragmentation end
+struct ReadsLines       <: ReadFragmentation end
+struct RreadsPackets    <: ReadFragmentation end
+struct ReasdsfromBuffer <: ReadFragmentation end
+struct ReadsBytes       <: ReadFragmentation end
+
+
+"""
+### `ReadFragmentation` -- Data Fragmentation Trait.
+
+The `ReadFragmentation` trait describes what guarantees a `ReadFD` makes
+about fragmentation of data returned by `read(2)`.
+
+`ReadFragmentation(::Type{<:ReadFD})` returns one of:
+
+ * `ReadsLines` -- `read(2)` returns exactly one line at a time.
+   Does not return partially buffered lines unless an explicit `EOL` or `EOF`
+   control character is received.
+   Applicable to Character devices in canonical mode.
+   See (termios(3))[https://man7.org/linux/man-pages/man3/termios.3.html].
+
+ * `ReadsPackets` -- `read(2)` returns exactly one packet at a time.
+   Does not return partially buffered packets.
+   Applicable to some sockets and pipes depending on configuration.
+   e.g. See the `O_DIRECT` flag in
+   (pipe2(2))[https://man7.org/linux/man-pages/man2/pipe.2.html].
+  
+ * `ReadsFromBuffer` -- `read(2)` returns at most one buffer at at time.
+   TODO: query buffer size.
+
+ * `ReadsBytes` -- No special guarantees about what is returned by `read(2)`.
+   This is the default.
+
+"""
+ReadFragmentation(x) = ReadFragmentation(typeof(x))
+ReadFragmentation(::Type) = ReadsBytes()
+
+
 
 # Event Notification Mechanism Trait.
 
@@ -126,34 +184,11 @@ struct WaitUsingEPoll     <: WaitingMechanism end
 struct WaitUsingPidFD     <: WaitingMechanism end
 struct WaitUsingKQueue    <: WaitingMechanism end
 
-"""
-### `Name?` -- Data Readyness Trait.
-
-TODO
- * `ReadinessUnknown`
- * `CanQueryReadiness`
- * `CanQueryWaitingSize`
-
-"""
-
-
-
-"""
-### `Name?` -- Data Fragmentation Trait.
-
-TODO
- * `AtomicLines`
- * `AtomicPackets`
- * `CanQueryWaitingSize`
-
-"""
-
-
 
 """
 ### `WaitingMechanism` -- Event Notificaiton Mechanism Trait.
 
-The WaitingMechanism trait describes ways of waiting for OS resources
+The `WaitingMechanism` trait describes ways of waiting for OS resources
 that are not immediately available. e.g. when `read(2)` returns 
 `EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
 
@@ -172,7 +207,8 @@ TODO: Configure via https://github.com/JuliaPackaging/Preferences.jl
 
  * `WaitUsingPosixPoll` -- Wait using the POXSX `poll` mechanism.
    Wait for activity on a set of file descriptors.
-   Applicable to pipes, sockets and character devices (but not local files).
+   Applicable to FIFO pipes, sockets and character devices
+   (but not local files).
    See (`poll(2)`)[https://man7.org/linux/man-pages/man2/poll.2.html]
 
  * `WaitUsingEPoll` -- Wait using the Linux `epoll` mechanism.
@@ -205,22 +241,24 @@ Base.wait(::WaitBySleeping, x) = sleep(0.1)
 
 abstract type UnixFD{S_TYPE} <: IO end
 
+abstract type Stream end
 abstract type MetaFile end
 abstract type File end
-abstract type Stream end
 abstract type PidFD end
+
+abstract type S_IFIFO <: Stream end
+abstract type S_IFCHR <: Stream end
+abstract type S_IFDIR <: MetaFile end
+abstract type S_IFBLK <: File end
+abstract type S_IFREG <: File end
+abstract type S_IFLNK <: MetaFile end
+abstract type S_IFSOCK <: Stream end
+abstract type Pseudoterminal <: S_IFCHR end
+abstract type CanonicalMode <: S_IFCHR end
 
 Base.wait(fd::UnixFD) = wait(WaitingMechanism(fd), fd)
 Base.wait(::WaitUsingEPoll,   fd::UnixFD) = wait_for_event(epoll_queue, fd)
 Base.wait(::WaitUsingPosixPoll,    fd::UnixFD) = wait_for_event(poll_queue, fd)
-
-firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
-
-WaitingMechanism(::Type{<:UnixFD{<:Union{Stream,PidFD}}}) =
-    firstvalid(WaitUsingKQueue(),
-               WaitUsingEPoll(),
-               WaitUsingPosixPoll(),
-               WaitBySleeping())
 
 
 mutable struct Process
@@ -240,6 +278,7 @@ isalive(p::Process) = p.exit_status == nothing &&
 didexit(p::Process) = p.exit_status != nothing
 waskilled(p::Process) = !isstopped(p) && p.signal != nothing
 
+firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
 
 WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
                                                WaitBySleeping())
@@ -260,17 +299,27 @@ Base.wait(::WaitBySleeping, p::Process; kw...) = waitpid(p; kw...)
 Base.wait(::WaitUsingPidFD, p::Process; kw...)= waitpidfd(p; kw...)
 
 
-abstract type S_IFIFO <: Stream end
-abstract type S_IFCHR <: Stream end
-abstract type S_IFDIR <: MetaFile end
-abstract type S_IFBLK <: File end
-abstract type S_IFREG <: File end
-abstract type S_IFLNK <: MetaFile end
-abstract type S_IFSOCK <: Stream end
-abstract type Pseudoterminal <: S_IFCHR end
 
 
-fdtype(fd) = ispt(fd) ? Pseudoterminal : stattype(fd)
+function fdtype(fd)
+
+    s = stat(fd)
+    t = isfile(s)     ? S_IFREG  :
+        isblockdev(s) ? S_IFBLK  :
+        ischardev(s)  ? S_IFCHR  :
+        isdir(s)      ? S_IFDIR  :
+        isfifo(s)     ? S_IFIFO  :
+        islink(s)     ? S_IFLNK  :
+        issocket(s)   ? S_IFSOCK :
+                        Nothing
+
+    if t == S_IFCHR && ispt(fd)
+        t = Pseudoterminal 
+    elseif t == S_IFCHR && iscanon(fd)
+        t = CanonicalMode 
+    end
+    return t
+end
 
 stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               isblockdev(s) ? S_IFBLK  :
@@ -280,6 +329,12 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               islink(s)     ? S_IFLNK  :
                               issocket(s)   ? S_IFSOCK :
                                               Nothing)
+
+WaitingMechanism(::Type{<:UnixFD{<:Union{S_IFIFO, S_IFCHR, S_IFSOCK, PidFD}}}) =
+    firstvalid(WaitUsingKQueue(),
+               WaitUsingEPoll(),
+               WaitUsingPosixPoll(),
+               WaitBySleeping())
 
 
 @db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=nothing)
@@ -306,6 +361,15 @@ Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
 include("ReadFD.jl")
 include("WriteFD.jl")
+
+ReadFragmentation(::Type{ReadFD{CanonicalMode}}) = ReadsLines()
+ReadBuffering(::Type{<:ReadFD{<:Union{S_IFIFO, S_IFCHR, S_IFSOCK}}}) =
+    KnownBufferSize()
+
+ReadBuffering(::Type{<:ReadFD{<:Union{S_IFREG, S_IFBLK}}}) = KnownFileSize()
+
+abstract type PidFD end
+
 
 DuplexIOs.DuplexIO(i::ReadFD, o::WriteFD) = @invoke DuplexIO(i::IO, o::IO)
 DuplexIOs.DuplexIO(o::WriteFD, i::ReadFD) = @invoke DuplexIO(i::IO, o::IO)
@@ -443,17 +507,18 @@ DuplexIOs.@wrap tcsetattr
 Get terminal device options.
 See [tcgetattr(3)](https://man7.org/linux/man-pages/man3/tcgetattr.3.html).
 """
-@db 2 function tcgetattr(tty::UnixFD{<:S_IFCHR}, conf=nothing)
-    conf = conf != nothing ? conf : termios(tty)
+@db 2 function tcgetattr(tty, conf=C.termios_m())
     @cerr C.tcgetattr_m(tty, Ref(conf))
     @db 2 return conf
 end
+tcgetattr(tty::UnixFD{<:S_IFCHR}) = tcgetattr(tty, termios(tty))
 
 function termios(tty::UnixFD{<:S_IFCHR})
     get_extra(tty, :termios, ()->tcgetattr(tty, C.termios_m()))
 end
+termios(tty) = tcgetattr(tty)
 
-iscanon(tty::UnixFD{<:S_IFCHR}) = (termios(tty).c_lflag & C.ICANON) != 0
+iscanon(tty) = (termios(tty).c_lflag & C.ICANON) != 0
 
 
 @doc README"""
@@ -579,25 +644,30 @@ Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
-@db 2 function read(fd::ReadFD, buf, count=length(buf); timeout=fd.timeout)
+@db 2 function read(fd::ReadFD, buf::Ptr{UInt8}, count::Csize_t;
+                    timeout=fd.timeout)
 
     # First read from buffer.
     n = bytesavailable(fd.buffer)
     if n > 0                                          ;@db 2 "read from buffer"
         n = min(n, count)
-        read_from_buffer(fd, buf, n);
-        @ensure n >= 1
-        @ensure n <= count
-        @db 2 return n
+        unsafe_read(fd.buffer, buf, n)
     end
 
     # Then read from file.
-    n = @with_timeout(fd, timeout, transfer(fd, buf, count))
+    if count > n
+        n += @with_timeout(fd, timeout, transfer(fd, buf+n, count-n))
+    end
+    @ensure n <= count
     @db 2 return n
 end
 
-read_from_buffer(fd::ReadFD, buf, n) = readbytes!(fd.buffer, buf, n)
-read_from_buffer(fd::ReadFD, buf::Ptr, n) = unsafe_read(fd.buffer, buf, n)
+@db 2 function read(fd::UnixFD, v::AbstractVector{UInt8},
+                    index=1, count=length(v)-(index-1); kw...)
+    checkbounds(v, index + count - 1)
+    buf = pointer(v, index)
+    @db 2 return GC.@preserve v read(fd, buf, Csize_t(count); kw...)
+end
 
 
 """
@@ -607,7 +677,7 @@ Always attempt at least one call to `read(2)/write(2)`
 even if `fd.deadline` has passed.
 Return number of bytes transferred or `0` on timeout.
 """
-@db 2 function transfer(fd::UnixFD, buf, count)
+@db 2 function transfer(fd::UnixFD, buf::Ptr{UInt8}, count::Csize_t)
     @require !fd.isclosed
     @require count > 0
 
@@ -620,6 +690,7 @@ Return number of bytes transferred or `0` on timeout.
         wait(fd)
         n = nointr_transfer(fd, buf, count);                           ;@db 2 n
         if n >= 0
+            @ensure n <= count
             @db 2 return n
         end                                                    ;@db 2 "wait..."
     end
@@ -627,13 +698,20 @@ Return number of bytes transferred or `0` on timeout.
     @db 2 return 0 "timeout!"
 end
 
+@db 2 function transfer(fd::UnixFD, v::AbstractVector{UInt8},
+                        index=1, count=length(v)-(index-1))
+    checkbounds(v, index + count - 1)
+    buf = pointer(v, index)
+    @db 2 return GC.@preserve v transfer(fd, buf, Csize_t(count))
+end
+
 
 """
 Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`.
-Keep trying on `C.EINTR`.
+Retry on `C.EINTR`.
 Return number of bytes transferred or `-1` on `C.EAGAIN`.
 """
-@db 2 function nointr_transfer(fd::UnixFD, buf, count)
+@db 2 function nointr_transfer(fd::UnixFD, buf::Ptr{UInt8}, count::Csize_t)
     @require count > 0
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR), raw_transfer(fd, buf, count))
@@ -664,10 +742,12 @@ Write up to count bytes from `buf` to the file referred to by
 the file descriptor `fd`.
 See [write(2)](https://man7.org/linux/man-pages/man2/write.2.html)
 """
+#=
 @db 1 function write(fd::WriteFD, buf, count=length(buf); timeout=fd.timeout)
-    n = @with_timeout(fd, timeout, transfer(fd, buf, count))
+    n = @with_timeout(fd, timeout, transfer(fd, buf, 1, count))
     @db 1 return n
 end
+=#
 
 
 @doc README"""
@@ -1320,6 +1400,7 @@ type_icon(::Type{S_IFLNK})         = "🔗"
 type_icon(::Type{S_IFSOCK})        = "🧦"
 type_icon(::Type{PidFD})           = "⚙️ "
 type_icon(::Type{Pseudoterminal})  = "⌨️ "
+type_icon(::Type{CanonicalMode})   = "📺"
 
 
 function Base.show(io::IO, fd::UnixFD{T}) where T

@@ -47,12 +47,11 @@ Base.isreadable(::WriteFD) = false
 
 @db 1 function Base.unsafe_write(fd::WriteFD, buf::Ptr{UInt8}, nbytes::UInt)
     @require !fd.isclosed 
-    nwritten = 0
-    if nbytes < 100
-        @db 1 repr(unsafe_string(buf, nbytes))
-    end
+    nwritten = 0                   ;if nbytes < 100
+                                        @db 1 repr(unsafe_string(buf, nbytes))
+                                    end
     while nwritten < nbytes
-        n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
+        n = transfer(fd, buf + nwritten, nbytes - nwritten)
         nwritten += n
     end
     @ensure nwritten == nbytes
@@ -60,7 +59,7 @@ Base.isreadable(::WriteFD) = false
 end
 
 
-Base.write(fd::WriteFD, x::UInt8) = UnixIO.write(fd, Ref(x), 1)
+Base.write(fd::WriteFD, x::UInt8) = transfer(fd, [x], 1, 1)
 
 
 
