@@ -2,6 +2,7 @@ using Test
 using LoggingTestSets
 using AsyncLog
 using UnixIO
+using UnixIO: C
 
 """
 # Test Cases to add

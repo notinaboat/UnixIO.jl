@@ -70,7 +70,7 @@ end
 """
 Wait for an event to occur on `fd`.
 """
-@db 2 function wait_for_event(fd::UnixFD)
+@db 2 function wait_for_event(queue, fd::UnixFD)
     assert_havelock(fd)
 
     timer = register_timer(fd.deadline) do
@@ -78,35 +78,30 @@ Wait for an event to occur on `fd`.
     end
     fd.nwaiting += 1
     event = try
-        register_for_events(fd)
+        register_for_events(queue, fd)
         @db 2 "$(fd.nwaiting) waiting for $fd..."
-        wait(fd) # Wait for: `poll_task()`
+        wait(fd.ready) # Wait for: `poll_task()`
     finally
         close(timer)
         @assert fd.nwaiting > 0
         fd.nwaiting -= 1
         if fd.nwaiting == 0
-            unregister_for_events(fd)
+            unregister_for_events(queue, fd)
         end
     end
     @db 2 return event "Ready: $fd"
 end
 
-@db 2 function wait_for_event(fd::UnixFD{<:Any,SleepEvents})
-    Base.sleep(0.01)
-    return poll_event_type(fd)
+
+@db 4 function register_for_events(q::PollQueue, fd)
+    put!(q.fd_new, fd)
+    wakeup_poll(q)                                           ;@db 5 poll_queue
 end
 
 
-@db 4 function register_for_events(fd::UnixFD{<:Any, PollEvents})
-    put!(poll_queue.fd_new, fd)
-    wakeup_poll(poll_queue)                                   ;@db 5 poll_queue
-end
-
-
-@db 4 function unregister_for_events(fd::UnixFD{<:Any, PollEvents})
-    put!(poll_queue.fd_del, fd)
-    wakeup_poll(poll_queue)
+@db 4 function unregister_for_events(q::PollQueue, fd)
+    put!(q.fd_del, fd)
+    wakeup_poll(q)
 end
 
 
@@ -284,10 +279,10 @@ epoll_ctl(fd::UnixFD, op, events=0; kw...) =
 """
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
-@db 4 function register_for_events(fd::UnixFD{<:Any, EPollEvents})
-    @dblock epoll_queue.lock begin
-        if !haskey(epoll_queue.dict, fd.fd)
-            epoll_queue.dict[fd.fd] = fd
+@db 4 function register_for_events(q::EPollQueue, fd::UnixFD)
+    @dblock q.lock begin
+        if !haskey(q.dict, fd.fd)
+            q.dict[fd.fd] = fd
             epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
         else
             @db 2 "Already registered!"
@@ -295,10 +290,10 @@ Register `fd` to wake up `epoll_wait(7)` on `event`:
     end
 end
 
-@db 4 function unregister_for_events(fd::UnixFD{<:Any, EPollEvents})
-    @dblock epoll_queue.lock begin
-        if haskey(epoll_queue.dict, fd.fd)
-            delete!(epoll_queue.dict, fd.fd)
+@db 4 function unregister_for_events(q::EPollQueue, fd::UnixFD)
+    @dblock q.lock begin
+        if haskey(q.dict, fd.fd)
+            delete!(q.dict, fd.fd)
             epoll_ctl(fd, C.EPOLL_CTL_DEL)#; allow=C.ENOENT)
         end
     end
@@ -323,7 +318,7 @@ Call `f(events, fd)` for each event.
                 @error "Ignoring epoll_wait() notification v[$i] = $(v[i]) " *
                        "for unknown FD (already deleted?)." v[i] q.dict
             else
-                unregister_for_events(fd)
+                unregister_for_events(q, fd)
                 f(v[i].events, fd)
             end
         end

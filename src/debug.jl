@@ -111,6 +111,8 @@ function task_local_debug()
 end
 
 
+const DEBUG_FILENAME_WIDTH=24
+const DEBUG_BLANK_LINE_INDENT = 35 + DEBUG_FILENAME_WIDTH
 const DEBUG_MIN_INDENT=6
 """
 Indent this task's debug messages for new call to `function_name`.
@@ -252,7 +254,8 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
     if io.size > width
         line = String(take!(io))
 #        id = task_local_debug().indent[end][2]
-        pad = string(repeat(" ", 47), thread_offset, indent)
+        pad = string(repeat(" ", DEBUG_BLANK_LINE_INDENT),
+                     thread_offset, indent)
         if new_function != ""
             pad = string(pad, repeat(" ", length(new_function)), prefix)
         else
@@ -275,7 +278,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
         io.ptr = 1
         print(ioc,
               bg_color,
-              repeat(" ", 47), thread_offset, indent,
+              repeat(" ", DEBUG_BLANK_LINE_INDENT), thread_offset, indent,
               repeat(" ", DEBUG_MIN_INDENT),
               " ╭", repeat("─", length(new_function) - 1
                                 - DEBUG_MIN_INDENT), "╯",
@@ -313,13 +316,12 @@ debug_time(t) = round(t - global_debug.t0; digits=4)
 
 # Macro utilities.
 
-
 """
 Filename: Line No. String
 """
 function debug_lineno_str(source)
     f = basename(string(source.file))
-    string(lpad(f,12), ":", rpad(source.line,4))
+    string(lpad(f,DEBUG_FILENAME_WIDTH), ":", rpad(source.line,4))
 end
 
 
@@ -390,7 +392,7 @@ end
 Like `Base.@lock`, but with logging when blocked waiting for lock.
 """
 macro dblock(l, expr)
-    if DEBUG_LEVEL < 1
+    if DEBUG_LEVEL < 0
         return esc(:(@lock $l $expr))
     end
 
@@ -428,6 +430,8 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
         call = call.args[1]
     end
     @assert call.head == :call
+
+    @info "@db Wrapping $call"
 
     # Split function Expr into parts.
     name = string(call.args[1])
@@ -680,10 +684,12 @@ module Debug
     for x in (Symbol("@db"),
               Symbol("@debug_print"),
               Symbol("@debug_function"),
+              Symbol("@debug_return"),
               Symbol("@debug_show"),
               :dbshow,
               :dbtiny,
               :dbprint,
+              :dbshort,
               :debug_print,
               :debug_indent_push,
               :debug_indent_pop,

@@ -9,7 +9,7 @@ using Base.Libc: errno
 
 Look up name for C-constant(s) with value `n`.
 """
-function constant_name(n::Integer; prefix="")
+function constant_name(n::Integer; prefix="", first=false)
     @nospecialize
 
     v = get(C.constants, n, Symbol[])
@@ -18,7 +18,7 @@ function constant_name(n::Integer; prefix="")
     end
     if length(v) == 0
         string(n)
-    elseif length(v) == 1
+    elseif first || length(v) == 1
         string(v[1])
     else
         string("Maybe: ", join(("$(n)?" for n in v), ", "))

@@ -1,7 +1,7 @@
 """
 Write-only Unix File Descriptor.
 """
-mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
+mutable struct WriteFD{T} <: UnixFD{T}
     fd::RawFD 
     isclosed::Bool
     nwaiting::Int
@@ -11,22 +11,21 @@ mutable struct WriteFD{T, EventSource} <: UnixFD{T, EventSource}
     deadline::Float64
     gothup::Bool
     extra::ImmutableDict{Symbol,Any}
-    function WriteFD{T, E}(fd) where {T, E}
+    function WriteFD{T}(fd) where T
         fcntl_setfl(fd, C.O_NONBLOCK)
         fcntl_setfd(fd, C.O_CLOEXEC)
-        fd = new{T, E}(RawFD(fd),
-                      false,
-                      0,
-                      Base.ThreadSynchronizer(),
-                      Base.ThreadSynchronizer(),
-                      Inf,
-                      Inf,
-                      false,
-                      ImmutableDict{Symbol,Any}())
+        fd = new{T}(RawFD(fd),
+                    false,
+                    0,
+                    Base.ThreadSynchronizer(),
+                    Base.ThreadSynchronizer(),
+                    Inf,
+                    Inf,
+                    false,
+                    ImmutableDict{Symbol,Any}())
         return fd
     end
-    WriteFD(fd; events = default_event_source(fd)) =
-        WriteFD{fdtype(fd)}{events}(fd)
+    WriteFD(fd) = WriteFD{fdtype(fd)}(fd)
 end
 
 
@@ -47,8 +46,11 @@ Base.isreadable(::WriteFD) = false
 
 
 @db 1 function Base.unsafe_write(fd::WriteFD, buf::Ptr{UInt8}, nbytes::UInt)
-    @require !fd.isclosed
+    @require !fd.isclosed 
     nwritten = 0
+    if nbytes < 100
+        @db 1 repr(unsafe_string(buf, nbytes))
+    end
     while nwritten < nbytes
         n = UnixIO.write(fd, buf + nwritten, nbytes - nwritten)
         nwritten += n

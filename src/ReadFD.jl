@@ -1,7 +1,7 @@
 """
 Read-only Unix File Descriptor.
 """
-mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
+mutable struct ReadFD{T} <: UnixFD{T}
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
@@ -12,24 +12,22 @@ mutable struct ReadFD{T, EventSource} <: UnixFD{T, EventSource}
     gothup::Bool
     buffer::IOBuffer
     extra::ImmutableDict{Symbol,Any}
-    function ReadFD{T, E}(fd) where {T, E}
+    function ReadFD{T}(fd) where T
         fcntl_setfl(fd, C.O_NONBLOCK)
         fcntl_setfd(fd, C.O_CLOEXEC)
-        fd = new{T, E}(
-               RawFD(fd),
-               false,
-               0,
-               Base.ThreadSynchronizer(),
-               Base.ThreadSynchronizer(),
-               Inf,
-               Inf,
-               false,
-               PipeBuffer(),
-               ImmutableDict{Symbol,Any}())
+        fd = new{T}(RawFD(fd),
+                    false,
+                    0,
+                    Base.ThreadSynchronizer(),
+                    Base.ThreadSynchronizer(),
+                    Inf,
+                    Inf,
+                    false,
+                    PipeBuffer(),
+                    ImmutableDict{Symbol,Any}())
         return fd
     end
-    ReadFD(fd; events = default_event_source(fd)) =
-        ReadFD{fdtype(fd)}{events}(fd)
+    ReadFD(fd) = ReadFD{fdtype(fd)}(fd)
 end
 
 
@@ -131,7 +129,7 @@ Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
     if bytesavailable(fd.buffer) > 0
         @db 1 return false
     end
-    event = @dblock fd wait_for_event(fd)                          ;@db 1 event
+    event = @dblock fd wait(fd)                                    ;@db 1 event
     if event == C.POLLIN
         @db 1 return false
     end

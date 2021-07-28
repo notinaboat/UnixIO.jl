@@ -117,26 +117,148 @@ end
 
 
 
-# Event sources.
+# Event Notification Mechanism Trait.
 
-abstract type EPollEvents end
-abstract type PollEvents end
-abstract type SleepEvents end
+abstract type WaitingMechanism end
+struct WaitBySleeping     <: WaitingMechanism end
+struct WaitUsingPosixPoll <: WaitingMechanism end
+struct WaitUsingEPoll     <: WaitingMechanism end
+struct WaitUsingPidFD     <: WaitingMechanism end
+struct WaitUsingKQueue    <: WaitingMechanism end
+
+"""
+### `Name?` -- Data Readyness Trait.
+
+TODO
+ * `ReadinessUnknown`
+ * `CanQueryReadiness`
+ * `CanQueryWaitingSize`
+
+"""
+
+
+
+"""
+### `Name?` -- Data Fragmentation Trait.
+
+TODO
+ * `AtomicLines`
+ * `AtomicPackets`
+ * `CanQueryWaitingSize`
+
+"""
+
+
+
+"""
+### `WaitingMechanism` -- Event Notificaiton Mechanism Trait.
+
+The WaitingMechanism trait describes ways of waiting for OS resources
+that are not immediately available. e.g. when `read(2)` returns 
+`EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
+
+Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
+define `Base.wait(::T, r::R)`.
+
+If a `WaitingMechanism`, `T`, is not available on a particular OS
+then `Base.isvalid(::T)` should be defined to return `false`.
+TODO: Configure via https://github.com/JuliaPackaging/Preferences.jl
+
+`WaitingMechanism(::Type)` returns one of:
+
+ * `WaitBySleeping` -- Wait using a dumb retry/sleep loop (the default).
+   This may be more efficient for small systems with simple IO requirements,
+   or for systems that simply do not spend a lot of time waiting for IO.
+
+ * `WaitUsingPosixPoll` -- Wait using the POXSX `poll` mechanism.
+   Wait for activity on a set of file descriptors.
+   Applicable to pipes, sockets and character devices (but not local files).
+   See (`poll(2)`)[https://man7.org/linux/man-pages/man2/poll.2.html]
+
+ * `WaitUsingEPoll` -- Wait using the Linux `epoll` mechanism.
+   Like `poll` but scales better for workloads with a large number of
+   waiting streams.
+   See (`epoll(7)`)[https://man7.org/linux/man-pages/man7/epoll.7.html]
+
+ * `WaitUsingKQueue` -- Wait using the BSB `kqueue` mechanism.
+   Like `epoll` but can also wait for files, processes, signals etc.
+   See (`kqueue(2)`)[https://www.freebsd.org/cgi/man.cgi?kqueue]
+
+ * `WaitUsingPidFD()` -- Wait for process termination using
+   the Linux `pidfd` mechanism. A `pidfd` is a special process monitoring
+   file descriptor that can in turn be monitored by `poll` or `epoll`.
+   (`pidfd_open(2)`)[http://man7.org/linux/man-pages/man2/pidfd_open.2.html].
+
+"""
+WaitingMechanism(x) = WaitingMechanism(typeof(x))
+WaitingMechanism(::Type) = WaitBySleeping()
+
+Base.isvalid(::WaitingMechanism) = true
+Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
+Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
+Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
+
+Base.wait(::WaitBySleeping, x) = sleep(0.1)
+
 
 # Unix File Descriptor wrapper.
 
-abstract type UnixFD{S_TYPE,EventSource} <: IO end
+abstract type UnixFD{S_TYPE} <: IO end
 
 abstract type MetaFile end
 abstract type File end
 abstract type Stream end
+abstract type PidFD end
+
+Base.wait(fd::UnixFD) = wait(WaitingMechanism(fd), fd)
+Base.wait(::WaitUsingEPoll,   fd::UnixFD) = wait_for_event(epoll_queue, fd)
+Base.wait(::WaitUsingPosixPoll,    fd::UnixFD) = wait_for_event(poll_queue, fd)
+
+firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
+
+WaitingMechanism(::Type{<:UnixFD{<:Union{Stream,PidFD}}}) =
+    firstvalid(WaitUsingKQueue(),
+               WaitUsingEPoll(),
+               WaitUsingPosixPoll(),
+               WaitBySleeping())
+
 
 mutable struct Process
     pid::C.pid_t
     in::UnixFD
     out::UnixFD
-    status::Union{Nothing, Cint}
+    stopped::Bool
+    code::Union{Nothing, Cint}
+    exit_status::Union{Nothing, Cint}
+    signal::Union{Nothing, Cint}
 end
+
+isstopped(p::Process) = p.stopped
+isrunning(p::Process) = isalive(p) && !isstopped(p)
+isalive(p::Process) = p.exit_status == nothing &&
+                      (p.signal == nothing || p.stopped)
+didexit(p::Process) = p.exit_status != nothing
+waskilled(p::Process) = !isstopped(p) && p.signal != nothing
+
+
+WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
+                                               WaitBySleeping())
+
+@db function Base.wait(p::Process; timeout=Inf,
+                                   deadline=timeout+time())
+    if !isrunning(p)
+        @db return p "Already stopped or terminated"
+    end
+    wait(WaitingMechanism(p), p; deadline=deadline)
+    @ensure time() >= deadline || !isrunning(p)
+    return p
+end
+
+check(p::Process) = wait(p; deadline=0.0)
+
+Base.wait(::WaitBySleeping, p::Process; kw...) = waitpid(p; kw...)
+Base.wait(::WaitUsingPidFD, p::Process; kw...)= waitpidfd(p; kw...)
+
 
 abstract type S_IFIFO <: Stream end
 abstract type S_IFCHR <: Stream end
@@ -145,7 +267,6 @@ abstract type S_IFBLK <: File end
 abstract type S_IFREG <: File end
 abstract type S_IFLNK <: MetaFile end
 abstract type S_IFSOCK <: Stream end
-
 abstract type Pseudoterminal <: S_IFCHR end
 
 
@@ -160,20 +281,6 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               issocket(s)   ? S_IFSOCK :
                                               Nothing)
 
-default_event_source(fd) = default_event_source(fdtype(fd))
-default_event_source(::Type{<:File}) = SleepEvents
-
-function default_event_source(::Type{<:Stream})
-    x = get(ENV, "JULIA_IO_EVENT_SOURCE", nothing)
-    x == "epoll"  ? EPollEvents :
-    x == "poll"   ? PollEvents :
-    x == "sleep"  ? SleepEvents :
-    Sys.islinux() ? EPollEvents :
-                    PollEvents
-end
-
-default_event_source(t::Type) = (@warn "No event source for $t!"; Nothing)
-
 
 @db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=nothing)
     @nospecialize
@@ -187,7 +294,6 @@ end
 debug_tiny(x::UnixFD) = string(x)
 
 Base.stat(fd::UnixFD) = stat(fd.fd)
-Base.wait(fd::UnixFD) = wait(fd.ready)
 Base.lock(fd::UnixFD) = lock(fd.ready)
 Base.unlock(fd::UnixFD) = unlock(fd.ready)
 Base.notify(fd::UnixFD, a...) = notify(fd.ready, a...)
@@ -195,6 +301,7 @@ Base.islocked(fd::UnixFD) = islocked(fd.ready)
 Base.assert_havelock(fd::UnixFD) = Base.assert_havelock(fd.ready)
 
 Base.convert(::Type{Cint}, fd::UnixFD) = Base.cconvert(Cint, fd.fd)
+Base.convert(::Type{Cuint}, fd::UnixFD) = Cuint(convert(Cint, fd))
 Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
 
 include("ReadFD.jl")
@@ -388,22 +495,24 @@ tiocgwinsz(tty::DuplexIO) = tiocgwinsz(tty.out)
     nothing
 end
 
-@db function wait_for_event(fd::ReadFD{<:Pseudoterminal})
+@db function Base.wait(fd::ReadFD{<:Pseudoterminal})
     assert_havelock(fd)
+
+    process = fd.extra[:pt_client]
 
     while true
         timer = register_timer(time() + 1) do
             @dblock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
         end
         try
-            event = @invoke wait_for_event(fd::ReadFD)
+            event = @invoke wait(fd::ReadFD)
             if event != :poll_isalive
                 return event
             end
-            if !isalive(fd.extra[:pt_client])
+            #FIXME no need to poll for PidFD?
+            if !isalive(check(process))
                 return nothing
-            end
-            @db event isalive(fd.extra[:pt_client])
+            end                                              ;@db event process
         finally
             close(timer)
         end
@@ -508,7 +617,7 @@ Return number of bytes transferred or `0` on timeout.
     end
 
     @dblock fd while time() < fd.deadline
-        wait_for_event(fd)
+        wait(fd)
         n = nointr_transfer(fd, buf, count);                           ;@db 2 n
         if n >= 0
             @db 2 return n
@@ -751,21 +860,24 @@ end
     try                                         ;@db 1 "f ┬─($(p.in),$(p.out))"
                                                 ;@db_indent 1 "f"
         result = f(p.in, p.out)                 ;@db_unindent 1
-                                                ;@db 1 "  └─▶ 👍"
-        # Close IO and send HUP signal.
-        close(p.in)
+        close(p.in)                             ;@db 1 "  └─▶ 👍"
         close(p.out)
-        kill_softly(p)
 
-        # Get child process exit status.
-        status = waitpid(p)
-        if check_status
-            if !WIFEXITED(status) || WEXITSTATUS(status) != 0
-                throw(waitpid_error(cmd, status))
-            end
+        # If cmd is still running try to kill it softly.
+        if isalive(check(p))
+            C.kill(p, C.SIGHUP)                           ;@db 3 "SIGHUP -> $p"
+            wait(p; timeout=5.0)
+            sent_sighup = true
+        else
+            sent_sighup = false
+        end
+
+        if !check_status
+            @db return p, result
+        elseif (didexit(check(p)) && p.exit_status == 0) || sent_sighup
             @db return result
         else
-            @db return status, result
+            throw(ProcessFailedException(p, cmd))
         end
     finally
         kill(p)
@@ -821,17 +933,8 @@ end
 
 # Sub Processes.
 
-
-WIFSIGNALED(x) = (((x & 0x7f) + 1) >> 1) > 0
-WTERMSIG(x) = (x & 0x7f)
-WIFEXITED(x) = WTERMSIG(x) == 0
-WEXITSTATUS(x) = signed(UInt8((x >> 8) & 0xff))
-WIFSTOPPED(x) = (x & 0xff) == 0x7f
-WSTOPSIG(x) = WEXITSTATUS(x)
-
-
 function Process(pid, infd, outfd)
-    p = Process(pid, infd, outfd, nothing)
+    p = Process(pid, infd, outfd, false, nothing, nothing, nothing)
     @dblock processes_lock push!(processes, p)
     return p
 end
@@ -843,9 +946,6 @@ const processes_lock = Threads.SpinLock()
 const processes = Set{Process}()
 
 
-isalive(p::Process) = (waitpid(p; timeout=0.0); p.status == nothing)
-
-
 @doc README"""
 ### `UnixIO.waitpid` -- Wait for a sub-process to terminate.
 
@@ -853,21 +953,16 @@ isalive(p::Process) = (waitpid(p; timeout=0.0); p.status == nothing)
 
 See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
 """
-@db function waitpid(p::Process; timeout::Float64=Inf)
+@db function waitpid(p::Process; deadline::Float64=Inf)
 
     status = Ref{Cint}(0)
-    deadline = timeout + time()           ;@db 3 "deadline = $(db_t(deadline))"
     delay = nothing
+
     while true
-
-        if p.status != nothing
-            @db return p.status "Already terminated ($(p.status))."
-        end
-
         r = C.waitpid(p.pid, status, C.WNOHANG | C.WUNTRACED)          ;@db 3 r
         if r == -1
             err = errno()
-            if err in (C.EINTR, C.EAGAIN)               ;@db 3 "EINTR / EAGAIN"
+            if err == C.EINTR                                    ;@db 3 "EINTR"
                 continue
             elseif err == C.ECHILD
                 @db return nothing "ECHILD (No child process)"
@@ -875,9 +970,25 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
             systemerror(string("C.waitpid($(p.pid))"), err)
         end
         if r == p.pid
-            p.status = status[]
-            @dblock processes_lock delete!(processes, p)
-            @db return p.status
+            s = status[]
+            if C.WIFEXITED(s)
+                p.exit_status = C.WEXITSTATUS(s)
+            elseif C.WIFSTOPPED(s)
+                p.stopped = true
+                p.signal = WSTOPSIG(s)
+            elseif C.WIFCONTINUED(s)
+                p.stopped = false
+                p.signal = nothing
+                @assert p.exit_status == nothing
+            elseif C.WIFSIGNALED(s)
+                p.signal = C.WTERMSIG(s)
+            else
+                @error "Unhandedl termination status: $s" p
+            end
+            if !p.stopped
+                @dblock processes_lock delete!(processes, p)
+            end
+            @db return nothing "terminated"
         end
         if time() >= deadline
             @db return nothing "timeout!"
@@ -895,54 +1006,104 @@ exponential_delay() =
     Iterators.Stateful(ExponentialBackOff(n=typemax(Int); factor=2))
 
 
+code(i::C.siginfo_t) = i.si_code
+pid(i::C.siginfo_t) = i._sifields._pad[1]
+status(i::C.siginfo_t) = i._sifields._pad[3]
+
+
+#=
+`waitid(pidfd, ...)` only works if the `pidfd` is opened before the
+process terminates.
+The `waitpidfd` method below calls the normal `waitpid` function
+after polling the `pidfd`.
+
+"""
+    waitid(::ReadFD{PidFD}) -> C.siginfo_t
+
+See [waitid(2)](https://man7.org/linux/man-pages/man2/waitid.2.html)
+"""
+@db function waitid(fd::ReadFD{<:PidFD})
+    si = Ref(C.siginfo_t())
+    @assert pid(si[]) == 0
+    @cerr0 C.waitid(C.P_PIDFD, fd, si, C.WEXITED | C.WNOHANG | C.WUNTRACED)
+    @db return pid(si[]) == 0 ? nothing : si[]
+end
+
+
+@db function waitid(fd::ReadFD{<:PidFD}, p::Process)
+    si = waitid(fd) 
+    if si == nothing
+        return
+    end
+    @assert pid(si) == p.pid
+    if code(si) == C.CLD_CONTINUED
+        p.signal = nothing
+        @assert p.exit_status == nothing
+    else
+        if code(si) == C.CLD_STOPPED
+            p.stopped = true
+            p.signal = status(si)
+        elseif code(si) == C.CLD_CONTINUED
+            p.stopped = false
+            p.signal = nothing
+        elseif code(si) == C.CLD_EXITED
+            p.exit_status = status(si)
+        else
+            p.signal = status(si)
+        end
+    end
+    if !p.stopped
+        @dblock processes_lock delete!(processes, p)
+    end
+    nothing
+end
+=#
+
+
+@db function waitpidfd(p::Process; deadline::Float64=Inf)
+
+    waitpid(p; deadline=0.0)
+
+    while deadline >= time() && isrunning(p)
+        r = @cerr allow=C.ESRCH C.pifd_open(p.pid, 0)
+        if r != -1
+            fd = ReadFD{PidFD}(r)
+            fd.deadline = deadline
+            try
+                @dblock fd wait(fd)
+            finally 
+                close(fd)
+            end
+        end
+        waitpid(p; deadline=0.0)
+    end
+
+    nothing
+end
+
+
 @db function kill(p::Process)
-    if isalive(p)
+    if isalive(check(p))
         C.close(p.in)
         C.close(p.out)
         C.kill(p, C.SIGKILL)                             ;@db 3 "SIGKILL -> $p"
-        @asynclog "UnixIO.kill(::Process) -> waitpid()" waitpid(p)
+        @asynclog "UnixIO.kill(::Process) -> waitpid()" wait(p)
     else
         @db "Already terminated!"
     end
 end
 
 
-@db function kill_softly(p::Process)
-    if !isalive(p)
-        return
-    end
-    C.kill(p, C.SIGHUP)                                   ;@db 3 "SIGHUP -> $p"
-    status = waitpid(p; timeout=5.0)
-    if status != nothing
-        if WIFSIGNALED(status) && WTERMSIG(status) == C.SIGHUP
-            p.status = 0
-        end
-    else
-        kill(p)
-    end
-    nothing
-end
-
-
 @db 1 function kill_all_processes()
     @sync for p in processes                             ;@db 1 "SIGKILL -> $p"
         C.kill(p, C.SIGKILL)
-        @async waitpid(p)
+        @async wait(p)
     end
 end
 
-
-function waitpid_error(cmd, status)
-    @require !WIFEXITED(status) ||
-              WEXITSTATUS(status) != 0
-    if WIFSTOPPED(status)
-        msg = "stopped by signal $(WSTOPSIG(status))"
-    elseif WIFSIGNALED(status)
-        msg = "killed by signal $(WTERMSIG(status))"
-    elseif WIFEXITED(status)
-        msg = "exited with status $(WEXITSTATUS(status))"
-    end
-    ErrorException("UnixIO.open($cmd) $msg")
+struct ProcessFailedException <: Exception
+    p::Process
+    cmd::Cmd
 end
 
 
@@ -951,6 +1112,7 @@ function find_cmd_bin(cmd::Cmd)
     bin != nothing || throw(ArgumentError("Command not found: $(cmd.exec[1])"))
     bin
 end
+
 
 @db 3 function pseudoterminal_spawn(cmd; kw...)
 
@@ -965,6 +1127,7 @@ end
     set_extra(cmdout, :pt_client, process)
     return process
 end
+
 
 @db 3 function socketpair_spawn(cmd; capture_stderr=false, kw...)
 
@@ -985,6 +1148,7 @@ end
 
     return Process(pid, cmdin, cmdout)
 end
+
 
 @db 3 function spawn_process(cmd, infd, outfd=infd, errfd=outfd; kw...)
     if true #Sys.isapple
@@ -1154,6 +1318,7 @@ type_icon(::Type{S_IFBLK})         = "🧊"
 type_icon(::Type{S_IFREG})         = "📄"
 type_icon(::Type{S_IFLNK})         = "🔗"
 type_icon(::Type{S_IFSOCK})        = "🧦"
+type_icon(::Type{PidFD})           = "⚙️ "
 type_icon(::Type{Pseudoterminal})  = "⌨️ "
 
 
@@ -1175,6 +1340,22 @@ function Base.show(io::IO, fd::UnixFD{T}) where T
     end
     print(io, ")")
 end
+
+
+const signame = [string(unsafe_string(C.strsignal(n)),
+                        " (", constant_name(n; prefix=r"^SIG[A-Z]+$",
+                                              first=true), ")")
+                 for n in 1:31]
+
+
+function Base.show(io::IO, e::ProcessFailedException)
+    p = e.p
+    print(io,
+          "ProcessFailedException: ", cmd, ", ", "pid ", p.pid,
+          (waskilled(p) ? (" killed by ", signame[p.signal]) :
+                          (" exit status ", p.exit_code))...)
+end
+
 
 dbtiny(fd::UnixFD) = string(fd)
 

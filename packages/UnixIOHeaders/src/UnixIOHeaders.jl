@@ -1,16 +1,18 @@
 baremodule UnixIOHeaders
 
 import Base
-using Base:@ccall, Cstring, Cint, Sys, Vector
+using Base:@ccall, Cstring, Cint, Sys, Vector, signed, (&), (+), (>>), (>), (==)
 
 const __spawn_action = Cvoid
 
 ioctl(fd, cmd, arg) = @ccall ioctl(fd::Cint, cmd::Cint, arg::Ptr{Cint})::Cint
 
+
 using CInclude
 
 @cinclude([
     "<errno.h>",
+    "<string.h>",
     "<limits.h>",
     "<stdlib.h>",
     "<pthread.h>",
@@ -24,6 +26,7 @@ using CInclude
     "<sys/socket.h>",
     "<signal.h>",
     "<sys/wait.h>",
+    "<sys/syscall.h>",
     "<spawn.h>"],
 
     args = ["-D_GNU_SOURCE"],
@@ -62,7 +65,7 @@ end
 const SIG_DFL = sig_t(0)
 
 
-# Multiple methods for `open` and `fcntl`:
+# Need multiple methods for `open` and `fcntl`:
 open(pathname::AbstractString, flags) =
     @ccall open(pathname::Cstring, flags::Cint)::Cint
 
@@ -73,10 +76,7 @@ fcntl(fd, cmd) = @ccall fcntl(fd::Cint, cmd::Cint)::Cint
 fcntl(fd, cmd, arg) = @ccall fcntl(fd::Cint, cmd::Cint, arg::Cint)::Cint
 
 
-# Need `Cstring` argumnet for `system`.
-#system(command) = @ccall system(command::Cstring)::Cint
-
-# Need _m struct
+# Need variants for _m struct
 tcsetattr_m(fd, action, p) =
     @ccall tcsetattr(fd::Cint, action::Cint, p::Ptr{termios_m})::Cint
 
@@ -85,6 +85,33 @@ tcgetattr_m(fd, p) =
 
 cfsetspeed_m(p, speed) =
     @ccall cfsetspeed(p::Ptr{termios_m}, speed::speed_t)::Cint
+
+
+# Not yet in glibc.
+const SYS_pidfd_open=434 # https://git.io/J4j1A
+pifd_open(pid, flags) = @ccall syscall(SYS_pidfd_open::Cint,
+                                       pid::pid_t, flags::Cint)::Cint
+
+const P_PIDFD = 3
+waitid(idtype, id, infop, options) = 
+    @ccall syscall(SYS_waitid::Cint,
+                   idtype::Cint,
+                   id::id_t,
+                   infop::Ptr{siginfo_t},
+                   options::Cint,
+                   Base.C_NULL::Ptr{Cvoid})::Cint
+
+
+# Function-like mactos not yet wrapped.
+WIFSIGNALED(x) = (((x & 0x7f) + 1) >> 1) > 0
+WTERMSIG(x) = (x & 0x7f)
+WIFEXITED(x) = WTERMSIG(x) == 0
+WEXITSTATUS(x) = signed(UInt8((x >> 8) & 0xff))
+WIFSTOPPED(x) = (x & 0xff) == 0x7f
+WSTOPSIG(x) = WEXITSTATUS(x)
+WIFCONTINUED(x) = x == 0xffff
+WCOREDUMP(x) = x & 0x80
+
 
 
 end # module

@@ -304,22 +304,24 @@ end
 hexdump_output = "00000000  48 65 6c 6c 6f 0a 48 65  6c 6c 6f 0a              |Hello.Hello.|\n0000000c\n"
 
 @info "Short hexdump via socketpair."
-@test UnixIO.open(`hexdump -C`; opts...) do cin, cout
+p, out = UnixIO.open(`hexdump -C`; opts...) do cin, cout
     write(cin, "Hello\nHello\n")
     close(cin)
     read(cout, String)
-end == (0, hexdump_output)
+end
+@test out == hexdump_output
 
 @info "Short hexdump via pseudoterminal."
-@test UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
+p, out = UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
     println(cin, "Hello")
     println(cin, "Hello")
     close(cin)
     read(cout, String)
-end == (0, hexdump_output)
+end
+@test out == hexdump_output
 
 @info "Short pseudoterminal hexdump, read before writet."
-@test UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
+p, out = UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
     @sync begin
         @async begin
             println(cin, "Hello")
@@ -328,10 +330,11 @@ end == (0, hexdump_output)
         end
         read(cout, String)
     end
-end == (0, hexdump_output)
+end
+@test out == hexdump_output
 
 @info "Short pseudoterminal hexdump, interleaved read/write."
-@test UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
+p, out = UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
     @sync begin
         println(cin, "Hello")
         @async begin
@@ -340,7 +343,8 @@ end == (0, hexdump_output)
         end
         read(cout, String)
     end
-end == (0, hexdump_output)
+end
+@test out == hexdump_output
 
 
 @info "Interactive bash script via pseudoterminal."
