@@ -324,8 +324,12 @@ function fdtype(fd)
 
     if t == S_IFCHR && ispt(fd)
         t = Pseudoterminal 
-    elseif t == S_IFCHR && iscanon(fd)
-        t = CanonicalMode 
+    elseif t == S_IFCHR
+        attr=Ref(C.termios_m())
+        if @cerr(allow=C.EINVAL, C.tcgetattr_m(fd, attr)) != -1 &&
+            (attr[].c_lflag & C.ICANON) != 0
+            t = CanonicalMode 
+        end
     end
     return t
 end
@@ -393,7 +397,8 @@ README"## Opening and Closing Unix Files."
 
     UnixIO.open(pathname, [flags = C.O_RDWR],
                           [mode = 0o644]];
-                          [timeout=Inf]) -> IO
+                          [timeout=Inf],
+                          [tcattr=nothing]) -> IO
 
 Open the file specified by pathname.
 
@@ -410,7 +415,7 @@ _Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
 A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 """
 @db 1 function open(pathname, flags = C.O_RDWR, mode=0o644;
-                    timeout=Inf, events=nothing)
+                    timeout=Inf, tcattr=nothing)
     @nospecialize
 
     flags |= C.O_NONBLOCK
@@ -419,9 +424,16 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
         flags &= ~C.O_RDWR
         fdout = @cerr gc_safe_open(pathname, flags | C.O_WRONLY, mode)
         fdin = @cerr gc_safe_open(pathname, flags)
+        if tcattr != nothing
+            tcsetattr(termios, fdin)
+            tcsetattr(termios, fdout)
+        end
         io = DuplexIO(ReadFD(fdin), WriteFD(fdout))
     else
         fd = @cerr gc_safe_open(pathname, flags, mode)
+        if tcattr != nothing
+            tcsetattr(termios, fd)
+        end
         io = (flags & C.O_WRONLY) != 0 ? WriteFD(fd) : ReadFD(fd)
     end
     if timeout != nothing
@@ -487,7 +499,7 @@ tcgetattr(tty::UnixFD{<:S_IFCHR}) = tcgetattr(tty, termios(tty))
 function termios(tty::UnixFD{<:S_IFCHR})
     get_extra(tty, :termios, ()->tcgetattr(tty, C.termios_m()))
 end
-termios(tty::RawFD) = tcgetattr(tty, C.termios_m())
+termios(tty::Union{Cint,RawFD}) = tcgetattr(tty, C.termios_m())
 
 
 @doc README"""
@@ -533,6 +545,7 @@ tcsetattr(tty, attr::C.termios_m) =
     @cerr C.tcsetattr_m(tty, C.TCSANOW, Ref(attr))
 
 DuplexIOs.@wrap tcsetattr
+tcsetattr(f, tty::DuplexIO) = (tcsetattr(f, tty.in); tcsetattr(f, tty.out))
 
 """
 Disabling all terminal input and output processing.
@@ -545,7 +558,7 @@ Disabling all terminal input and output processing.
 end
 
 
-function setspeed!(attr::C.termios_m, f, x)
+function setspeed!(attr::C.termios_m, speed)
     flag = eval(:(C.$(Symbol("B$speed"))))
     @cerr C.cfsetspeed_m(Ref(attr), flag)
     nothing

@@ -21,7 +21,7 @@
  - SIGCHILD ? 
  - sleep poll ?
  - signalfd ?
- -  kqueue EVFILT_SIGNAL
+ -  kqueue EVFILT_PROC EVFILT_SIGNAL EVFILT_PROCDESC
     https://gist.github.com/davmac314/422dff2caf0254f982955a8bdf2c5704
 
 ### Buffering?
@@ -60,7 +60,7 @@ speed:
  - fast mmap - ok for small and large requests
  - fast local - but slow for small requests
  - fast network - but slow for small requests
- - slow serial - no problem with small requests
+ - slow serial - no problem with small requests\be
 
 event sources:
  - can be polled
