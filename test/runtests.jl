@@ -120,7 +120,14 @@ cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
 @info "Test @async read(::Cmd) with delay"
 results = []
 @sync for i in 1:5
-    @async push!(results, (i, UnixIO.read(`bash -c "sleep 2; echo $i"`, String)))
+    @async try
+        push!(results, (i, UnixIO.read(`bash -c "sleep 2; echo $i"`, String)))
+    catch err
+        UnixIO.printerr("ERROR: $err")
+        exception=(err, catch_backtrace())
+        UnixIO.printerr(exception)
+        @error "ERROR" exception
+    end
 end
 for (i, r) in results
     @test r == "$i\n"
@@ -132,10 +139,15 @@ end
 
 times = []
 @sync for i in 1:4
-    @async begin
+    @async try
         t0 = time()
         UnixIO.read(`bash -c "sleep 4; echo FOO"`, String; timeout=2.4)
         push!(times, time() - t0)
+    catch err
+        UnixIO.printerr("ERROR: $err")
+        exception=(err, catch_backtrace())
+        UnixIO.printerr(exception)
+        @error "ERROR" exception
     end
 end
 @show times

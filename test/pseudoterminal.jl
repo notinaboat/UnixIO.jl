@@ -299,7 +299,7 @@ end
 @info "readline() from pseudoterminal non-canonlical mode."
 UnixIO.ptopen(`cat`; opts...) do cin, cout
         
-    UnixIO.tcsetattr(cout; lflag = 0) # not C.ICANON
+    UnixIO.tcsetattr(a -> a.c_lflag = 0, cout) # not C.ICANON
     
     @sync begin
         @async begin

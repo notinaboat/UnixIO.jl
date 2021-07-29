@@ -209,7 +209,7 @@ const BUFFER_SIZE = 65536
         n = BUFFER_SIZE
     end
     buf = Vector{UInt8}(undef, n)
-    n = UnixIO.read(fd, buf; timeout=timeout)                          ;@db 5 n
+    n = UnixIO.read(fd, buf; timeout)                          ;@db 5 n
     resize!(buf, n)
 end
 

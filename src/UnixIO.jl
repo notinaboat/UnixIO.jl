@@ -13,7 +13,10 @@ e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
     UnixIO.read(`curl https://julialang.org`, String; timeout=5)
 
     io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
-    UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
+    UnixIO.tcsetattr(io) do attr
+        attr.speed=9600
+        attr.c_lflag |= C.ICANON
+    end
     readline(io; timeout=5)
 
     fd = C.open("file.txt", C.O_CREAT | C.O_WRONLY, 0o644)
@@ -114,6 +117,9 @@ macro with_timeout(fd, timeout, ex)
         end
     end
 end
+
+
+#-- Options Trait TTY? SOcket?.
 
 
 #-- Data Readyness Trait.
@@ -239,7 +245,10 @@ Base.wait(::WaitBySleeping, x) = sleep(0.1)
 
 # Unix File Descriptor wrapper.
 
+
 abstract type UnixFD{S_TYPE} <: IO end
+
+const AnyFD = Union{UnixFD, RawFD}
 
 abstract type Stream end
 abstract type MetaFile end
@@ -288,7 +297,7 @@ WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
     if !isrunning(p)
         @db return p "Already stopped or terminated"
     end
-    wait(WaitingMechanism(p), p; deadline=deadline)
+    wait(WaitingMechanism(p), p; deadline)
     @ensure time() >= deadline || !isrunning(p)
     return p
 end
@@ -462,63 +471,93 @@ fcntl_setfd(fd, flag) = fcntl_setfl(fd, flag; get=C.F_GETFD, set=C.F_SETFD)
 
 
 @doc README"""
-### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
-
-    UnixIO.tcsetattr(tty::UnixFD{S_IFCHR};
-                     [iflag=IUTF8],
-                     [oflag=0],
-                     [cflag=C.CS8],
-                     [lflag=0],
-                     [speed=0])
-
-Set terminal device options.
-
-See [tcsetattr(3)](https://man7.org/linux/man-pages/man3/tcsetattr.3.html)
-for flag descriptions.
-
-e.g.
-
-    io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
-    UnixIO.tcsetattr(io; speed=9600, lflag=C.ICANON)
-"""
-@db 2 function tcsetattr(tty::UnixFD{<:S_IFCHR};
-                         iflag = C.IUTF8,
-                         oflag = 0,
-                         cflag = C.CS8,
-                         lflag = 0,
-                         speed = 0)
-
-    conf = tcgetattr(tty)
-    conf.c_iflag = iflag
-    conf.c_oflag = oflag
-    conf.c_cflag = cflag
-    conf.c_lflag = lflag
-    speed == 0 || @cerr C.cfsetspeed_m(Ref(conf),
-                                       eval(:(C.$(Symbol("B$speed")))))
-    @cerr C.tcsetattr_m(tty, C.TCSANOW, Ref(conf))
-end
-
-DuplexIOs.@wrap tcsetattr
-
-
-@doc README"""
-    UnixIO.tcgetattr(tty::UnixFD{S_IFCHR}) -> C.termios_m
+    UnixIO.tcgetattr(tty) -> C.termios_m
 
 Get terminal device options.
 See [tcgetattr(3)](https://man7.org/linux/man-pages/man3/tcgetattr.3.html).
 """
-@db 2 function tcgetattr(tty, conf=C.termios_m())
-    @cerr C.tcgetattr_m(tty, Ref(conf))
-    @db 2 return conf
+@db 2 function tcgetattr(tty, attr=termios(tty))
+    aref = Ref(attr)
+    @cerr C.tcgetattr_m(tty, aref)
+    @db 2 return aref[]
 end
 tcgetattr(tty::UnixFD{<:S_IFCHR}) = tcgetattr(tty, termios(tty))
+
 
 function termios(tty::UnixFD{<:S_IFCHR})
     get_extra(tty, :termios, ()->tcgetattr(tty, C.termios_m()))
 end
-termios(tty) = tcgetattr(tty)
+termios(tty::RawFD) = tcgetattr(tty, C.termios_m())
+
+
+@doc README"""
+### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
+
+    UnixIO.tcsetattr(tty, attr::C.termios_m)
+    UnixIO.tcsetattr(tty) do attr
+         [attr.c_iflag = ...]
+         [attr.c_oflag = ...]
+         [attr.c_cflag = ...]
+         [attr.c_lflag = ...]
+         [attr.speed = ...]
+    end
+
+Set terminal device options.
+
+e.g.
+
+    io = UnixIO.open("/dev/ttyUSB0", C.O_RDWR | C.O_NOCTTY)
+    UnixIO.tcsetattr(io) do attr
+        setraw(attr)
+        attr.speed=9600
+        attr.c_lflag |= C.ICANON
+    end
+
+If `raw` is `true` the attributes are initialised to:
+
+    attr.c_iflag = 0
+    attr.c_oflag = 0
+    attr.c_cflag = C.CS8
+    attr.c_lflag = 0
+
+See [tcsetattr(3)](https://man7.org/linux/man-pages/man3/tcsetattr.3.html)
+for flag descriptions.
+
+"""
+function tcsetattr(f, tty::AnyFD)
+    c = tcgetattr(tty)
+    f(c)
+    tcsetattr(tty, c)
+end
+tcsetattr(tty, attr::C.termios_m) =
+    @cerr C.tcsetattr_m(tty, C.TCSANOW, Ref(attr))
+
+DuplexIOs.@wrap tcsetattr
+
+"""
+Disabling all terminal input and output processing.
+"""
+@selfdoc function setraw(x::C.termios_m)
+    x.c_iflag = 0
+    x.c_oflag = 0
+    x.c_cflag = C.CS8
+    x.c_lflag = 0
+end
+
+
+function setspeed!(attr::C.termios_m, f, x)
+    flag = eval(:(C.$(Symbol("B$speed"))))
+    @cerr C.cfsetspeed_m(Ref(attr), flag)
+    nothing
+end
+
+Base.setproperty!(c::C.termios_m, f::Symbol, x) =
+    f === :speed ? (setspeed!(c, x); x) :
+                    @invoke setproperty!(c::Any, f::Symbol, x)
+
 
 iscanon(tty) = (termios(tty).c_lflag & C.ICANON) != 0
+setcanon(tty) = tcsetattr(c -> c.c_lflag &= C.ICANON, tty)
 
 
 @doc README"""
@@ -815,7 +854,10 @@ and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
     @assert !ispt(clientfd)
 
     fd = UnixFD(pt)
-    tcsetattr(fd.in; lflag = C.ICANON)
+    tcsetattr(fd.in) do attr
+        setraw(attr)
+        attr.c_lflag |= C.ICANON
+    end
     set_extra(fd.in, :pt_clientfd, clientfd)
 
     @db return fd, path
@@ -908,7 +950,7 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 ```
 """
 @db function open(f, cmd::Cmd; capture_stderr=false, env=nothing, kw...)
-    process = socketpair_spawn(cmd; env=env, capture_stderr=capture_stderr)
+    process = socketpair_spawn(cmd; env, capture_stderr)
     run_cmd_function(f, cmd, process; kw...)
 end
 
@@ -928,7 +970,7 @@ If `check_status` is `true` an exception is thrown on non-zero exit status.
 Run `cmd` using `posix_spawn`.
 """
 @db function ptopen(f, cmd::Cmd; env=nothing, kw...)
-    process = pseudoterminal_spawn(env=env, cmd)
+    process = pseudoterminal_spawn(cmd; env)
     run_cmd_function(f, cmd, process; kw...)
 end
 
@@ -1004,7 +1046,7 @@ end
 @db function read(cmd::Cmd; timeout=Inf, kw...)
     r = open(cmd; kw...) do cmdin, cmdout
         shutdown(cmdin)
-        Base.read(cmdout; timeout=timeout)
+        Base.read(cmdout; timeout)
     end
     @db return r
 end

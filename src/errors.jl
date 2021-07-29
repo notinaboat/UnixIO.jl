@@ -118,16 +118,29 @@ end
 
 
 macro selfdoc(ex)
-    @require ex isa Expr && ex.head == Symbol("=")
+
+    @require ex isa Expr && ex.head in (:function, Symbol("="))
+
     docex = copy(ex)
     Base.remove_linenums!(docex)
-    body = docex.args[2]
-    if body.head == :block && length(body.args) == 1
-        docex.args[2] = body.args[1]
+    if ex.head == Symbol("=")
+        body = docex.args[2]
+        if body.head == :block && length(body.args) == 1
+            docex.args[2] = body.args[1]
+        end
     end
+    call = ex.args[1]
+    if call.head != :call
+        call = call.args[1]
+    end
+    name = call.args[1]
     doc = string("```\n", docex, "\n```\n")
-    esc(:(@doc($doc, $ex)))
+    esc(quote
+        @doc($doc, $name)
+        Base.@__doc__($ex)
+    end)
 end
+
 
 
 # End of file: errors.jl
