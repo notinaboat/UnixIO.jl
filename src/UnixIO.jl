@@ -425,14 +425,14 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
         fdout = @cerr gc_safe_open(pathname, flags | C.O_WRONLY, mode)
         fdin = @cerr gc_safe_open(pathname, flags)
         if tcattr != nothing
-            tcsetattr(tcattr, fdin)
-            tcsetattr(tcattr, fdout)
+            tcsetattr(tcattr, RawFD(fdin))
+            tcsetattr(tcattr, RawFD(fdout))
         end
         io = DuplexIO(ReadFD(fdin), WriteFD(fdout))
     else
         fd = @cerr gc_safe_open(pathname, flags, mode)
         if tcattr != nothing
-            tcsetattr(tcattr, fd)
+            tcsetattr(tcattr, RawFD(fd))
         end
         io = (flags & C.O_WRONLY) != 0 ? WriteFD(fd) : ReadFD(fd)
     end
