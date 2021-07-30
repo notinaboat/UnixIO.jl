@@ -10,7 +10,8 @@ all: README.md test
 
 JL := julia
 
-README.md: src/$(PACKAGE).jl
+.PHONY: README.md
+README.md:
 	julia --project -e "using $(PACKAGE); $(PACKAGE).readme_docs_generate()"
 
 doc:

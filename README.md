@@ -35,9 +35,6 @@ If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `epoll` the Linux [`epoll(7)`](https
 If `ENV["JULIA_IO_EVENT_SOURCE"]` is set to `sleep` IO polling is done by a dumb loop with a 10ms delay. This may be more efficient for small systems with simple IO requirements. (e.g. communicating with a few serial ports and sub-processes on a Raspberry Pi).
 
 ## Opening and Closing Unix Files.
-
-### `UnixIO.open`
-
 ### `UnixIO.open` -- Open Files.
 
     UnixIO.open([FDType], pathname, [flags = C.O_RDWR],
@@ -83,9 +80,6 @@ _Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
 [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html).
 A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 
-
-### `UnixIO.set_timeout`
-
 ### `UnixIO.set_timeout` -- Configure Timeouts.
 
     UnixIO.set_timeout(fd::UnixFD, timeout)
@@ -99,9 +93,6 @@ Configure `fd` to limit IO operations to `timeout` seconds.
 
 Get terminal device options.
 See [tcgetattr(3)](https://man7.org/linux/man-pages/man3/tcgetattr.3.html).
-
-
-### `UnixIO.tcsetattr`
 
 ### `UnixIO.tcsetattr` -- Configure Terminals and Serial Ports.
 
@@ -136,26 +127,17 @@ See [tcsetattr(3)](https://man7.org/linux/man-pages/man3/tcsetattr.3.html)
 for flag descriptions.
 
 
-
-### `UnixIO.tcflush`
-
 ### `UnixIO.flush` -- Discard untransmitted data.
 
     tcflush(tty, flags)
 
 See [tcflush(3p)](https://man7.org/linux/man-pages/man3/tcflush.3p.html)
 
-
-### `UnixIO.tiocgwinsz`
-
 ### `UnixIO.tiocgwinsz` -- Get Terminal size.
 
     tiocgwinsz(tty) -> C.winsize
 
 See [tty_ioctl(4)](https://man7.org/linux/man-pages/man4/tty_ioctl.4.html)
-
-
-### `UnixIO.shutdown`
 
 ### `UnixIO.shutdown` -- Signal end of transmission or reception.
 
@@ -166,9 +148,6 @@ Shut down part of a full-duplex connection.
 See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
 
 ## Reading from Unix Files.
-
-### `UnixIO.read`
-
 ### `UnixIO.read` -- Read bytes into a buffer.
 
     UnixIO.read(fd, buf, [count=length(buf)];
@@ -179,9 +158,6 @@ into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 
 ## Writing to Unix Files.
-
-### `UnixIO.println`
-
 ### `UnixIO.println` -- Write messages to the terminal.
 
     UnixIO.println(x...)
@@ -191,18 +167,12 @@ Write directly to `STDOUT` or `STDERR`.
 Does not yield control from the current task.
 
 ## Unix Domain Sockets.
-
-### `UnixIO.socketpair`
-
 ### `UnixIO.socketpair()` -- Unix Domain Sockets for IPC.
 
     UnixIO.socketpair() -> fd1, fd2
 
 Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
-
-
-### `UnixIO.openpt`
 
 ### `UnixI in debug.openpt()` -- Open a pseudoterminal device.
 
@@ -216,9 +186,6 @@ See [posix_openpt(3)](https://man7.org/linux/man-pages/man2/posix_openpt.3.html)
 and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
 
 ## Executing Unix Commands.
-
-### `UnixIO.@sh_str`
-
 ### `sh"cmd"` -- Shell command string.
 
     sh"shell command"
@@ -231,9 +198,6 @@ String containing result of shell command. e.g.
     julia> println("V: ", sh"grep version Project.toml | awk '{print$3}'")
     V: "0.1.0"
 
-
-### `UnixIO.system`
-
 ### `UnixIO.system` -- Run a shell command.
 
     UnixIO.system(command) -> exit status
@@ -245,9 +209,6 @@ e.g.
 julia> UnixIO.system("uname -srm")
 Darwin 20.3.0 x86_64
 ```
-
-
-### `UnixIO.open`
 
 ### `UnixIO.open(::Cmd) do...` -- Communicate with a sub-process.
 
@@ -273,9 +234,6 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 0000000c
 ```
 
-
-### `UnixIO.ptopen`
-
 ### `UnixIO.ptopen(::Cmd) do...` -- Run a sub-process in a pseudoterminal.
 
     UnixIO.ptopen(f, cmd::Cmd; [env=ENV, check_status=true])
@@ -288,9 +246,6 @@ connected to (`cmdin`, `cmdout`) via a pseudoterminal.
 If `check_status` is `true` an exception is thrown on non-zero exit status.
 
 Run `cmd` using `posix_spawn`.
-
-
-### `UnixIO.read`
 
 ### `UnixIO.read(::Cmd)` -- Read sub-process output.
 
@@ -309,9 +264,6 @@ julia> UnixIO.read(`uname -srm`, String)
 "Darwin 20.3.0 x86_64
 "
 ```
-
-
-### `UnixIO.waitpid`
 
 ### `UnixIO.waitpid` -- Wait for a sub-process to terminate.
 
