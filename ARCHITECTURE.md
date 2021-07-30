@@ -2,6 +2,15 @@
 
 ## Unfiled Notes
 
+ - for i in C if ...
+ - traits, arg at end
+ - bind() fd to process?
+ - sub-process with serialised  expr channel
+ - example of llvm output resolving down to read(2) call
+ - used  @isdefined in debug
+ - AIO
+ - 
+
  - Channel API?
    - all options configured on channel, not passed to take!
  - consider @noinline and @nospecialize, @noinline

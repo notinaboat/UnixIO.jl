@@ -44,17 +44,27 @@ Raspberry Pi).
 """
 module UnixIO
 
-export UnixFD, DuplexIO, @sh_str
-
-if get(ENV, "JULIA_UNIX_IO_EXPORT_ALL", "0") != "0"
-    export C, constant_name
-end
+export UnixFD,
+       DuplexIO,
+       @sh_str
 
 
-using Base: assert_havelock, @lock, C_NULL, ImmutableDict
-using ReadmeDocs
-using Preconditions
-using AsyncLog
+
+# External Dependencies.
+
+using Base: ImmutableDict,
+            assert_havelock,
+            @lock,
+            C_NULL
+
+using ReadmeDocs               # for README""" ... """ doc strings.
+using Preconditions            # for @require and @ensure contracts
+using AsyncLog                 # for @asynclog -- log errors in async tasks.
+using TypeTree: tt as typetree # for pretty-printed type trees in doc strings.
+
+
+
+# Local Modules.
 
 using DuplexIOs
 using UnixIOHeaders
@@ -149,7 +159,7 @@ struct ReasdsfromBuffer <: ReadFragmentation end
 struct ReadsBytes       <: ReadFragmentation end
 
 
-"""
+@doc ARCH"""
 ### `ReadFragmentation` -- Data Fragmentation Trait.
 
 The `ReadFragmentation` trait describes what guarantees a `ReadFD` makes
@@ -161,14 +171,14 @@ about fragmentation of data returned by `read(2)`.
    Does not return partially buffered lines unless an explicit `EOL` or `EOF`
    control character is received.
    Applicable to Character devices in canonical mode.
-   See (termios(3))[https://man7.org/linux/man-pages/man3/termios.3.html].
+   See [termios(3)](https://man7.org/linux/man-pages/man3/termios.3.html).
 
  * `ReadsPackets` -- `read(2)` returns exactly one packet at a time.
    Does not return partially buffered packets.
    Applicable to some sockets and pipes depending on configuration.
    e.g. See the `O_DIRECT` flag in
-   (pipe2(2))[https://man7.org/linux/man-pages/man2/pipe.2.html].
-  
+   [pipe(2)](https://man7.org/linux/man-pages/man2/pipe.2.html).
+
  * `ReadsFromBuffer` -- `read(2)` returns at most one buffer at at time.
    TODO: query buffer size.
 
@@ -191,11 +201,11 @@ struct WaitUsingPidFD     <: WaitingMechanism end
 struct WaitUsingKQueue    <: WaitingMechanism end
 
 
-"""
+@doc ARCH"""
 ### `WaitingMechanism` -- Event Notificaiton Mechanism Trait.
 
 The `WaitingMechanism` trait describes ways of waiting for OS resources
-that are not immediately available. e.g. when `read(2)` returns 
+that are not immediately available. e.g. when `read(2)` returns
 `EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
 
 Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
@@ -215,21 +225,21 @@ TODO: Configure via https://github.com/JuliaPackaging/Preferences.jl
    Wait for activity on a set of file descriptors.
    Applicable to FIFO pipes, sockets and character devices
    (but not local files).
-   See (`poll(2)`)[https://man7.org/linux/man-pages/man2/poll.2.html]
+   See [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)
 
  * `WaitUsingEPoll` -- Wait using the Linux `epoll` mechanism.
    Like `poll` but scales better for workloads with a large number of
    waiting streams.
-   See (`epoll(7)`)[https://man7.org/linux/man-pages/man7/epoll.7.html]
+   See [`epoll(7)`](https://man7.org/linux/man-pages/man7/epoll.7.html)
 
  * `WaitUsingKQueue` -- Wait using the BSB `kqueue` mechanism.
    Like `epoll` but can also wait for files, processes, signals etc.
-   See (`kqueue(2)`)[https://www.freebsd.org/cgi/man.cgi?kqueue]
+   See [`kqueue(2)`](https://www.freebsd.org/cgi/man.cgi?kqueue)
 
  * `WaitUsingPidFD()` -- Wait for process termination using
    the Linux `pidfd` mechanism. A `pidfd` is a special process monitoring
-   file descriptor that can in turn be monitored by `poll` or `epoll`.
-   (`pidfd_open(2)`)[http://man7.org/linux/man-pages/man2/pidfd_open.2.html].
+   file descriptor that can in turn be monitored by `poll` or `epoll`. See
+   [`pidfd_open(2)`](http://man7.org/linux/man-pages/man2/pidfd_open.2.html).
 
 """
 WaitingMechanism(x) = WaitingMechanism(typeof(x))
@@ -246,14 +256,15 @@ Base.wait(::WaitBySleeping, x) = sleep(0.1)
 # Unix File Descriptor wrapper.
 
 
-abstract type UnixFD{S_TYPE} <: IO end
+abstract type UnixFD{T} <: IO end
 
 const AnyFD = Union{UnixFD, RawFD}
 
-abstract type Stream end
-abstract type MetaFile end
-abstract type File end
-abstract type PidFD end
+abstract type FDType end
+abstract type Stream <: FDType end
+abstract type MetaFile <: FDType end
+abstract type File <: FDType end
+abstract type PidFD <: FDType end
 
 abstract type S_IFIFO <: Stream end
 abstract type S_IFCHR <: Stream end
@@ -266,8 +277,8 @@ abstract type Pseudoterminal <: S_IFCHR end
 abstract type CanonicalMode <: S_IFCHR end
 
 Base.wait(fd::UnixFD) = wait(WaitingMechanism(fd), fd)
-Base.wait(::WaitUsingEPoll,   fd::UnixFD) = wait_for_event(epoll_queue, fd)
-Base.wait(::WaitUsingPosixPoll,    fd::UnixFD) = wait_for_event(poll_queue, fd)
+Base.wait(::WaitUsingEPoll, fd::UnixFD) = wait_for_event(epoll_queue, fd)
+Base.wait(::WaitUsingPosixPoll, fd::UnixFD) = wait_for_event(poll_queue, fd)
 
 
 mutable struct Process
@@ -323,12 +334,12 @@ function fdtype(fd)
                         Nothing
 
     if t == S_IFCHR && ispt(fd)
-        t = Pseudoterminal 
+        t = Pseudoterminal
     elseif t == S_IFCHR
         attr=Ref(C.termios_m())
-        if @cerr(allow=C.EINVAL, C.tcgetattr_m(fd, attr)) != -1 &&
+        if @cerr(allow=(C.EINVAL, C.ENODEV), C.tcgetattr_m(fd, attr)) != -1 &&
             (attr[].c_lflag & C.ICANON) != 0
-            t = CanonicalMode 
+            t = CanonicalMode
         end
     end
     return t
@@ -350,6 +361,7 @@ WaitingMechanism(::Type{<:UnixFD{<:Union{S_IFIFO, S_IFCHR, S_IFSOCK, PidFD}}}) =
                WaitBySleeping())
 
 
+    # FIXME unify with open() ?
 @db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=nothing)
     @nospecialize
 
@@ -381,9 +393,6 @@ ReadBuffering(::Type{<:ReadFD{<:Union{S_IFIFO, S_IFCHR, S_IFSOCK}}}) =
 
 ReadBuffering(::Type{<:ReadFD{<:Union{S_IFREG, S_IFBLK}}}) = KnownFileSize()
 
-abstract type PidFD end
-
-
 DuplexIOs.DuplexIO(i::ReadFD, o::WriteFD) = @invoke DuplexIO(i::IO, o::IO)
 DuplexIOs.DuplexIO(o::WriteFD, i::ReadFD) = @invoke DuplexIO(i::IO, o::IO)
 
@@ -395,10 +404,10 @@ README"## Opening and Closing Unix Files."
 @doc README"""
 ### `UnixIO.open` -- Open Files.
 
-    UnixIO.open(pathname, [flags = C.O_RDWR],
-                          [mode = 0o644]];
-                          [timeout=Inf],
-                          [tcattr=nothing]) -> IO
+    UnixIO.open([FDType], pathname, [flags = C.O_RDWR],
+                                    [mode = 0o644]];
+                                    [timeout=Inf],
+                                    [tcattr=nothing]) -> UnixIO{FDType}
 
 Open the file specified by pathname.
 
@@ -410,13 +419,27 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
+`open` returns `UnixFD{FDType}`, where `FDType` is one of:
+
+```
+$(join(typetree(FDType; mod=UnixIO)))
+```
+
+If the `FDType` argument is provided then `open` guarantees to return
+`UnixIO{FDType}` (or throw an `ArgumentError` if `FDType` is not applicable
+to `pathname`.
+
 _Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
 [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html).
 A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 """
-@db 1 function open(pathname, flags = C.O_RDWR, mode=0o644;
-                    timeout=Inf, tcattr=nothing)
-    @nospecialize
+@db 1 function open(type::Type{T},
+                    pathname, flags=nothing, mode=0o644;
+                    timeout=Inf, tcattr=nothing) where T
+
+    if flags == nothing # See Open Type test set.
+        flags = C.O_RDWR
+    end
 
     flags |= C.O_NONBLOCK
 
@@ -428,20 +451,25 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
             tcsetattr(tcattr, RawFD(fdin))
             tcsetattr(tcattr, RawFD(fdout))
         end
-        io = DuplexIO(ReadFD(fdin), WriteFD(fdout))
+        io = DuplexIO(ReadFD(T, fdin), WriteFD(T, fdout))
     else
         fd = @cerr gc_safe_open(pathname, flags, mode)
         if tcattr != nothing
             tcsetattr(tcattr, RawFD(fd))
         end
-        io = (flags & C.O_WRONLY) != 0 ? WriteFD(fd) : ReadFD(fd)
+        io = (flags & C.O_WRONLY) != 0 ? WriteFD(T, fd) : ReadFD(T, fd)
     end
     if timeout != nothing
         set_timeout(io, timeout)
     end
+
     @ensure isopen(io)
     @db 1 return io
 end
+
+open(args...; kw...) = open(Union{}, args...; kw...)
+
+
 
 gc_safe_open(a...) = @gc_safe C.open(a...)
 
@@ -612,7 +640,7 @@ tiocgwinsz(tty::DuplexIO) = tiocgwinsz(tty.out)
     nothing
 end
 
-@db function Base.wait(fd::ReadFD{<:Pseudoterminal})
+@db function Base.wait(fd::ReadFD{Pseudoterminal})
     assert_havelock(fd)
 
     process = fd.extra[:pt_client]
@@ -636,7 +664,7 @@ end
     end
 end
 
-    
+
 @db 1 function Base.close(fd::ReadFD{<:Pseudoterminal})
     C.close(fd.extra[:pt_clientfd])
     @invoke Base.close(fd::ReadFD)
@@ -645,8 +673,8 @@ end
 @db 1 function Base.close(fd::WriteFD{<:Pseudoterminal})
     if !fd.isclosed                                           ;@db 1 "-> ^D 🛑"
         fd.gothup = true
-        # FIXME tcdrain ? 
-        if iscanon(fd) 
+        # FIXME tcdrain ?
+        if iscanon(fd)
             # First CEOF terminates a possible un-terminated line.
             # Second CEOF signals terminal closing.
             for _ in 1:2
@@ -844,7 +872,7 @@ end
 
 
 @doc README"""
-### `UnixIO.openpt()` -- Open a pseudoterminal device.
+### `UnixI in debug.openpt()` -- Open a pseudoterminal device.
 
     UnixIO.openpt([flags = C._NOCTTY | C.O_RDWR]) -> ptfd::UnixFD, "/dev/pts/X"
 
@@ -902,7 +930,7 @@ String containing result of shell command. e.g.
     Machine is x86_64
 
     julia> println("V: ", sh"grep version Project.toml | awk '{print\$3}'")
-    V: "0.1.0"  
+    V: "0.1.0"
 """
 macro sh_str(s)
     s = Meta.parse("\"$s\"")
@@ -1166,7 +1194,7 @@ end
 
 
 @db function waitid(fd::ReadFD{<:PidFD}, p::Process)
-    si = waitid(fd) 
+    si = waitid(fd)
     if si == nothing
         return
     end
@@ -1206,7 +1234,7 @@ end
             fd.deadline = deadline
             try
                 @dblock fd wait(fd)
-            finally 
+            finally
                 close(fd)
             end
         end
@@ -1299,7 +1327,7 @@ end
 
 Run `cmd` using `posix_spawn`.
 Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
-See (posix_spawn(3))[https://man7.org/linux/man-pages/man3/posix_spawn.3.html].
+See [posix_spawn(3)](https://man7.org/linux/man-pages/man3/posix_spawn.3.html).
 """
 @db function posix_spawn(cmd::Cmd, infd::Union{String,RawFD},
                                    outfd::Union{String,RawFD,Nothing}=nothing,

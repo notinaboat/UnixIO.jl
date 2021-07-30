@@ -25,7 +25,11 @@ mutable struct WriteFD{T} <: UnixFD{T}
                     ImmutableDict{Symbol,Any}())
         return fd
     end
-    WriteFD(fd) = WriteFD{fdtype(fd)}(fd)
+    function WriteFD(T::Type, fd)
+        T = (T == Union{}) ? fdtype(fd) : T
+        WriteFD{T}(fd)
+    end
+    WriteFD(fd) = WriteFD(Union{}, fd)
 end
 
 

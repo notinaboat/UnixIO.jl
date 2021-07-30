@@ -1,6 +1,6 @@
 using Test
 using UnixIO
-using UnixIO: dbstring
+using UnixIO: dbstring, C
 using AsyncLog
 using LoggingTestSets
 using Crayons
@@ -19,7 +19,7 @@ function ptdump(f, cmd, cin, cout)
 
     function fin()
         x = ""
-        for _ in 1:100
+        for _ in 1:30
             x = readline(cout; keep=true, timeout=0.1)
             if x != ""
                 break
@@ -67,6 +67,8 @@ mktempdir() do d
     write(jlfile, """
         using UnixIO
         io = UnixIO.stdin
+        @show ENV["JULIA_UNIX_IO_DEBUG_LEVEL"]
+        @show UnixIO.DEBUG_LEVEL
         @show typeof(io)
         @assert io isa UnixIO.ReadFD{UnixIO.CanonicalMode}
         @assert !(io isa UnixIO.ReadFD{UnixIO.Pseudoterminal})
@@ -84,7 +86,15 @@ mktempdir() do d
                           "JULIA_DEBUG" => ""))
     UnixIO.ptopen(`julia $jlfile`; env=env, opts...) do cin, cout
     ptdump(`julia`, cin, cout) do fin, fout
-        while !contains(fin(), r"go!") end
+        while true
+            l = fin()
+            if l == nothing
+                sleep(1)
+            elseif contains(l, r"go!")
+                break
+            end
+        end
+
         fout("Hello1\n")
         fout("Hello2\n")
         @test fin() == """7:"Hello1\\n":0\n"""

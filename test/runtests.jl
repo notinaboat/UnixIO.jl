@@ -4,6 +4,7 @@ using AsyncLog
 using UnixIO
 using UnixIO: C
 
+# FIXME use ReTest.jl
 """
 # Test Cases to add
 
@@ -16,6 +17,27 @@ cd(@__DIR__)
 
 @testset LoggingTestSet "UnixIO" begin
 
+@testset LoggingTestSet "Open Type" begin
+
+f() = UnixIO.open(UnixIO.FDType, "foobar")
+info, type = code_typed(f, ())[1]
+@test type == DuplexIO{UnixIO.ReadFD{UnixIO.FDType},
+                       UnixIO.WriteFD{UnixIO.FDType}}
+
+f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDWR)
+info, type = code_typed(f, ())[1]
+@test type == DuplexIO{UnixIO.ReadFD{UnixIO.FDType},
+                       UnixIO.WriteFD{UnixIO.FDType}}
+
+f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDONLY)
+info, type = code_typed(f, ())[1]
+@test type == UnixIO.ReadFD{UnixIO.FDType}
+
+f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_WRONLY)
+info, type = code_typed(f, ())[1]
+@test type == UnixIO.WriteFD{UnixIO.FDType}
+
+end # testset
 
 @info "Test read(::Cmd)"
 @test UnixIO.read(`uname -a`) ==

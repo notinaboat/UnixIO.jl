@@ -27,7 +27,11 @@ mutable struct ReadFD{T} <: UnixFD{T}
                     ImmutableDict{Symbol,Any}())
         return fd
     end
-    ReadFD(fd) = ReadFD{fdtype(fd)}(fd)
+    function ReadFD(T::Type, fd)
+        T = (T == Union{}) ? fdtype(fd) : T
+        ReadFD{T}(fd)
+    end
+    ReadFD(fd) = ReadFD(Union{}, fd)
 end
 
 
@@ -106,7 +110,7 @@ Base.iswritable(::ReadFD) = false
 
 Base.bytesavailable(fd::ReadFD) = bytesavailable_with(ReadBuffering(fd), fd)
 
-bytesavailable_with(::NotBuffered, fd) = bytesavaliable(fd.buffer)
+bytesavailable_with(::NotBuffered, fd) = bytesavailable(fd.buffer)
 
 @db 1 function bytesavailable_with(::KnownFileSize, fd)
     n = bytesavailable(fd.buffer)
@@ -135,7 +139,9 @@ Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
     if event == C.POLLIN
         @db 1 return false
     end
-    Base.write(fd.buffer, readavailable(fd; kw...))
+    if !fd.isclosed
+        Base.write(fd.buffer, readavailable(fd; kw...))
+    end
     @db 1 return bytesavailable(fd.buffer) == 0
 end
 

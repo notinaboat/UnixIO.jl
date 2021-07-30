@@ -69,6 +69,7 @@ const global_debug = GlobalDebug()
 
 
 function debug_init()
+    global DEBUG_LEVEL
     global_debug.t0 = time()
 
     env_level = parse(Int, get(ENV, "JULIA_UNIX_IO_DEBUG_LEVEL", "0"))
@@ -77,6 +78,9 @@ function debug_init()
                "but compiled-in DEBUG_LEVEL = $DEBUG_LEVEL.\n" *
                "Debug messages above $DEBUG_LEVEL will not be displayed " *
                "until the the UnixIO module is re-compiled."
+    elseif env_level < DEBUG_LEVEL
+        @info "ENV[\"JULIA_UNIX_IO_DEBUG_LEVEL\"] = $env_level -> DEBUG_LEVEL"
+        DEBUG_LEVEL = env_level
     end
 end
 
