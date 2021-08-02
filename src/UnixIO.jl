@@ -135,10 +135,14 @@ end
 #-- Data Readyness Trait.
 
 abstract type ReadBuffering end
-struct KnownFileSize     <: ReadBuffering end
-struct KnownBufferSize   <: ReadBuffering end
-struct UnknownBufferSize <: ReadBuffering end
 struct NotBuffered       <: ReadBuffering end
+struct UnknownBufferSize <: ReadBuffering end
+
+abstract type KnownBufferSize <: ReadBuffering end
+struct HasFIONREADSize <: KnownBufferSize end
+
+abstract type KnownTotalSize <: KnownBufferSize end
+struct HasFileSize <: KnownTotalSize end
 
 """
 ### `ReadBuffering` -- Data Readyness Trait.
@@ -250,7 +254,7 @@ Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
 Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
 Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
 
-Base.wait(::WaitBySleeping, x) = sleep(0.1)
+Base.wait(x, ::WaitBySleeping) = sleep(0.1)
 
 
 # Unix File Descriptor wrapper.
@@ -292,6 +296,8 @@ mutable struct FD{D<:IODirection,T<:FDType} <: IO
     end
 end
 
+const AnyFD = Union{FD, RawFD, Cint}
+
 set_extra(fd::FD, key::Symbol, value) =
     fd.extra = ImmutableDict(fd.extra, key => value)
 
@@ -305,26 +311,26 @@ function get_extra(fd::FD, key::Symbol, default)
 end
 
 
-const AnyFD = Union{FD, RawFD, Cint}
 
-abstract type Stream <: FDType end
+abstract type File     <: FDType end
+abstract type Stream   <: FDType end
 abstract type MetaFile <: FDType end
-abstract type File <: FDType end
-abstract type PidFD <: FDType end
 
-abstract type S_IFIFO <: Stream end
-abstract type S_IFCHR <: Stream end
-abstract type S_IFDIR <: MetaFile end
-abstract type S_IFBLK <: File end
-abstract type S_IFREG <: File end
-abstract type S_IFLNK <: MetaFile end
+abstract type S_IFBLK  <: File end
+abstract type S_IFREG  <: File end
+abstract type S_IFIFO  <: Stream end
+abstract type S_IFCHR  <: Stream end
 abstract type S_IFSOCK <: Stream end
-abstract type Pseudoterminal <: S_IFCHR end
-abstract type CanonicalMode <: S_IFCHR end
+abstract type S_IFLNK  <: MetaFile end
+abstract type S_IFDIR  <: MetaFile end
 
-Base.wait(fd::FD) = wait(WaitingMechanism(fd), fd)
-Base.wait(::WaitUsingEPoll, fd::FD) = wait_for_event(epoll_queue, fd)
-Base.wait(::WaitUsingPosixPoll, fd::FD) = wait_for_event(poll_queue, fd)
+struct PidFD           <: FDType end
+struct Pseudoterminal  <: S_IFCHR end
+struct CanonicalMode   <: S_IFCHR end
+
+Base.wait(fd::FD) = wait(fd, WaitingMechanism(fd))
+Base.wait(fd::FD, ::WaitUsingEPoll) = wait_for_event(epoll_queue, fd)
+Base.wait(fd::FD, ::WaitUsingPosixPoll) = wait_for_event(poll_queue, fd)
 
 
 mutable struct Process
@@ -354,15 +360,15 @@ WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
     if !isrunning(p)
         @db return p "Already stopped or terminated"
     end
-    wait(WaitingMechanism(p), p; deadline)
+    wait(p, WaitingMechanism(p); deadline)
     @ensure time() >= deadline || !isrunning(p)
     return p
 end
 
 check(p::Process) = wait(p; deadline=0.0)
 
-Base.wait(::WaitBySleeping, p::Process; kw...) = waitpid(p; kw...)
-Base.wait(::WaitUsingPidFD, p::Process; kw...)= waitpidfd(p; kw...)
+Base.wait(p::Process, ::WaitBySleeping; kw...) = waitpid(p; kw...)
+Base.wait(p::Process, ::WaitUsingPidFD; kw...)= waitpidfd(p; kw...)
 
 
 
@@ -400,7 +406,7 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               issocket(s)   ? S_IFSOCK :
                                               Nothing)
 
-WaitingMechanism(::Type{<:FD{<:Any,<:Union{S_IFIFO, S_IFCHR, S_IFSOCK, PidFD}}}) =
+WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
     firstvalid(WaitUsingKQueue(),
                WaitUsingEPoll(),
                WaitUsingPosixPoll(),
@@ -434,9 +440,9 @@ include("ReadFD.jl")
 include("WriteFD.jl")
 
 ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
-ReadBuffering(::Type{<:FD{In,<:Union{S_IFIFO, S_IFCHR, S_IFSOCK}}}) =
-    KnownBufferSize()
-ReadBuffering(::Type{<:FD{In,<:Union{S_IFREG, S_IFBLK}}}) = KnownFileSize()
+
+ReadBuffering(::Type{<:FD{In,<:Stream}}) = HasFIONREADSize()
+ReadBuffering(::Type{<:FD{In,<:File}}) = HasFileSize()
 
 DuplexIOs.DuplexIO(i::FD{In}, o::FD{Out}) = @invoke DuplexIO(i::IO, o::IO)
 DuplexIOs.DuplexIO(o::FD{Out}, i::FD{In}) = @invoke DuplexIO(i::IO, o::IO)
@@ -711,12 +717,12 @@ end
 end
 
 
-@db 1 function Base.close(fd::FD{In,<:Pseudoterminal})
+@db 1 function Base.close(fd::FD{In,Pseudoterminal})
     C.close(fd.extra[:pt_clientfd])
     @invoke Base.close(fd::FD{In})
 end
 
-@db 1 function Base.close(fd::FD{Out,<:Pseudoterminal})
+@db 1 function Base.close(fd::FD{Out,Pseudoterminal})
     if !fd.isclosed                                           ;@db 1 "-> ^D 🛑"
         fd.gothup = true
         # FIXME tcdrain ?
@@ -1520,6 +1526,8 @@ end
 # Pretty Printing.
 
 
+type_icon(::Type{In})              = "→"
+type_icon(::Type{Out})             = "←"
 type_icon(::Type{S_IFIFO})         = "📥"
 type_icon(::Type{S_IFCHR})         = "📞"
 type_icon(::Type{S_IFDIR})         = "📂"
@@ -1535,8 +1543,8 @@ type_icon(::Type{CanonicalMode})   = "📺"
 function Base.show(io::IO, fd::FD{D,T}) where {D,T}
     fdint = convert(Cint, fd)
     t = type_icon(T)
-    d = Base.typename(D).name
-    print(io, "FD{$d,$t}($fdint")
+    d = type_icon(D)
+    print(io, "FD{$d$t}($fdint")
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("👀", fd.nwaiting))
     islocked(fd) && print(io, "🔒")

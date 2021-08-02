@@ -32,7 +32,7 @@ is no way to detect when the client has closed the terminal.
 This `raw_transfer` method handles this by checking if the client process
 is still alive and returning `0` if it has terminated.
 """
-@db 2 function raw_transfer(fd::FD{In}{<:Pseudoterminal}, buf, count)
+@db 2 function raw_transfer(fd::FD{In,Pseudoterminal}, buf, count)
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
@@ -62,11 +62,11 @@ Base.isreadable(fd::FD{In}) = Base.isopen(fd)
 Base.iswritable(::FD{In}) = false
 
 
-Base.bytesavailable(fd::FD{In}) = bytesavailable_with(ReadBuffering(fd), fd)
+Base.bytesavailable(fd::FD{In}) = bytesavailable(fd, ReadBuffering(fd))
 
-bytesavailable_with(::NotBuffered, fd) = bytesavailable(fd.buffer)
+Base.bytesavailable(fd::FD, ::NotBuffered) = bytesavailable(fd.buffer)
 
-@db 1 function bytesavailable_with(::KnownFileSize, fd)
+@db 1 function Base.bytesavailable(fd::FD, ::HasFileSize)
     n = bytesavailable(fd.buffer)
     pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
     if pos != -1
@@ -75,7 +75,7 @@ bytesavailable_with(::NotBuffered, fd) = bytesavailable(fd.buffer)
     @db 1 return n
 end
 
-@db 1 function bytesavailable_with(::KnownBufferSize, fd)
+@db 1 function Base.bytesavailable(fd::FD, ::HasFIONREADSize)
     @assert bytesavailable(fd.buffer) == 0
     x = Ref(Cint(0))
     @cerr C.ioctl(fd, C.FIONREAD, x)
@@ -83,9 +83,12 @@ end
 end
 
 
-Base.eof(fd::FD{In,<:File}; kw...) = bytesavailable(fd) == 0
+Base.eof(fd::FD{In}; kw...) = eof(fd, ReadBuffering(fd); kw...)
 
-@db 1 function Base.eof(fd::FD{In}; kw...)
+Base.eof(fd::FD, ::KnownTotalSize; kw...) = bytesavailable(fd) == 0
+
+
+@db 1 function Base.eof(fd::FD, ::ReadBuffering; kw...)
     if bytesavailable(fd.buffer) > 0
         @db 1 return false
     end
@@ -174,14 +177,13 @@ const BUFFER_SIZE = 65536
 end
 
 
-@db 2 function Base.readline(fd::FD{In}{<:Any};
-                             timeout=fd.timeout, kw...)
+@db 2 function Base.readline(fd::FD{In}; timeout=fd.timeout, kw...)
     @with_timeout fd timeout begin
-        @db 2 return readline_with(ReadFragmentation(fd), fd; kw...)
+        @db 2 return readline(fd, ReadFragmentation(fd); kw...)
     end
 end
 
-readline_with(::ReadsBytes, fd; kw...) = @invoke Base.readline(fd::IO; kw...)
+Base.readline(fd::FD, ::ReadsBytes; kw...) = @invoke readline(fd::IO; kw...)
 
 
 """
@@ -206,7 +208,7 @@ will still work for devices not in canonical mode.
 Notes:
  - TIOCSTI could be used to Insert a byte into the input queue
 """
-@db 1 function readline_with(::ReadsLines, fd; keep::Bool=false)
+@db 1 function Base.readline(fd::FD, ::ReadsLines; keep::Bool=false)
     @require !fd.isclosed
     @assert bytesavailable(fd.buffer) == 0
 
