@@ -1,54 +1,9 @@
 """
 Read-only Unix File Descriptor.
 """
-mutable struct ReadFD{T} <: UnixFD{T}
-    fd::RawFD
-    isclosed::Bool
-    nwaiting::Int
-    ready::Base.ThreadSynchronizer
-    closed::Base.ThreadSynchronizer
-    timeout::Float64
-    deadline::Float64
-    gothup::Bool
-    buffer::IOBuffer
-    extra::ImmutableDict{Symbol,Any}
-    function ReadFD{T}(fd) where T
-        fcntl_setfl(fd, C.O_NONBLOCK)
-        fcntl_setfd(fd, C.O_CLOEXEC)
-        fd = new{T}(RawFD(fd),
-                    false,
-                    0,
-                    Base.ThreadSynchronizer(),
-                    Base.ThreadSynchronizer(),
-                    Inf,
-                    Inf,
-                    false,
-                    PipeBuffer(),
-                    ImmutableDict{Symbol,Any}())
-        return fd
-    end
-    function ReadFD(T::Type, fd)
-        T = (T == Union{}) ? fdtype(fd) : T
-        ReadFD{T}(fd)
-    end
-    ReadFD(fd) = ReadFD(Union{}, fd)
-end
 
 
-set_extra(fd::UnixFD, key::Symbol, value) =
-    fd.extra = ImmutableDict(fd.extra, key => value)
-
-function get_extra(fd::UnixFD, key::Symbol, default)
-    x = get(fd.extra, key, nothing)
-    if x == nothing
-        x = default()
-        set_extra(fd, key, x)
-    end
-    return x
-end
-
-
-@db 2 function raw_transfer(fd::ReadFD, buf, count)
+@db 2 function raw_transfer(fd::FD{In}, buf, count)
     n = C.read(fd.fd, buf, count)
     @db 2 return n
 end
@@ -77,7 +32,7 @@ is no way to detect when the client has closed the terminal.
 This `raw_transfer` method handles this by checking if the client process
 is still alive and returning `0` if it has terminated.
 """
-@db 2 function raw_transfer(fd::ReadFD{<:Pseudoterminal}, buf, count)
+@db 2 function raw_transfer(fd::FD{In}{<:Pseudoterminal}, buf, count)
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
@@ -89,26 +44,25 @@ is still alive and returning `0` if it has terminated.
 end
 
 
-@db function Base.close(fd::ReadFD)
+@db function Base.close(fd::FD{In})
     take!(fd.buffer)
-    @invoke Base.close(fd::UnixFD)
+    @invoke Base.close(fd::FD)
 end
 
 
-shutdown(fd::ReadFD) = shutdown(fd, C.SHUT_RD)
+shutdown(fd::FD{In}) = shutdown(fd, C.SHUT_RD)
 
 @static if isdefined(Base, :shutdown)
-    Base.shutdown(fd::ReadFD) = UnixIO.shutdown(fd, C.SHUT_RD)
+    Base.shutdown(fd::FD{In}) = UnixIO.shutdown(fd, C.SHUT_RD)
 end
 
 
-Base.isreadable(fd::ReadFD) = Base.isopen(fd)
+Base.isreadable(fd::FD{In}) = Base.isopen(fd)
+
+Base.iswritable(::FD{In}) = false
 
 
-Base.iswritable(::ReadFD) = false
-
-
-Base.bytesavailable(fd::ReadFD) = bytesavailable_with(ReadBuffering(fd), fd)
+Base.bytesavailable(fd::FD{In}) = bytesavailable_with(ReadBuffering(fd), fd)
 
 bytesavailable_with(::NotBuffered, fd) = bytesavailable(fd.buffer)
 
@@ -129,9 +83,9 @@ end
 end
 
 
-Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
+Base.eof(fd::FD{In,<:File}; kw...) = bytesavailable(fd) == 0
 
-@db 1 function Base.eof(fd::ReadFD; kw...)
+@db 1 function Base.eof(fd::FD{In}; kw...)
     if bytesavailable(fd.buffer) > 0
         @db 1 return false
     end
@@ -146,7 +100,7 @@ Base.eof(fd::ReadFD{<:File}; kw...) = bytesavailable(fd) == 0
 end
 
 
-@db 1 function Base.unsafe_read(fd::ReadFD, buf::Ptr{UInt8}, nbytes::UInt;
+@db 1 function Base.unsafe_read(fd::FD{In}, buf::Ptr{UInt8}, nbytes::UInt;
                                 timeout=fd.timeout)
     @require !fd.isclosed
 
@@ -165,7 +119,7 @@ end
 end
 
 
-@db 2 function Base.read(fd::ReadFD, ::Type{UInt8}; kw...)
+@db 2 function Base.read(fd::FD{In}, ::Type{UInt8}; kw...)
     @require !fd.isclosed
     eof(fd; kw...) && throw(EOFError())
     if bytesavailable(fd.buffer) == 0
@@ -176,11 +130,11 @@ end
 end
 
 
-Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
+Base.readbytes!(fd::FD{In}, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
     readbytes!(fd, buf, UInt(nbytes); kw...)
 
 
-@db 1 function Base.readbytes!(fd::ReadFD, buf::Vector{UInt8}, nbytes::UInt;
+@db 1 function Base.readbytes!(fd::FD{In}, buf::Vector{UInt8}, nbytes::UInt;
                                all::Bool=true, timeout=fd.timeout)
     @require !fd.isclosed
 
@@ -208,7 +162,7 @@ end
 
 const BUFFER_SIZE = 65536
 
-@db 5 function Base.readavailable(fd::ReadFD; timeout=0)
+@db 5 function Base.readavailable(fd::FD{In}; timeout=0)
     @require !fd.isclosed
     n = bytesavailable(fd)
     if n == 0
@@ -220,7 +174,7 @@ const BUFFER_SIZE = 65536
 end
 
 
-@db 2 function Base.readline(fd::ReadFD{<:Any};
+@db 2 function Base.readline(fd::FD{In}{<:Any};
                              timeout=fd.timeout, kw...)
     @with_timeout fd timeout begin
         @db 2 return readline_with(ReadFragmentation(fd), fd; kw...)
@@ -231,7 +185,7 @@ readline_with(::ReadsBytes, fd; kw...) = @invoke Base.readline(fd::IO; kw...)
 
 
 """
-### `readline(::UnixIO.ReadFD{S_IFCHR})`
+### `readline(::UnixIO.FD{In,S_IFCHR})`
 
 Character or Terminal devices (`S_IFCHR`) are usually used in
 "canonical mode" (`ICANON`).
@@ -354,18 +308,18 @@ end
 end
 
 
-@db 2 function Base.readuntil(fd::ReadFD, d::AbstractChar;
+@db 2 function Base.readuntil(fd::FD{In}, d::AbstractChar;
                               timeout=fd.timeout, kw...)
     @with_timeout(fd, timeout,
                   @invoke Base.readuntil(fd::IO, d::AbstractChar; kw...))
 end
 
-@db 2 function Base.read(fd::ReadFD, n::Integer=typemax(Int);
+@db 2 function Base.read(fd::FD{In}, n::Integer=typemax(Int);
                          timeout=fd.timeout)
     @with_timeout(fd, timeout, @invoke Base.read(fd::IO, n::Integer))
 end
 
-@db 2 function Base.read(fd::ReadFD, x::Type{String}; kw...)
+@db 2 function Base.read(fd::FD{In}, x::Type{String}; kw...)
     String(Base.read(fd; kw...))
 end
 

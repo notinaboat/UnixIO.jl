@@ -70,8 +70,8 @@ mktempdir() do d
         @show ENV["JULIA_UNIX_IO_DEBUG_LEVEL"]
         @show UnixIO.DEBUG_LEVEL
         @show typeof(io)
-        @assert io isa UnixIO.ReadFD{UnixIO.CanonicalMode}
-        @assert !(io isa UnixIO.ReadFD{UnixIO.Pseudoterminal})
+        @assert io isa UnixIO.FD{UnixIO.In,UnixIO.CanonicalMode}
+        @assert !(io isa UnixIO.FD{UnixIO.In,UnixIO.Pseudoterminal})
         @show UnixIO.ReadFragmentation(io)
         println("go!")
         while true

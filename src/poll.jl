@@ -18,15 +18,15 @@ for IO activity.
 a new FD waiting in `fd_new`.
 """
 struct PollQueue
-    fd_new::Channel{UnixFD}
-    fd_del::Channel{UnixFD}
-    fd_vector::Vector{UnixFD}
+    fd_new::Channel{FD}
+    fd_del::Channel{FD}
+    fd_vector::Vector{FD}
     poll_vector::Vector{C.pollfd}
     wakeup_pipe::Vector{Cint}
 end
 
-const poll_queue = PollQueue(Channel{UnixFD}(Inf),
-                             Channel{UnixFD}(Inf),
+const poll_queue = PollQueue(Channel{FD}(Inf),
+                             Channel{FD}(Inf),
                              [],
                              [],
                              [])
@@ -38,7 +38,7 @@ const poll_queue = PollQueue(Channel{UnixFD}(Inf),
     copy!(poll_queue.wakeup_pipe, wakeup_pipe())
     fd = poll_queue.wakeup_pipe[1]
     push!(poll_queue.poll_vector, C.pollfd(fd, C.POLLIN, 0))
-    push!(poll_queue.fd_vector, ReadFD(fd))
+    push!(poll_queue.fd_vector, FD{In}(fd))
 
     # Global Task to run `poll(2)`.
     Threads.@spawn poll_task(poll_queue)              ;@db "@spawn poll_task()"
@@ -70,7 +70,7 @@ end
 """
 Wait for an event to occur on `fd`.
 """
-@db 2 function wait_for_event(queue, fd::UnixFD)
+@db 2 function wait_for_event(queue, fd::FD)
     assert_havelock(fd)
 
     timer = register_timer(fd.deadline) do
@@ -111,12 +111,11 @@ Run `poll_wait()` in a loop.
 @db 1 function poll_task(q)
 
     if Threads.threadid() == 1
-        @warn """
-              UnixIO.poll_task() is running on thread No. 1!
-              Other Tasks on thread 1 may be blocked for up to 100ms while
-              poll_task() is waiting for IO.
-              Consider increasing JULIA_NUM_THREADS (`julia --threads N`).
-              """
+        @warn "UnixIO.poll_task() is running on thread No. 1!\n" *
+              "Other Tasks on thread 1 may be blocked for up to 100ms while" *
+              "poll_task() is waiting for IO.\n" *
+              "Consider increasing JULIA_NUM_THREADS (`julia --threads N`)."
+
         timeout_ms = 100
     else
         timeout_ms = 60_000
@@ -230,13 +229,13 @@ See PollQueue above.
 """
 mutable struct EPollQueue
     fd::RawFD
-    dict::Dict{RawFD,UnixFD}
+    dict::Dict{RawFD,FD}
     cvector::Vector{epoll_event}
     lock::Threads.SpinLock
 end
 
 const epoll_queue = EPollQueue(RawFD(-1),
-                               Dict{RawFD,UnixFD}(),
+                               Dict{RawFD,FD}(),
                                Vector{epoll_event}(undef, 10),
                                Threads.SpinLock())
 
@@ -272,14 +271,14 @@ See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
                          C.epoll_ctl(epoll_queue.fd, op, fd, pointer(e)))
 end
 
-epoll_ctl(fd::UnixFD, op, events=0; kw...) =
+epoll_ctl(fd::FD, op, events=0; kw...) =
     epoll_ctl(convert(Cint, fd), op, events; kw...)
 
 
 """
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
-@db 4 function register_for_events(q::EPollQueue, fd::UnixFD)
+@db 4 function register_for_events(q::EPollQueue, fd::FD)
     @dblock q.lock begin
         if !haskey(q.dict, fd.fd)
             q.dict[fd.fd] = fd
@@ -290,7 +289,7 @@ Register `fd` to wake up `epoll_wait(7)` on `event`:
     end
 end
 
-@db 4 function unregister_for_events(q::EPollQueue, fd::UnixFD)
+@db 4 function unregister_for_events(q::EPollQueue, fd::FD)
     @dblock q.lock begin
         if haskey(q.dict, fd.fd)
             delete!(q.dict, fd.fd)
@@ -299,8 +298,8 @@ end
     end
 end
 
-poll_event_type(::ReadFD) = C.POLLIN
-poll_event_type(::WriteFD) = C.POLLOUT
+poll_event_type(::FD{In}) = C.POLLIN
+poll_event_type(::FD{Out}) = C.POLLOUT
 
 
 """

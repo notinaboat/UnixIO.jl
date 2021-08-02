@@ -44,8 +44,7 @@ Raspberry Pi).
 """
 module UnixIO
 
-export UnixFD,
-       DuplexIO,
+export DuplexIO,
        @sh_str
 
 
@@ -70,6 +69,7 @@ using DuplexIOs
 using UnixIOHeaders
 const C = UnixIOHeaders
 
+include("macroutils.jl")
 include("ccall.jl")
 include("errors.jl")
 include("debug.jl")
@@ -96,9 +96,9 @@ include("stat.jl")
     global stdin
     global stdout
     global stderr
-    stdin = ReadFD(RawFD(Base.STDIN_NO))
-    stdout = WriteFD(RawFD(Base.STDOUT_NO))
-    stderr = WriteFD(RawFD(Base.STDERR_NO))
+    stdin = FD{In}(RawFD(Base.STDIN_NO))
+    stdout = FD{Out}(RawFD(Base.STDOUT_NO))
+    stderr = FD{Out}(RawFD(Base.STDERR_NO))
 end
 
 
@@ -162,10 +162,10 @@ struct ReadsBytes       <: ReadFragmentation end
 @doc ARCH"""
 ### `ReadFragmentation` -- Data Fragmentation Trait.
 
-The `ReadFragmentation` trait describes what guarantees a `ReadFD` makes
+The `ReadFragmentation` trait describes what guarantees a `FD` makes
 about fragmentation of data returned by `read(2)`.
 
-`ReadFragmentation(::Type{<:ReadFD})` returns one of:
+`ReadFragmentation(::Type{<:FD})` returns one of:
 
  * `ReadsLines` -- `read(2)` returns exactly one line at a time.
    Does not return partially buffered lines unless an explicit `EOL` or `EOF`
@@ -255,12 +255,58 @@ Base.wait(::WaitBySleeping, x) = sleep(0.1)
 
 # Unix File Descriptor wrapper.
 
-
-abstract type UnixFD{T} <: IO end
-
-const AnyFD = Union{UnixFD, RawFD}
-
 abstract type FDType end
+
+abstract type IODirection end
+struct In <: IODirection end
+struct Out <: IODirection end
+
+mutable struct FD{D<:IODirection,T<:FDType} <: IO
+    fd::RawFD
+    isclosed::Bool
+    nwaiting::Int
+    ready::Base.ThreadSynchronizer
+    closed::Base.ThreadSynchronizer
+    timeout::Float64
+    deadline::Float64
+    gothup::Bool
+    buffer::IOBuffer
+    extra::ImmutableDict{Symbol,Any}
+
+    FD{D}(fd) where D = FD{D,Union{}}(fd)
+
+    function FD{D,T}(fd) where {D,T}
+        fcntl_setfl(fd, C.O_NONBLOCK)
+        fcntl_setfd(fd, C.O_CLOEXEC)
+        _T = (T != Union{}) ? T : fdtype(fd)
+        new{D,_T}(RawFD(fd),
+                  false,
+                  0,
+                  Base.ThreadSynchronizer(),
+                  Base.ThreadSynchronizer(),
+                  Inf,
+                  Inf,
+                  false,
+                  PipeBuffer(),
+                  ImmutableDict{Symbol,Any}())
+    end
+end
+
+set_extra(fd::FD, key::Symbol, value) =
+    fd.extra = ImmutableDict(fd.extra, key => value)
+
+function get_extra(fd::FD, key::Symbol, default)
+    x = get(fd.extra, key, nothing)
+    if x == nothing
+        x = default()
+        set_extra(fd, key, x)
+    end
+    return x
+end
+
+
+const AnyFD = Union{FD, RawFD, Cint}
+
 abstract type Stream <: FDType end
 abstract type MetaFile <: FDType end
 abstract type File <: FDType end
@@ -276,15 +322,15 @@ abstract type S_IFSOCK <: Stream end
 abstract type Pseudoterminal <: S_IFCHR end
 abstract type CanonicalMode <: S_IFCHR end
 
-Base.wait(fd::UnixFD) = wait(WaitingMechanism(fd), fd)
-Base.wait(::WaitUsingEPoll, fd::UnixFD) = wait_for_event(epoll_queue, fd)
-Base.wait(::WaitUsingPosixPoll, fd::UnixFD) = wait_for_event(poll_queue, fd)
+Base.wait(fd::FD) = wait(WaitingMechanism(fd), fd)
+Base.wait(::WaitUsingEPoll, fd::FD) = wait_for_event(epoll_queue, fd)
+Base.wait(::WaitUsingPosixPoll, fd::FD) = wait_for_event(poll_queue, fd)
 
 
 mutable struct Process
     pid::C.pid_t
-    in::UnixFD
-    out::UnixFD
+    in::FD
+    out::FD
     stopped::Bool
     code::Union{Nothing, Cint}
     exit_status::Union{Nothing, Cint}
@@ -354,7 +400,7 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               issocket(s)   ? S_IFSOCK :
                                               Nothing)
 
-WaitingMechanism(::Type{<:UnixFD{<:Union{S_IFIFO, S_IFCHR, S_IFSOCK, PidFD}}}) =
+WaitingMechanism(::Type{<:FD{<:Any,<:Union{S_IFIFO, S_IFCHR, S_IFSOCK, PidFD}}}) =
     firstvalid(WaitUsingKQueue(),
                WaitUsingEPoll(),
                WaitUsingPosixPoll(),
@@ -362,39 +408,38 @@ WaitingMechanism(::Type{<:UnixFD{<:Union{S_IFIFO, S_IFCHR, S_IFSOCK, PidFD}}}) =
 
 
     # FIXME unify with open() ?
-@db 3 function UnixFD(fd, flags = fcntl_getfl(fd); events=nothing)
+@db 3 function FD(fd, flags = fcntl_getfl(fd); events=nothing)
     @nospecialize
 
-    r = flags & C.O_RDWR   != 0 ?  DuplexIO(ReadFD(fd), WriteFD(C.dup(fd))) :
-        flags & C.O_WRONLY != 0 ?  WriteFD(fd) :
-                                   ReadFD(fd)
+    r = flags & C.O_RDWR   != 0 ?  DuplexIO(FD{In}(fd), FD{Out}(C.dup(fd))) :
+        flags & C.O_WRONLY != 0 ?  FD{Out}(fd) :
+                                   FD{In}(fd)
     @db 3 return r
 end
 
-debug_tiny(x::UnixFD) = string(x)
+debug_tiny(x::FD) = string(x)
 
-Base.stat(fd::UnixFD) = stat(fd.fd)
-Base.lock(fd::UnixFD) = lock(fd.ready)
-Base.unlock(fd::UnixFD) = unlock(fd.ready)
-Base.notify(fd::UnixFD, a...) = notify(fd.ready, a...)
-Base.islocked(fd::UnixFD) = islocked(fd.ready)
-Base.assert_havelock(fd::UnixFD) = Base.assert_havelock(fd.ready)
+Base.stat(fd::FD) = stat(fd.fd)
+Base.lock(fd::FD) = lock(fd.ready)
+Base.unlock(fd::FD) = unlock(fd.ready)
+Base.notify(fd::FD, a...) = notify(fd.ready, a...)
+Base.islocked(fd::FD) = islocked(fd.ready)
+Base.assert_havelock(fd::FD) = Base.assert_havelock(fd.ready)
 
-Base.convert(::Type{Cint}, fd::UnixFD) = Base.cconvert(Cint, fd.fd)
-Base.convert(::Type{Cuint}, fd::UnixFD) = Cuint(convert(Cint, fd))
-Base.convert(::Type{RawFD}, fd::UnixFD) = RawFD(fd.fd)
+Base.convert(::Type{Cint}, fd::FD) = Base.cconvert(Cint, fd.fd)
+Base.convert(::Type{Cuint}, fd::FD) = Cuint(convert(Cint, fd))
+Base.convert(::Type{RawFD}, fd::FD) = RawFD(fd.fd)
 
 include("ReadFD.jl")
 include("WriteFD.jl")
 
-ReadFragmentation(::Type{ReadFD{CanonicalMode}}) = ReadsLines()
-ReadBuffering(::Type{<:ReadFD{<:Union{S_IFIFO, S_IFCHR, S_IFSOCK}}}) =
+ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
+ReadBuffering(::Type{<:FD{In,<:Union{S_IFIFO, S_IFCHR, S_IFSOCK}}}) =
     KnownBufferSize()
+ReadBuffering(::Type{<:FD{In,<:Union{S_IFREG, S_IFBLK}}}) = KnownFileSize()
 
-ReadBuffering(::Type{<:ReadFD{<:Union{S_IFREG, S_IFBLK}}}) = KnownFileSize()
-
-DuplexIOs.DuplexIO(i::ReadFD, o::WriteFD) = @invoke DuplexIO(i::IO, o::IO)
-DuplexIOs.DuplexIO(o::WriteFD, i::ReadFD) = @invoke DuplexIO(i::IO, o::IO)
+DuplexIOs.DuplexIO(i::FD{In}, o::FD{Out}) = @invoke DuplexIO(i::IO, o::IO)
+DuplexIOs.DuplexIO(o::FD{Out}, i::FD{In}) = @invoke DuplexIO(i::IO, o::IO)
 
 
 
@@ -407,7 +452,7 @@ README"## Opening and Closing Unix Files."
     UnixIO.open([FDType], pathname, [flags = C.O_RDWR],
                                     [mode = 0o644]];
                                     [timeout=Inf],
-                                    [tcattr=nothing]) -> UnixIO{FDType}
+                                    [tcattr=nothing]) -> UnixIO.FD{FDType}
 
 Open the file specified by pathname.
 
@@ -419,7 +464,7 @@ the standard `Base.IO` functions
 (`Base.read`, `Base.write`, `Base.readbytes!`, `Base.close` etc).
 See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 
-`open` returns `UnixFD{FDType}`, where `FDType` is one of:
+`open` returns `Unix.FD{FDType}`, where `FDType` is one of:
 
 ```
 $(join(typetree(FDType; mod=UnixIO)))
@@ -443,22 +488,16 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 
     flags |= C.O_NONBLOCK
 
-    if flags & C.O_RDWR != 0
+    if flags & C.O_RDWR == C.O_RDWR
         flags &= ~C.O_RDWR
-        fdout = @cerr gc_safe_open(pathname, flags | C.O_WRONLY, mode)
-        fdin = @cerr gc_safe_open(pathname, flags)
-        if tcattr != nothing
-            tcsetattr(tcattr, RawFD(fdin))
-            tcsetattr(tcattr, RawFD(fdout))
-        end
-        io = DuplexIO(ReadFD(T, fdin), WriteFD(T, fdout))
+        fout = FD{Out,T}(open_raw(pathname, flags | C.O_WRONLY, mode; tcattr))
+        fin = FD{In,T}(open_raw(pathname, flags; tcattr))
+        io = DuplexIO(fin, fout)
     else
-        fd = @cerr gc_safe_open(pathname, flags, mode)
-        if tcattr != nothing
-            tcsetattr(tcattr, RawFD(fd))
-        end
-        io = (flags & C.O_WRONLY) != 0 ? WriteFD(T, fd) : ReadFD(T, fd)
+        D = (flags & C.O_WRONLY) != 0 ? Out : In
+        io = FD{D,T}(open_raw(pathname, flags, mode; tcattr))
     end
+
     if timeout != nothing
         set_timeout(io, timeout)
     end
@@ -470,6 +509,13 @@ end
 open(args...; kw...) = open(Union{}, args...; kw...)
 
 
+function open_raw(a...; tcattr=nothing)
+    fd = @cerr gc_safe_open(a...)
+    if tcattr != nothing
+        tcsetattr(tcattr, fd)
+    end
+    return fd
+end
 
 gc_safe_open(a...) = @gc_safe C.open(a...)
 
@@ -477,11 +523,11 @@ gc_safe_open(a...) = @gc_safe C.open(a...)
 @doc README"""
 ### `UnixIO.set_timeout` -- Configure Timeouts.
 
-    UnixIO.set_timeout(fd::UnixFD, timeout)
+    UnixIO.set_timeout(fd::UnixIO.FD, timeout)
 
 Configure `fd` to limit IO operations to `timeout` seconds.
 """
-set_timeout(fd::UnixFD, t) = fd.timeout = t
+set_timeout(fd::FD, t) = fd.timeout = t
 DuplexIOs.@wrap set_timeout
 
 
@@ -521,10 +567,10 @@ See [tcgetattr(3)](https://man7.org/linux/man-pages/man3/tcgetattr.3.html).
     @cerr C.tcgetattr_m(tty, aref)
     @db 2 return aref[]
 end
-tcgetattr(tty::UnixFD{<:S_IFCHR}) = tcgetattr(tty, termios(tty))
+tcgetattr(tty::FD{<:Any,<:S_IFCHR}) = tcgetattr(tty, termios(tty))
 
 
-function termios(tty::UnixFD{<:S_IFCHR})
+function termios(tty::FD{<:Any,<:S_IFCHR})
     get_extra(tty, :termios, ()->tcgetattr(tty, C.termios_m()))
 end
 termios(tty::Union{Cint,RawFD}) = tcgetattr(tty, C.termios_m())
@@ -629,7 +675,7 @@ tiocgwinsz(tty) = (x=[C.winsize()]; @cerr C.ioctl(tty, C.TIOCGWINSZ, x); x[1])
 tiocgwinsz(tty::DuplexIO) = tiocgwinsz(tty.out)
 
 
-@db 1 function Base.close(fd::UnixFD)
+@db 1 function Base.close(fd::FD)
     fd.isclosed = true
     @dblock fd notify(fd)
     yield()
@@ -640,7 +686,7 @@ tiocgwinsz(tty::DuplexIO) = tiocgwinsz(tty.out)
     nothing
 end
 
-@db function Base.wait(fd::ReadFD{Pseudoterminal})
+@db function Base.wait(fd::FD{In,Pseudoterminal})
     assert_havelock(fd)
 
     process = fd.extra[:pt_client]
@@ -650,7 +696,7 @@ end
             @dblock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
         end
         try
-            event = @invoke wait(fd::ReadFD)
+            event = @invoke wait(fd::FD{In})
             if event != :poll_isalive
                 return event
             end
@@ -665,12 +711,12 @@ end
 end
 
 
-@db 1 function Base.close(fd::ReadFD{<:Pseudoterminal})
+@db 1 function Base.close(fd::FD{In,<:Pseudoterminal})
     C.close(fd.extra[:pt_clientfd])
-    @invoke Base.close(fd::ReadFD)
+    @invoke Base.close(fd::FD{In})
 end
 
-@db 1 function Base.close(fd::WriteFD{<:Pseudoterminal})
+@db 1 function Base.close(fd::FD{Out,<:Pseudoterminal})
     if !fd.isclosed                                           ;@db 1 "-> ^D 🛑"
         fd.gothup = true
         # FIXME tcdrain ?
@@ -682,15 +728,15 @@ end
             end
         end
     end
-    @invoke Base.close(fd::WriteFD)
+    @invoke Base.close(fd::FD{Out})
 end
 
 
-Base.isopen(fd::UnixFD) = !fd.isclosed
+Base.isopen(fd::FD) = !fd.isclosed
 
 
-@db 1 function Base.wait_close(fd::UnixFD; timeout=fd.timeout,
-                                           deadline=timeout+time())
+@db 1 function Base.wait_close(fd::FD; timeout=fd.timeout,
+                                       deadline=timeout+time())
     wait_until(fd.closed, ()->!isopen(fd), deadline)
 end
 
@@ -724,7 +770,7 @@ Attempt to read up to count bytes from file descriptor `fd`
 into the buffer starting at `buf`.
 See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
 """
-@db 2 function read(fd::ReadFD, buf::Ptr{UInt8}, count::Csize_t;
+@db 2 function read(fd::FD{In}, buf::Ptr{UInt8}, count::Csize_t;
                     timeout=fd.timeout)
 
     # First read from buffer.
@@ -742,7 +788,7 @@ See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
     @db 2 return n
 end
 
-@db 2 function read(fd::UnixFD, v::AbstractVector{UInt8},
+@db 2 function read(fd::FD, v::AbstractVector{UInt8},
                     index=1, count=length(v)-(index-1); kw...)
     checkbounds(v, index + count - 1)
     buf = pointer(v, index)
@@ -751,13 +797,13 @@ end
 
 
 """
-Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`
+Read or write (FD{In} or FD{Out}) up to `count` bytes to or from `buf`
 until `fd.deadline`.
 Always attempt at least one call to `read(2)/write(2)`
 even if `fd.deadline` has passed.
 Return number of bytes transferred or `0` on timeout.
 """
-@db 2 function transfer(fd::UnixFD, buf::Ptr{UInt8}, count::Csize_t)
+@db 2 function transfer(fd::FD, buf::Ptr{UInt8}, count::Csize_t)
     @require !fd.isclosed
     @require count > 0
 
@@ -778,7 +824,7 @@ Return number of bytes transferred or `0` on timeout.
     @db 2 return 0 "timeout!"
 end
 
-@db 2 function transfer(fd::UnixFD, v::AbstractVector{UInt8},
+@db 2 function transfer(fd::FD, v::AbstractVector{UInt8},
                         index=1, count=length(v)-(index-1))
     checkbounds(v, index + count - 1)
     buf = pointer(v, index)
@@ -787,11 +833,11 @@ end
 
 
 """
-Read or write (ReadFD or WriteFD) up to `count` bytes to or from `buf`.
+Read or write (FD{In} or FD{Out}) up to `count` bytes to or from `buf`.
 Retry on `C.EINTR`.
 Return number of bytes transferred or `-1` on `C.EAGAIN`.
 """
-@db 2 function nointr_transfer(fd::UnixFD, buf::Ptr{UInt8}, count::Csize_t)
+@db 2 function nointr_transfer(fd::FD, buf::Ptr{UInt8}, count::Csize_t)
     @require count > 0
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR), raw_transfer(fd, buf, count))
@@ -874,7 +920,7 @@ end
 @doc README"""
 ### `UnixI in debug.openpt()` -- Open a pseudoterminal device.
 
-    UnixIO.openpt([flags = C._NOCTTY | C.O_RDWR]) -> ptfd::UnixFD, "/dev/pts/X"
+    UnixIO.openpt([flags = C._NOCTTY | C.O_RDWR]) -> ptfd::UnixIO.FD, "/dev/pts/X"
 
 Open an unused pseudoterminal device, returning:
 a file descriptor that can be used to refer to that device,
@@ -894,7 +940,7 @@ and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
     clientfd = @cerr C.open(path, C.O_RDONLY | C.O_NOCTTY)
     @assert !ispt(clientfd)
 
-    fd = UnixFD(pt)
+    fd = FD(pt)
     tcsetattr(fd.in) do attr
         setraw(attr)
         attr.c_lflag |= C.ICANON
@@ -1049,7 +1095,7 @@ end
 
 
 function open(cmd::Cmd; kw...)
-    c = Channel{Tuple{WriteFD,ReadFD}}(0)
+    c = Channel{Tuple{FD{Out},FD{In}}}(0)
     @asynclog "UnixIO.open(::Cmd)" open(cmd; kw...) do cmdin, cmdout
         put!(c, (cmdin, cmdout))
         @sync begin
@@ -1230,7 +1276,7 @@ end
     while deadline >= time() && isrunning(p)
         r = @cerr allow=C.ESRCH C.pifd_open(p.pid, 0)
         if r != -1
-            fd = ReadFD{PidFD}(r)
+            fd = FD{In,PidFD}(r)
             fd.deadline = deadline
             try
                 @dblock fd wait(fd)
@@ -1296,8 +1342,8 @@ end
 
     # Create a Unix Domain Socket to communicate with Child Process STDIN/OUT.
     parent_io, child_io = socketpair()
-    cmdin = WriteFD(parent_io)
-    cmdout = ReadFD(C.dup(parent_io))
+    cmdin = FD{Out}(parent_io)
+    cmdout = FD{In}(C.dup(parent_io))
     @db 3 "dup($parent_io) -> $(cmdout.fd)"
 
     # Merge STDERR into STDOUT?
@@ -1486,16 +1532,16 @@ type_icon(::Type{Pseudoterminal})  = "⌨️ "
 type_icon(::Type{CanonicalMode})   = "📺"
 
 
-function Base.show(io::IO, fd::UnixFD{T}) where T
+function Base.show(io::IO, fd::FD{D,T}) where {D,T}
     fdint = convert(Cint, fd)
     t = type_icon(T)
-
-    print(io, "$(Base.typename(typeof(fd)).name){$t}($fdint")
+    d = Base.typename(D).name
+    print(io, "FD{$d,$t}($fdint")
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("👀", fd.nwaiting))
     islocked(fd) && print(io, "🔒")
     fd.timeout == Inf || print(io, ", ⏱", fd.timeout)
-    if fd isa ReadFD
+    if D == In
         fd.gothup && print(io, "☠️ ")
         n = bytesavailable(fd.buffer)
         if n > 0
@@ -1521,7 +1567,7 @@ function Base.show(io::IO, e::ProcessFailedException)
 end
 
 
-dbtiny(fd::UnixFD) = string(fd)
+dbtiny(fd::FD) = string(fd)
 
 
 # Compiler hints.
