@@ -248,8 +248,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
         # Indented message.
         thread_offset, indent, message, value,
 
-        # C=ear to end of line
-        "\e[0K",
+        "\e[0K", # Clear to end of line
         inv(bg_color),
         "\n")
 
@@ -286,7 +285,7 @@ debug_print(n, l, v; kw...) = debug_print(n, l, "", v; kw...)
               repeat(" ", DEBUG_MIN_INDENT),
               " ╭", repeat("─", length(new_function) - 1
                                 - DEBUG_MIN_INDENT), "╯",
-              "\e[0K",
+              "\e[0K", # Clear to end of line
               inv(bg_color),
               "\n")
         task_local.leader = String(take!(io))
