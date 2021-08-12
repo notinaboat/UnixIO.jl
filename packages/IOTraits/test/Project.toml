@@ -1,0 +1,3 @@
+[deps]
+LoggingTestSets = "c2339e6d-2e7f-4cf9-92d2-844738085fb8"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
