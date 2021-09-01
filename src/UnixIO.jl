@@ -390,7 +390,8 @@ function fdtype(fd)
         t = Pseudoterminal
     elseif t == S_IFCHR
         attr=Ref(C.termios_m())
-        if @cerr(allow=(C.EINVAL, C.ENODEV), C.tcgetattr_m(fd, attr)) != -1 &&
+        if @cerr(allow=(C.EINVAL, C.ENOTTY, C.ENODEV),
+                 C.tcgetattr_m(fd, attr)) != -1 &&
             (attr[].c_lflag & C.ICANON) != 0
             t = CanonicalMode
         end
