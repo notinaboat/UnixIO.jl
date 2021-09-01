@@ -23,4 +23,4 @@ UnixIOHeaders = "b158d995-0785-490a-9245-6a3aff8d8d72"
 
 [compat]
 TypeTree = "0.2.0"
-julia = "^1.5.4"
+julia = "^1.5.2"

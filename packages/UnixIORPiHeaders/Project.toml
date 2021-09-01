@@ -1,0 +1,7 @@
+name = "UnixIORPiHeaders"
+uuid = "105af223-d8e3-4923-86ea-127a9102212b"
+authors = ["notinaboat <notinaboat@icloud.com>"]
+version = "0.1.0"
+
+[deps]
+CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
