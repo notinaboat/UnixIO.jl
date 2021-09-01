@@ -102,7 +102,9 @@ end
 @wrap in Base.readline
 @wrap in Base.countlines
 @wrap in Base.eachline
-@wrap in Base.readeach
+@static if isdefined(Base, :readeach)
+    @wrap in Base.readeach
+end
 @wrap in Base.unsafe_read
 @wrap in Base.peek
 @wrap in Base.readavailable

@@ -8,7 +8,8 @@ export JULIA_UNIX_IO_DEBUG_LEVEL=0
 
 all: README.md test
 
-JL := julia
+JL := ln -sf Manifest.toml.1.6 Manifest.toml; julia
+JL15 := ln -sf Manifest.toml.1.5 Manifest.toml; julia15
 
 .PHONY: README.md
 README.md:
@@ -22,12 +23,16 @@ doc:
 .PHONY: test
 test:
 	$(JL) test/runtests.jl
+	$(JL15) test/runtests.jl
 
 testpt:
 	$(JL) test/pseudoterminal.jl
 
 jl:
 	$(JL) -i -e "using $(PACKAGE)"
+
+jl15:
+	$(JL15)
 
 jlenv:
 	$(JL)

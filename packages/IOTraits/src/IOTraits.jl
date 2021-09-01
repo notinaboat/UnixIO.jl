@@ -6,6 +6,16 @@ Trait types for describing the capabilities and behaviour of IO interfaces.
 pread ?
 readv writev ?
 sendfile ?
+
+ - Keep stats per file
+    - No. tranfers
+    - No. bytes
+    - No. seeks
+    - time between transfers (rolling avg?)
+ - Warn if stats don't align with traits
+    - large No. small reads for high overhead IO
+    - ? others
+
 """
 module IOTraits
 

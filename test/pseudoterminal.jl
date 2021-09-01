@@ -84,8 +84,8 @@ mktempdir() do d
     @info "readline() from pseudoterminal with fragmented writes."
     env = merge(ENV, Dict("JULIA_UNIX_IO_DEBUG_LEVEL" => "0",
                           "JULIA_DEBUG" => ""))
-    UnixIO.ptopen(`julia $jlfile`; env=env, opts...) do cin, cout
-    ptdump(`julia`, cin, cout) do fin, fout
+    UnixIO.ptopen(`$(Base.julia_cmd()) $jlfile`; env=env, opts...) do cin, cout
+    ptdump(Base.julia_cmd(), cin, cout) do fin, fout
         while true
             l = fin()
             if l == nothing
@@ -407,9 +407,9 @@ end
 @info "Interactive julia script via pseudoterminal."
 env = merge(ENV, Dict("TERM" => "dumb"))
 
-UnixIO.ptopen(`julia --color=yes`; env=env) do cin, cout
+UnixIO.ptopen(`$(Base.julia_cmd()) --color=yes`; env=env) do cin, cout
 
-    ptdump(`julia`, cin, cout) do fin, fout
+    ptdump(Base.julia_cmd(), cin, cout) do fin, fout
 
         # Wait for "julia>" prompt.
         while !contains(fin(), r"julia> ") end

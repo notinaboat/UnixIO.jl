@@ -59,7 +59,8 @@ using Base: ImmutableDict,
 using ReadmeDocs               # for README""" ... """ doc strings.
 using Preconditions            # for @require and @ensure contracts
 using AsyncLog                 # for @asynclog -- log errors in async tasks.
-using TypeTree: tt as typetree # for pretty-printed type trees in doc strings.
+import TypeTree                # for pretty-printed type trees in doc strings.
+const typetree = TypeTree.tt
 
 
 
