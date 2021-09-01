@@ -112,7 +112,7 @@ Run `poll_wait()` in a loop.
 
     if Threads.threadid() == 1
         @warn "UnixIO.poll_task() is running on thread No. 1!\n" *
-              "Other Tasks on thread 1 may be blocked for up to 100ms while" *
+              "Other Tasks on thread 1 may be blocked for up to 100ms while " *
               "poll_task() is waiting for IO.\n" *
               "Consider increasing JULIA_NUM_THREADS (`julia --threads N`)."
 
