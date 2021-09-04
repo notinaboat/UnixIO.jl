@@ -67,6 +67,7 @@ const typetree = TypeTree.tt
 # Local Modules.
 
 using DuplexIOs
+using IOTraits
 using UnixIOHeaders
 const C = UnixIOHeaders
 
@@ -128,134 +129,6 @@ macro with_timeout(fd, timeout, ex)
         end
     end
 end
-
-
-#-- Options Trait TTY? SOcket?.
-
-
-#-- Data Readyness Trait.
-
-abstract type ReadBuffering end
-struct NotBuffered       <: ReadBuffering end
-struct UnknownBufferSize <: ReadBuffering end
-
-abstract type KnownBufferSize <: ReadBuffering end
-struct HasFIONREADSize <: KnownBufferSize end
-
-abstract type KnownTotalSize <: KnownBufferSize end
-struct HasFileSize <: KnownTotalSize end
-
-"""
-### `ReadBuffering` -- Data Readyness Trait.
-
-TODO
-"""
-ReadBuffering(x) = ReadBuffering(typeof(x))
-ReadBuffering(::Type) = NotBuffered()
-
-
-
-# Data Fragmentation Trait.
-
-abstract type ReadFragmentation end
-struct ReadsLines       <: ReadFragmentation end
-struct RreadsPackets    <: ReadFragmentation end
-struct ReasdsfromBuffer <: ReadFragmentation end
-struct ReadsBytes       <: ReadFragmentation end
-
-
-@doc ARCH"""
-### `ReadFragmentation` -- Data Fragmentation Trait.
-
-The `ReadFragmentation` trait describes what guarantees a `FD` makes
-about fragmentation of data returned by `read(2)`.
-
-`ReadFragmentation(::Type{<:FD})` returns one of:
-
- * `ReadsLines` -- `read(2)` returns exactly one line at a time.
-   Does not return partially buffered lines unless an explicit `EOL` or `EOF`
-   control character is received.
-   Applicable to Character devices in canonical mode.
-   See [termios(3)](https://man7.org/linux/man-pages/man3/termios.3.html).
-
- * `ReadsPackets` -- `read(2)` returns exactly one packet at a time.
-   Does not return partially buffered packets.
-   Applicable to some sockets and pipes depending on configuration.
-   e.g. See the `O_DIRECT` flag in
-   [pipe(2)](https://man7.org/linux/man-pages/man2/pipe.2.html).
-
- * `ReadsFromBuffer` -- `read(2)` returns at most one buffer at at time.
-   TODO: query buffer size.
-
- * `ReadsBytes` -- No special guarantees about what is returned by `read(2)`.
-   This is the default.
-
-"""
-ReadFragmentation(x) = ReadFragmentation(typeof(x))
-ReadFragmentation(::Type) = ReadsBytes()
-
-
-
-# Event Notification Mechanism Trait.
-
-abstract type WaitingMechanism end
-struct WaitBySleeping     <: WaitingMechanism end
-struct WaitUsingPosixPoll <: WaitingMechanism end
-struct WaitUsingEPoll     <: WaitingMechanism end
-struct WaitUsingPidFD     <: WaitingMechanism end
-struct WaitUsingKQueue    <: WaitingMechanism end
-
-
-@doc ARCH"""
-### `WaitingMechanism` -- Event Notificaiton Mechanism Trait.
-
-The `WaitingMechanism` trait describes ways of waiting for OS resources
-that are not immediately available. e.g. when `read(2)` returns
-`EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
-
-Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
-define `Base.wait(::T, r::R)`.
-
-If a `WaitingMechanism`, `T`, is not available on a particular OS
-then `Base.isvalid(::T)` should be defined to return `false`.
-TODO: Configure via https://github.com/JuliaPackaging/Preferences.jl
-
-`WaitingMechanism(::Type)` returns one of:
-
- * `WaitBySleeping` -- Wait using a dumb retry/sleep loop (the default).
-   This may be more efficient for small systems with simple IO requirements,
-   or for systems that simply do not spend a lot of time waiting for IO.
-
- * `WaitUsingPosixPoll` -- Wait using the POXSX `poll` mechanism.
-   Wait for activity on a set of file descriptors.
-   Applicable to FIFO pipes, sockets and character devices
-   (but not local files).
-   See [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)
-
- * `WaitUsingEPoll` -- Wait using the Linux `epoll` mechanism.
-   Like `poll` but scales better for workloads with a large number of
-   waiting streams.
-   See [`epoll(7)`](https://man7.org/linux/man-pages/man7/epoll.7.html)
-
- * `WaitUsingKQueue` -- Wait using the BSB `kqueue` mechanism.
-   Like `epoll` but can also wait for files, processes, signals etc.
-   See [`kqueue(2)`](https://www.freebsd.org/cgi/man.cgi?kqueue)
-
- * `WaitUsingPidFD()` -- Wait for process termination using
-   the Linux `pidfd` mechanism. A `pidfd` is a special process monitoring
-   file descriptor that can in turn be monitored by `poll` or `epoll`. See
-   [`pidfd_open(2)`](http://man7.org/linux/man-pages/man2/pidfd_open.2.html).
-
-"""
-WaitingMechanism(x) = WaitingMechanism(typeof(x))
-WaitingMechanism(::Type) = WaitBySleeping()
-
-Base.isvalid(::WaitingMechanism) = true
-Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
-Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
-Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
-
-Base.wait(x, ::WaitBySleeping) = sleep(0.1)
 
 
 # Unix File Descriptor wrapper.
@@ -353,8 +226,8 @@ waskilled(p::Process) = !isstopped(p) && p.signal != nothing
 
 firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
 
-WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
-                                               WaitBySleeping())
+IOTraits.WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
+                                                        WaitBySleeping())
 
 @db function Base.wait(p::Process; timeout=Inf,
                                    deadline=timeout+time())
@@ -408,7 +281,7 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               issocket(s)   ? S_IFSOCK :
                                               Nothing)
 
-WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
+IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
     firstvalid(WaitUsingKQueue(),
                WaitUsingEPoll(),
                WaitUsingPosixPoll(),
@@ -441,10 +314,11 @@ Base.convert(::Type{RawFD}, fd::FD) = RawFD(fd.fd)
 include("ReadFD.jl")
 include("WriteFD.jl")
 
-ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
+IOTraits.ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
 
-ReadBuffering(::Type{<:FD{In,<:Stream}}) = HasFIONREADSize()
-ReadBuffering(::Type{<:FD{In,<:File}}) = HasFileSize()
+IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:Stream}}) = SupportsFIONREAD()
+IOTraits.TotalSize(::Type{<:FD{In,<:File}}) = VariableTotalSize()
+IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:File}}) = SuppoutsStatSize()
 
 DuplexIOs.DuplexIO(i::FD{In}, o::FD{Out}) = @invoke DuplexIO(i::IO, o::IO)
 DuplexIOs.DuplexIO(o::FD{Out}, i::FD{In}) = @invoke DuplexIO(i::IO, o::IO)

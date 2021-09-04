@@ -27,7 +27,7 @@ of the pseudoterminal device (`fd.extra[:pt_clientfd]`). This has the effect tha
 `read(2)` will always return `EAGAIN` if there is no data available.
 (The reader then waits for `poll(2)` to indicate when data is ready as usual.)
 
-The remaining problem is that because `read(2)` will never returns `0` there
+The remaining problem is that because `read(2)` will never return `0` there
 is no way to detect when the client has closed the terminal.
 This `raw_transfer` method handles this by checking if the client process
 is still alive and returning `0` if it has terminated.
@@ -62,11 +62,11 @@ Base.isreadable(fd::FD{In}) = Base.isopen(fd)
 Base.iswritable(::FD{In}) = false
 
 
-Base.bytesavailable(fd::FD{In}) = bytesavailable(fd, ReadBuffering(fd))
+Base.bytesavailable(fd::FD{In}) = bytesavailable(fd, TransferSizeMechanism(fd))
 
-Base.bytesavailable(fd::FD, ::NotBuffered) = bytesavailable(fd.buffer)
+Base.bytesavailable(fd::FD, ::NoSizeMechanism) = bytesavailable(fd.buffer)
 
-@db 1 function Base.bytesavailable(fd::FD, ::HasFileSize)
+@db 1 function Base.bytesavailable(fd::FD, ::SuppoutsStatSize)
     n = bytesavailable(fd.buffer)
     pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
     if pos != -1
@@ -75,7 +75,7 @@ Base.bytesavailable(fd::FD, ::NotBuffered) = bytesavailable(fd.buffer)
     @db 1 return n
 end
 
-@db 1 function Base.bytesavailable(fd::FD, ::HasFIONREADSize)
+@db 1 function Base.bytesavailable(fd::FD, ::SupportsFIONREAD)
     @assert bytesavailable(fd.buffer) == 0
     x = Ref(Cint(0))
     @cerr C.ioctl(fd, C.FIONREAD, x)
@@ -83,12 +83,14 @@ end
 end
 
 
-Base.eof(fd::FD{In}; kw...) = eof(fd, ReadBuffering(fd); kw...)
+Base.eof(fd::FD{In}; kw...) = eof(fd, TotalSize(fd); kw...)
+
+Base.eof(fd::FD, ::InfiniteTotalSize; kw...) = @assert false  
+    # FIXME should block
 
 Base.eof(fd::FD, ::KnownTotalSize; kw...) = bytesavailable(fd) == 0
 
-
-@db 1 function Base.eof(fd::FD, ::ReadBuffering; kw...)
+@db 1 function Base.eof(fd::FD, ::UnknownTotalSize; kw...)
     if bytesavailable(fd.buffer) > 0
         @db 1 return false
     end

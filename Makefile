@@ -23,6 +23,8 @@ doc:
 .PHONY: test
 test:
 	$(JL) test/runtests.jl
+
+test15:
 	$(JL15) test/runtests.jl
 
 testpt:

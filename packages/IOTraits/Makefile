@@ -11,8 +11,10 @@ all: README.md test
 JL := julia
 
 .PHONY: README.md
-README.md:
-	julia --project -e "using $(PACKAGE); $(PACKAGE).readme_docs_generate()"
+README.md: src/IOTraits.jl.md
+	cp $< $@
+
+#	julia --project -e "using $(PACKAGE); $(PACKAGE).readme_docs_generate()"
 
 doc:
 	cd docs; \
@@ -31,3 +33,11 @@ jl:
 
 jlenv:
 	$(JL)
+
+README_DOCS_DIR := $(shell julia --project -e \
+                     "using ReadmeDocs; println(pkgdir(ReadmeDocs))")
+
+JL2MD := $(JL) $(README_DOCS_DIR)/src/jl_to_md.jl
+
+%.jl.md: %.jl
+	$(JL2MD) $<

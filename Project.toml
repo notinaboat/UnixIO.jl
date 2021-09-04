@@ -22,5 +22,5 @@ TypeTree = "04da0e3b-1cad-4b2c-a963-fc1602baf1af"
 UnixIOHeaders = "b158d995-0785-490a-9245-6a3aff8d8d72"
 
 [compat]
-TypeTree = "0.2.0"
+#TypeTree = "0.2.0"
 julia = "^1.5.2"
