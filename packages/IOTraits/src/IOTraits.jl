@@ -51,33 +51,33 @@ This function transfers data between an IO interface and a buffer.
 
 Traits are used to specify the behaviour of the IO and the buffer.
 
-### `IODirection`
+#### `IODirection`
 Which way is the transfer?
 (`In`, `Out` or `Exchange`).
 
-### `FromBufferInterface`
+#### `FromBufferInterface`
 How to get data from the buffer?
 (`FromIO`, `FromPop`, `FromTake`, `FromIndex`, `FromIteration` or `FromPtr`)
 
-### `ToBufferInterface` 
+#### `ToBufferInterface` 
 How to put data into the buffer?
 (`ToIO`, `ToPush`, `ToPut`, `ToIndex` or `ToPtr`)
 
-### `TotalSize`
+#### `TotalSize`
 How much data is available?
 (`UnknownTotalSize`, `VariableTotalSize`, `FixedTotalSize`, or
  `InfiniteTotalSize`)
 
-### `TransferSize`
+#### `TransferSize`
 How much data can be moved in a single transfer?
 (`UnknownTransferSize`, `KnownTransferSize`, `LimitedTransferSize` or
  `FixedTransferSize`)
 
-### `ReadFragmentation`
+#### `ReadFragmentation`
 What guarantees are made about fragmentation?
 (`ReadsBytes`, `ReadsLines`, `ReadsPackets` or `ReadsRequestedSize`)
 
-### `WaitingMechanism`
+#### `WaitingMechanism`
 How to wait for activity?
 (`WaitBySleeping`, `WaitUsingPosixPoll`, `WaitUsingEPoll`, `WaitUsingPidFD` or
  `WaitUsingKQueue`)
@@ -102,29 +102,6 @@ How to wait for activity?
         - e.g. large number of small reads for high per-call overhead IO.
 """
 module IOTraits
-
-export transfer
-
-export TotalSize,
-       UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
-       FixedTotalSize
-
-export TransferSize,
-       UnknownTransferSize, KnownTransferSize, LimitedTransferSize,
-       FixedTransferSize
-
-export TransferSizeMechanism,
-       NoSizeMechanism, SupportsFIONREAD, SuppoutsStatSize
-
-export ReadFragmentation,
-       ReadsBytes, ReadsLines, ReadsPackets, ReadsRequestedSize
-
-export WaitingMechanism,
-       WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
-       WaitUsingKQueue
-
-using ReadmeDocs
-
 
 
 # Transfer Direction Trait.
@@ -179,12 +156,10 @@ The `buffer` can be an `AbstractArray`, an `AbstractChannel`, a `URI` or an `IO`
 
 Or, the `buffer` can be any collection that implements
 the Iteration Interface, the Indexing Interface,
-the AbstractChannel interface, or the `push!`/`pop!` interface.[^NOTE1]
-
-[^NOTE1]:
-In some cases it is necessary to define a method of the `ToBufferInterface()`
-or `FromBufferInterface()` trait functions to specify what interface a particular
-buffer type uses (e.g. if a buffer implements more than one of the supported
+the AbstractChannel interface, or the `push!`/`pop!` interface.
+In some cases it is necessary to define a method of `ToBufferInterface()`
+or `FromBufferInterface()` to specify the interface to use for a particular
+buffer type (e.g. if a buffer implements more than one of the supported
 interfaces).
 Defining these trait methods can also help to ensure that the most efficient
 interface is used for a particular buffer type.
@@ -431,9 +406,8 @@ Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
 define a method of `Base.wait(::T, r::R)`.
 
 If a `WaitingMechanism`, `T`, is not available on a particular OS
-then `Base.isvalid(::T)` should be defined to return `false`.[^NOTE2]
-
-[^NOTE2]: Configure via [Preferences.jl][Prefs] ?
+then `Base.isvalid(::T)` should be defined to return `false`.
+(Configure via [Preferences.jl][Prefs] ?)
 
 [Prefs]: https://github.com/JuliaPackaging/Preferences.jl
 
@@ -473,6 +447,32 @@ Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
 Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
 
 Base.wait(x, ::WaitBySleeping) = sleep(0.1)
+
+
+
+# Exports.
+
+export transfer
+
+export TotalSize,
+       UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
+       FixedTotalSize
+
+export TransferSize,
+       UnknownTransferSize, KnownTransferSize, LimitedTransferSize,
+       FixedTransferSize
+
+export TransferSizeMechanism,
+       NoSizeMechanism, SupportsFIONREAD, SuppoutsStatSize
+
+export ReadFragmentation,
+       ReadsBytes, ReadsLines, ReadsPackets, ReadsRequestedSize
+
+export WaitingMechanism,
+       WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
+       WaitUsingKQueue
+
+using ReadmeDocs
 
 
 

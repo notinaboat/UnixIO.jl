@@ -1,5 +1,3 @@
-*Raw source: [`IOTraits.jl`](IOTraits.jl!)*
-
 
 # IOTraits.jl
 
@@ -53,33 +51,33 @@ This function transfers data between an IO interface and a buffer.
 
 Traits are used to specify the behaviour of the IO and the buffer.
 
-### `IODirection`
+#### `IODirection`
 Which way is the transfer?
 (`In`, `Out` or `Exchange`).
 
-### `FromBufferInterface`
+#### `FromBufferInterface`
 How to get data from the buffer?
 (`FromIO`, `FromPop`, `FromTake`, `FromIndex`, `FromIteration` or `FromPtr`)
 
-### `ToBufferInterface` 
+#### `ToBufferInterface` 
 How to put data into the buffer?
 (`ToIO`, `ToPush`, `ToPut`, `ToIndex` or `ToPtr`)
 
-### `TotalSize`
+#### `TotalSize`
 How much data is available?
 (`UnknownTotalSize`, `VariableTotalSize`, `FixedTotalSize`, or
  `InfiniteTotalSize`)
 
-### `TransferSize`
+#### `TransferSize`
 How much data can be moved in a single transfer?
 (`UnknownTransferSize`, `KnownTransferSize`, `LimitedTransferSize` or
  `FixedTransferSize`)
 
-### `ReadFragmentation`
+#### `ReadFragmentation`
 What guarantees are made about fragmentation?
 (`ReadsBytes`, `ReadsLines`, `ReadsPackets` or `ReadsRequestedSize`)
 
-### `WaitingMechanism`
+#### `WaitingMechanism`
 How to wait for activity?
 (`WaitBySleeping`, `WaitUsingPosixPoll`, `WaitUsingEPoll`, `WaitUsingPidFD` or
  `WaitUsingKQueue`)
@@ -104,30 +102,8 @@ How to wait for activity?
         - e.g. large number of small reads for high per-call overhead IO.
 
 
-```{.julia .numberLines .lineAnchors startFrom="104"}
+```julia
 module IOTraits
-
-export transfer
-
-export TotalSize,
-       UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
-       FixedTotalSize
-
-export TransferSize,
-       UnknownTransferSize, KnownTransferSize, LimitedTransferSize,
-       FixedTransferSize
-
-export TransferSizeMechanism,
-       NoSizeMechanism, SupportsFIONREAD, SuppoutsStatSize
-
-export ReadFragmentation,
-       ReadsBytes, ReadsLines, ReadsPackets, ReadsRequestedSize
-
-export WaitingMechanism,
-       WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
-       WaitUsingKQueue
-
-using ReadmeDocs
 ```
 
 
@@ -135,7 +111,7 @@ using ReadmeDocs
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="133"}
+```julia
 abstract type IODirection end
 struct In <: IODirection end
 struct Out <: IODirection end
@@ -156,7 +132,7 @@ for an IO interface. `IODirection(typeof(io))` returns one of:
 [SPI]: https://en.wikipedia.org/wiki/Serial_Peripheral_Interface
 
 
-```{.julia .numberLines .lineAnchors startFrom="151"}
+```julia
 IODirection(x) = IODirection(typeof(x))
 ```
 
@@ -188,12 +164,10 @@ The `buffer` can be an `AbstractArray`, an `AbstractChannel`, a `URI` or an `IO`
 
 Or, the `buffer` can be any collection that implements
 the Iteration Interface, the Indexing Interface,
-the AbstractChannel interface, or the `push!`/`pop!` interface.[^NOTE1]
-
-[^NOTE1]:
-In some cases it is necessary to define a method of the `ToBufferInterface()`
-or `FromBufferInterface()` trait functions to specify what interface a particular
-buffer type uses (e.g. if a buffer implements more than one of the supported
+the AbstractChannel interface, or the `push!`/`pop!` interface.
+In some cases it is necessary to define a method of `ToBufferInterface()`
+or `FromBufferInterface()` to specify the interface to use for a particular
+buffer type (e.g. if a buffer implements more than one of the supported
 interfaces).
 Defining these trait methods can also help to ensure that the most efficient
 interface is used for a particular buffer type.
@@ -213,7 +187,7 @@ An `In()` io must be on the left.
 An `Out()` io must be on the right.
 
 
-```{.julia .numberLines .lineAnchors startFrom="206"}
+```julia
 function transfer end
 ```
 
@@ -222,7 +196,7 @@ function transfer end
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="213"}
+```julia
 abstract type FromBufferInterface end
 struct FromIO <: FromBufferInterface end
 struct FromPop <: FromBufferInterface end
@@ -251,7 +225,7 @@ data from a particular buffer type
 Default `FromBufferInterface` methods are built in for common buffer types:
 
 
-```{.julia .numberLines .lineAnchors startFrom="239"}
+```julia
 FromBufferInterface(x) = FromBufferInterface(typeof(x))
 FromBufferInterface(::Type) = FromIteration()
 FromBufferInterface(::Type{<:IO}) = FromIO()
@@ -264,7 +238,7 @@ FromBufferInterface(::Type{<:Ptr}) = FromPtr()
 # To Buffer Interface Trait.
 
 
-```{.julia .numberLines .lineAnchors startFrom="250"}
+```julia
 abstract type ToBufferInterface end
 struct ToIO <: ToBufferInterface end
 struct ToPush <: ToBufferInterface end
@@ -291,7 +265,7 @@ in a particular type of buffer
 Default `ToBufferInterface` methods are built in for common buffer types.
 
 
-```{.julia .numberLines .lineAnchors startFrom="275"}
+```julia
 ToBufferInterface(x) = ToBufferInterface(typeof(x))
 ToBufferInterface(::Type) = ToPush()
 ToBufferInterface(::Type{<:IO}) = ToIO()
@@ -304,7 +278,7 @@ ToBufferInterface(::Type{<:Ptr}) = ToPtr()
 # Total Size Trait.
 
 
-```{.julia .numberLines .lineAnchors startFrom="286"}
+```julia
 abstract type TotalSize end
 struct UnknownTotalSize <: TotalSize end
 struct InfiniteTotalSize <: TotalSize end
@@ -332,7 +306,7 @@ IO interface.
  * `UnknownTotalSize()` -- No known data size limit.
 
 
-```{.julia .numberLines .lineAnchors startFrom="311"}
+```julia
 TotalSize(x) = TotalSize(typeof(x))
 TotalSize(::Type) = UnknownTotalSize()
 ```
@@ -342,7 +316,7 @@ TotalSize(::Type) = UnknownTotalSize()
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="319"}
+```julia
 abstract type TransferSize end
 struct UnknownTransferSize <: TransferSize end
 struct KnownTransferSize <: TransferSize end
@@ -373,7 +347,7 @@ transfer.
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="347"}
+```julia
 TransferSize(x) = TransferSize(typeof(x))
 TransferSize(t::Type) = TransferSizeMechanism(t) == NoSizeMechanism() ?
                         UnknownTransferSize() :
@@ -393,7 +367,7 @@ struct SuppoutsStatSize <: TransferSizeMechanism end
  * `SuppoutsStatSize()` -- The underlying device supports  `fstat(2), st_size`.
 
 
-```{.julia .numberLines .lineAnchors startFrom="364"}
+```julia
 TransferSizeMechanism(x) = TransferSizeMechanism(typeof(x))
 TransferSizeMechanism(::Type) = NoSizeMechanism()
 ```
@@ -403,7 +377,7 @@ TransferSizeMechanism(::Type) = NoSizeMechanism()
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="372"}
+```julia
 abstract type ReadFragmentation end
 struct ReadsBytes         <: ReadFragmentation end
 struct ReadsLines         <: ReadFragmentation end
@@ -440,7 +414,7 @@ about fragmentation of data returned by the underlying `read(2)` system call.
    `/dev/null`).
 
 
-```{.julia .numberLines .lineAnchors startFrom="407"}
+```julia
 ReadFragmentation(x) = ReadFragmentation(typeof(x))
 ReadFragmentation(::Type) = ReadsBytes()
 ```
@@ -450,7 +424,7 @@ ReadFragmentation(::Type) = ReadsBytes()
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="415"}
+```julia
 abstract type WaitingMechanism end
 struct WaitBySleeping     <: WaitingMechanism end
 struct WaitUsingPosixPoll <: WaitingMechanism end
@@ -470,9 +444,8 @@ Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
 define a method of `Base.wait(::T, r::R)`.
 
 If a `WaitingMechanism`, `T`, is not available on a particular OS
-then `Base.isvalid(::T)` should be defined to return `false`.[^NOTE2]
-
-[^NOTE2]: Configure via [Preferences.jl][Prefs] ?
+then `Base.isvalid(::T)` should be defined to return `false`.
+(Configure via [Preferences.jl][Prefs] ?)
 
 [Prefs]: https://github.com/JuliaPackaging/Preferences.jl
 
@@ -504,7 +477,7 @@ then `Base.isvalid(::T)` should be defined to return `false`.[^NOTE2]
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="467"}
+```julia
 WaitingMechanism(x) = WaitingMechanism(typeof(x))
 WaitingMechanism(::Type) = WaitBySleeping()
 
@@ -514,6 +487,34 @@ Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
 Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
 
 Base.wait(x, ::WaitBySleeping) = sleep(0.1)
+```
+
+
+# Exports.
+
+
+```julia
+export transfer
+
+export TotalSize,
+       UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
+       FixedTotalSize
+
+export TransferSize,
+       UnknownTransferSize, KnownTransferSize, LimitedTransferSize,
+       FixedTransferSize
+
+export TransferSizeMechanism,
+       NoSizeMechanism, SupportsFIONREAD, SuppoutsStatSize
+
+export ReadFragmentation,
+       ReadsBytes, ReadsLines, ReadsPackets, ReadsRequestedSize
+
+export WaitingMechanism,
+       WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
+       WaitUsingKQueue
+
+using ReadmeDocs
 
 
 
