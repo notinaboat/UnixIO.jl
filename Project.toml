@@ -1,7 +1,7 @@
 name = "UnixIO"
 uuid = "86724fa0-f1e0-464a-a4b2-d754f3ca1f13"
 authors = ["notinaboat <notinaboat@icloud.com>"]
-version = "0.3.1"
+version = "0.3.2"
 
 [deps]
 AsyncLog = "b136e949-d42a-4c20-998e-69d09231b44a"
@@ -15,6 +15,7 @@ IOTraits = "8782331d-1791-483a-a4c8-2712d2c95aed"
 LoggingTestSets = "c2339e6d-2e7f-4cf9-92d2-844738085fb8"
 OffsetArrays = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
 Preconditions = "059f9e2d-edd5-4920-8ad6-95789b106d09"
+Preferences = "21216c6a-2e73-6563-6e65-726566657250"
 REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 ReadmeDocs = "c63066b3-de92-487d-9da7-7c375a07912b"
 TextWrap = "b718987f-49a8-5099-9789-dcd902bef87d"
@@ -22,5 +23,4 @@ TypeTree = "04da0e3b-1cad-4b2c-a963-fc1602baf1af"
 UnixIOHeaders = "b158d995-0785-490a-9245-6a3aff8d8d72"
 
 [compat]
-#TypeTree = "0.2.0"
 julia = "^1.5.2"

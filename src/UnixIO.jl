@@ -56,6 +56,7 @@ using Base: ImmutableDict,
             @lock,
             C_NULL
 
+using Preferences
 using ReadmeDocs               # for README""" ... """ doc strings.
 using Preconditions            # for @require and @ensure contracts
 using AsyncLog                 # for @asynclog -- log errors in async tasks.
@@ -224,8 +225,6 @@ isalive(p::Process) = p.exit_status == nothing &&
 didexit(p::Process) = p.exit_status != nothing
 waskilled(p::Process) = !isstopped(p) && p.signal != nothing
 
-firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
-
 IOTraits.WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
                                                         WaitBySleeping())
 
@@ -282,10 +281,7 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                                               Nothing)
 
 IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
-    firstvalid(WaitUsingKQueue(),
-               WaitUsingEPoll(),
-               WaitUsingPosixPoll(),
-               WaitBySleeping())
+    IOTraits.preferred_poll_mechanism
 
 
     # FIXME unify with open() ?
@@ -480,13 +476,6 @@ e.g.
         attr.speed=9600
         attr.c_lflag |= C.ICANON
     end
-
-If `raw` is `true` the attributes are initialised to:
-
-    attr.c_iflag = 0
-    attr.c_oflag = 0
-    attr.c_cflag = C.CS8
-    attr.c_lflag = 0
 
 See [tcsetattr(3)](https://man7.org/linux/man-pages/man3/tcsetattr.3.html)
 for flag descriptions.

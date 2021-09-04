@@ -104,6 +104,9 @@ How to wait for activity?
 
 ```julia
 module IOTraits
+
+using Preconditions
+using Preferences
 ```
 
 
@@ -445,9 +448,6 @@ define a method of `Base.wait(::T, r::R)`.
 
 If a `WaitingMechanism`, `T`, is not available on a particular OS
 then `Base.isvalid(::T)` should be defined to return `false`.
-(Configure via [Preferences.jl][Prefs] ?)
-
-[Prefs]: https://github.com/JuliaPackaging/Preferences.jl
 
 `WaitingMechanism(typeof(io))` returns one of:
 
@@ -475,6 +475,9 @@ then `Base.isvalid(::T)` should be defined to return `false`.
    file descriptor that can in turn be monitored by `poll` or `epoll`. See
    [`pidfd_open(2)`](http://man7.org/linux/man-pages/man2/pidfd_open.2.html).
 
+TODO: Consider Linux AIO `io_getevents` for disk io?
+
+
 
 
 ```julia
@@ -486,7 +489,55 @@ Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
 Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
 Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
 
+firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
+
+const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
+                                          WaitUsingEPoll(),
+                                          WaitUsingPosixPoll(),
+                                          WaitBySleeping())
+
 Base.wait(x, ::WaitBySleeping) = sleep(0.1)
+```
+
+
+## Preferred Polling Mechanism
+
+    set_poll_mechanism(name)
+
+Configure the preferred event polling mechanism:
+"kqueue", "epoll", "poll", or "sleep".
+
+Note: this setting applies only to `poll(2)`-compatible file descriptors
+(i.e. it does not apply to local disk files).
+
+By default, IOTraits will try to choose the best available mechanism
+(see `default_poll_mechanism`).
+
+This setting is persistently stored through [Preferences.jl][Prefs].
+
+To find out what mechanism is used for a particular `FD` call:
+`WaitingMechanism(fd)`
+
+[Prefs]: https://github.com/JuliaPackaging/Preferences.jl
+
+
+```julia
+function set_poll_mechanism(x)
+    @require poll_mechanism(x) != nothing
+    @require isvalid(poll_mechanism(x))
+    @set_preferences!("waiting_mechanism" => x)
+    @warn "Preferred IOTraits.WaitingMechanism set to $(poll_mechanism(x))." *
+          "UnixIO must be recompiled for this setting to take effect."
+end
+
+poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
+                       name == "epoll"  ? WaitUsingEPoll() :
+                       name == "poll"   ? WaitUsingPosixPoll() :
+                       name == "sleep"  ? WaitBySleeping() :
+                                          default_poll_mechanism
+
+const preferred_poll_mechanism =
+    poll_mechanism(@load_preference("waiting_mechanism"))
 ```
 
 

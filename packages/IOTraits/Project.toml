@@ -1,8 +1,10 @@
 name = "IOTraits"
 uuid = "8782331d-1791-483a-a4c8-2712d2c95aed"
 authors = ["notinaboat <notinaboat@icloud.com>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+Preconditions = "059f9e2d-edd5-4920-8ad6-95789b106d09"
+Preferences = "21216c6a-2e73-6563-6e65-726566657250"
 ReadmeDocs = "c63066b3-de92-487d-9da7-7c375a07912b"
