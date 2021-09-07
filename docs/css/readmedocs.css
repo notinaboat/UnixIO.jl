@@ -1,0 +1,41 @@
+:root {
+    --title-margin-top: 10px;
+    --main-width: 900px;
+    --main-width-narrow: 745px;
+    --font-family-prose: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Open Sans","Helvetica Neue",sans-serif;
+    --font-family-heading: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Open Sans","Helvetica Neue",sans-serif;
+    --font-family-code: ui-monospace,SFMono-Regular,SF Mono,Menlo,SourceCodePro,Consolas,Liberation Mono,monospace
+}
+
+table.xrt_head, .xrt_head tr, .xrt_head td {
+    border: none;
+    padding: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    vertical-align:top ;
+}
+
+pre {
+    line-height: var(--tight-code-line-height);
+    white-space: pre;
+    border: none;
+}
+
+pre code {
+    line-height: var(--tight-code-line-height);
+    white-space: pre;
+    border-radius: 5px;
+    border: 1px solid var(--color-border);
+    hanging-punctuation: none;
+    padding: 10px;
+    max-width: 100%;
+}
+
+.widepre pre code {
+    max-width: none;
+}
+
+code {
+    border: none;
+    border-radius: 3px;
+}

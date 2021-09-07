@@ -1,0 +1,1740 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc-markdown-css-theme" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Copyright Sam O'Connor." />
+  <meta name="dcterms.date" content="2021-09-04" />
+  <title>README</title>
+  <link rel="stylesheet" href="../../css/theme.css" />
+  <link rel="stylesheet" href="../../css/paper.css" />
+  <link rel="stylesheet" href="../../css/skylighting-paper-theme.css" />
+  <link rel="stylesheet" href="../../css/readmedocs.css" />
+</head>
+<body>
+
+<header>
+
+<table class="xrt_head">
+  <tr><td>
+  <b><a href="" style="white-space: pre"></a></b>
+  <td width="100%" style="text-align: center">
+  <b>Copyright OC Technology Pty Ltd</b>
+  </td><td style="text-align: right">
+  <font face="Helvetica">
+  <font size="+2.5">
+  <b><font color="#0080FF">oc</font><font color="#000000">tech</font></b>
+  </font>
+  </td></tr>
+</table>
+<hr style="margin-top: 0;">
+<table class="xrt_head">
+<tr><td><code>v0.3.2</code></td><td style="text-align: right">2021-09-04</td></tr>
+</table>
+
+<h1 class="title"></h1>
+<blockquote class="metadata">
+</blockquote>
+</header>
+
+<nav id="TOC" role="doc-toc">
+    <strong>Contents</strong><label for="contents">⊕</label>
+  <input type="checkbox" id="contents">
+  <ul>
+  <li><a href="#iotraits.jl">IOTraits.jl</a>
+  <ul>
+  <li><a href="#background">Background</a></li>
+  <li><a href="#overview">Overview</a></li>
+  <li><a href="#unfiled-notes">Unfiled Notes</a></li>
+  </ul></li>
+  <li><a href="#transfer-direction-trait">Transfer Direction Trait</a></li>
+  <li><a href="#io-indexing-trait">IO Indexing Trait</a></li>
+  <li><a href="#data-transfer-function">Data Transfer Function</a>
+  <ul>
+  <li><a href="#transfera-b"><code>transfer(a =&gt; b)</code></a></li>
+  </ul></li>
+  <li><a href="#buffer-interface-traits">Buffer Interface Traits</a>
+  <ul>
+  <li><a href="#transfer-function-dispatch">Transfer Function Dispatch</a></li>
+  </ul></li>
+  <li><a href="#transfer-specialisations-for-indexable-buffers">Transfer Specialisations for Indexable Buffers</a></li>
+  <li><a href="#transfer-specialisations-for-iterable-buffers">Transfer Specialisations for Iterable Buffers</a></li>
+  <li><a href="#transfer-specialisations-for-iterable-buffers-1">Transfer Specialisations for Iterable Buffers</a></li>
+  <li><a href="#timeout-trait">Timeout Trait</a></li>
+  <li><a href="#total-size-trait">Total Size Trait</a>
+  <ul>
+  <li><a href="#totalsize-data-size-trait."><code>TotalSize</code> – Data Size Trait.</a></li>
+  </ul></li>
+  <li><a href="#transfer-size-trait">Transfer Size Trait</a>
+  <ul>
+  <li><a href="#transfersize-transfer-size-trait."><code>TransferSize</code> – Transfer Size Trait.</a></li>
+  </ul></li>
+  <li><a href="#data-fragmentation-trait">Data Fragmentation Trait</a>
+  <ul>
+  <li><a href="#readfragmentation-data-fragmentation-trait."><code>ReadFragmentation</code> – Data Fragmentation Trait.</a></li>
+  </ul></li>
+  <li><a href="#performance-traits">Performance Traits</a></li>
+  <li><a href="#cursor-traits">Cursor Traits</a>
+  <ul>
+  <li><a href="#cursorsupport-seek-mark-trait."><code>CursorSupport</code> – Seek / Mark Trait.</a></li>
+  </ul></li>
+  <li><a href="#event-notification-mechanism-trait">Event Notification Mechanism Trait</a>
+  <ul>
+  <li><a href="#waitingmechanism-event-notificaiton-mechanism-trait."><code>WaitingMechanism</code> – Event Notificaiton Mechanism Trait.</a></li>
+  <li><a href="#preferred-polling-mechanism">Preferred Polling Mechanism</a></li>
+  </ul></li>
+  <li><a href="#null-io">Null IO</a></li>
+  <li><a href="#io-delegate">IO Delegate</a></li>
+  <li><a href="#bufferedio">BufferedIO</a></li>
+  <li><a href="#intransaction">InTransaction</a></li>
+  <li><a href="#base.io-interface">Base.IO Interface</a>
+  <ul>
+  <li><a href="#function-unsafe_read">Function <code>unsafe_read</code></a></li>
+  <li><a href="#function-readline">Function <code>readline</code></a>
+  <ul>
+  <li><a href="#readlineio-readslines"><code>readline(io, ::ReadsLines)</code></a></li>
+  </ul></li>
+  </ul></li>
+  <li><a href="#exports">Exports</a></li>
+  <li><a href="#method-resolution-info">Method Resolution Info</a>
+  <ul>
+  <li><a href="#bufferedin">BufferedIn</a></li>
+  <li><a href="#io-traits">IO Traits</a></li>
+  <li><a href="#core-read-methods">Core Read Methods</a></li>
+  <li><a href="#core-write-methods">Core Write Methods</a></li>
+  <li><a href="#state-methods">State Methods</a></li>
+  <li><a href="#cursor-methods">Cursor Methods</a></li>
+  <li><a href="#extra-read-methods">Extra Read Methods</a></li>
+  <li><a href="#nullin">NullIn</a></li>
+  <li><a href="#io-traits-1">IO Traits</a></li>
+  <li><a href="#core-read-methods-1">Core Read Methods</a></li>
+  <li><a href="#core-write-methods-1">Core Write Methods</a></li>
+  <li><a href="#state-methods-1">State Methods</a></li>
+  <li><a href="#cursor-methods-1">Cursor Methods</a></li>
+  <li><a href="#extra-read-methods-1">Extra Read Methods</a></li>
+  </ul></li>
+  </ul>
+</nav>
+
+<main>
+<h1 id="iotraits.jl">IOTraits.jl</h1>
+<p><a href="https://www.juliabloggers.com/the-emergent-features-of-julialang-part-ii-traits/">Trait types</a> for describing the capabilities and behaviour of IO interfaces.</p>
+<h2 id="background">Background</h2>
+<p>This collection of Trait types began as a tool for resolving method selection issues in the UnixIO.jl package. Everything in Unix is a file, but there are many types of file, many types of Unix, and many ways a file handled can be configured.</p>
+<p>Selection of correct (or most efficient) methods can often be achieved with a simple type hierarchy. However traits seemed to be useful way to deal with variations in behaviour that depend file handle configuration and platform. In general <code>libc</code>’s <code>write(2)</code> and <code>read(2)</code> can be used to transfer data to or from any Unix file descriptor. However, the precise behaviour of these functions depends on many factors.</p>
+<p>Will <code>read</code> block?, if not, will it return less than the requested number of bytes? Can I query the number of bytes available to read first? How should I wait for more bytes? If more than one line is buffered will <code>read</code> return all of them? Will read ever return a partial line? Will every call to <code>write(2)</code> result in a packet being transmitted? Is it efficient to write one byte at a time? Does <code>lseek</code> work with this file? Does <code>FIONREAD</code> work with this file?</p>
+<p>The answers depend on combinations of file type, configuration and platform.</p>
+<p>This collection expands on the traits from UnixIO.jl in the hope of making them more broadly useful. According to the <a href="https://en.wikipedia.org/wiki/Law_of_the_hammer">law of the hammer</a> some of this is probably overkill. The intention is to consider the application of Trait types to various aspects of IO and to see where it leads.</p>
+<h2 id="overview">Overview</h2>
+<p>The IOTraits interface is built around the <code>transfer(io, buffer)</code> function. This function transfers data between an IO interface and a buffer.</p>
+<p>Traits are used to specify the behaviour of the IO and the buffer.</p>
+<h4 id="transferdirection"><code>TransferDirection</code></h4>
+<p>Which way is the transfer? (<code>In</code>, <code>Out</code> or <code>Exchange</code>).</p>
+<h4 id="ioindexing"><code>IOIndexing</code></h4>
+<p>Is indexing (e.g. <code>pread(2)</code>) supported? (<code>NotIndexable</code>, <code>IndexableIO</code>)</p>
+<h4 id="frombufferinterface"><code>FromBufferInterface</code></h4>
+<p>How to get data from the buffer? (<code>FromIO</code>, <code>FromPop</code>, <code>FromTake</code>, <code>UsingIndex</code>, <code>FromIteration</code> or <code>UsingPtr</code>)</p>
+<h4 id="tobufferinterface"><code>ToBufferInterface</code></h4>
+<p>How to put data into the buffer? (<code>ToIO</code>, <code>ToPush</code>, <code>ToPut</code>, <code>UsingIndex</code> or <code>UsingPtr</code>)</p>
+<h4 id="totalsize"><code>TotalSize</code></h4>
+<p>How much data is available? (<code>UnknownTotalSize</code>, <code>VariableTotalSize</code>, <code>FixedTotalSize</code>, or <code>InfiniteTotalSize</code>)</p>
+<h4 id="transfersize"><code>TransferSize</code></h4>
+<p>How much data can be moved in a single transfer? (<code>UnknownTransferSize</code>, <code>KnownTransferSize</code>, <code>LimitedTransferSize</code> or <code>FixedTransferSize</code>)</p>
+<h4 id="readfragmentation"><code>ReadFragmentation</code></h4>
+<p>What guarantees are made about fragmentation? (<code>ReadsBytes</code>, <code>ReadsLines</code>, <code>ReadsPackets</code> or <code>ReadsRequestedSize</code>)</p>
+<h4 id="cursorsupport"><code>CursorSupport</code></h4>
+<p>Are <code>mark</code> and <code>seek</code> supported? (<code>NoCursors</code>, <code>Seekable</code> or <code>Markable</code>)</p>
+<h4 id="waitingmechanism"><code>WaitingMechanism</code></h4>
+<p>How to wait for activity? (<code>WaitBySleeping</code>, <code>WaitUsingPosixPoll</code>, <code>WaitUsingEPoll</code>, <code>WaitUsingPidFD</code> or <code>WaitUsingKQueue</code>)</p>
+<h2 id="unfiled-notes">Unfiled Notes</h2>
+<ul>
+<li><p>Timeout Philosophy. Blocking, non-blocking, all=true flags? etc timeout=0, timeout=Inf, timeout= … is unambiguous.</p></li>
+<li><p>How could <code>Base.isready</code> apply to IO? It’s definition is nice and concise: “Determine whether a Channel has a value stored to it. Returns immediately, does not block.”</p></li>
+<li><p>Build <code>ReadlineMux &lt;: IOMux</code> and <code>ReadlineDemux &lt;: IODemux</code> as an example of a traits aware IO mechanism. e.g. merge multiple streams onto a single IO with a mux/demux header.</p></li>
+<li><p>Consider traits to select special purpose IO functions where appropriate: <code>pread</code>, <code>readv</code>, <code>writev</code>, <code>sendfile</code> ?</p></li>
+<li><p>Consider using traits to identify inefficient access patterns.</p>
+<ul>
+<li>Keep stats per file
+<ul>
+<li>No. tranfers, No. bytes, No. seeks.</li>
+<li>Time between transfers (rolling avg?)</li>
+<li>Warn if stats don’t align with traits</li>
+<li>e.g. large number of small reads for high per-call overhead IO.</li>
+</ul></li>
+</ul></li>
+<li><p>Consider trait to characterise access speed:</p>
+<ul>
+<li>fast mmap - ok for small and large requests</li>
+<li>fast local - but slow for small requests</li>
+<li>fast network - but slow for small requests</li>
+<li>slow serial - no problem with small requests</li>
+</ul></li>
+<li><p>content:</p>
+<ul>
+<li>Has bytes</li>
+<li>no content (links)</li>
+<li>directory</li>
+</ul></li>
+<li><p>mmappable: yes? no?</p></li>
+<li><p>writing</p>
+<ul>
+<li>needs flush?</li>
+<li>efficient to write one byte at a time?</li>
+<li>natural page size?</li>
+</ul></li>
+</ul>
+<div class="sourceCode" id="cb1"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">module</span> IOTraits</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">using</span> Preconditions</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="kw">using</span> Markdown</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="kw">using</span> Preferences</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="fu">include</span>(<span class="st">&quot;../../../src/macroutils.jl&quot;</span>)</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> TraitsIO <span class="op">&lt;:</span><span class="dt"> IO </span><span class="kw">end</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="fu">trait_error</span>(io<span class="op">,</span> trait) <span class="op">=</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="fu">throw</span>(<span class="fu">ArgumentError</span>(<span class="st">&quot;$(typeof(io)) does not implement $trait&quot;</span>))</span></code></pre></div>
+<h1 id="transfer-direction-trait">Transfer Direction Trait</h1>
+<p>The <code>TransferDirection</code> trait describes the direction of data transfer for an IO interface.</p>
+<p><code>TransferDirection(typeof(io))</code> returns one of:</p>
+<ul>
+<li><code>In()</code> – data is “read” from the <code>IO</code>.</li>
+<li><code>Out()</code> – data is “written” to the <code>IO</code>.</li>
+<li><code>Exchange()</code> – data is simultaneously exchanged between the <code>io</code> and a buffer (e.g. like <a href="https://en.wikipedia.org/wiki/Serial_Peripheral_Interface">SPI</a>).</li>
+</ul>
+<div class="sourceCode" id="cb2"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> TransferDirection <span class="kw">end</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> In <span class="op">&lt;:</span><span class="dt"> TransferDirection </span><span class="kw">end</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Out <span class="op">&lt;:</span><span class="dt"> TransferDirection </span><span class="kw">end</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Exchange <span class="op">&lt;:</span><span class="dt"> TransferDirection </span><span class="kw">end</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> AnyDirection <span class="op">=</span> TransferDirection</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferDirection</span>(x) <span class="op">=</span> <span class="fu">TransferDirection</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferDirection</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="cn">nothing</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">isreadable</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">TransferDirection</span>(io) <span class="op">!=</span> <span class="fu">Out</span>()</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">iswritable</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">TransferDirection</span>(io) <span class="op">!=</span> <span class="fu">In</span>()</span></code></pre></div>
+<h1 id="io-indexing-trait">IO Indexing Trait</h1>
+<p>Is indexing (e.g. <code>pread(2)</code>) supported?</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> IOIndexing <span class="kw">end</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> NotIndexable <span class="op">&lt;:</span><span class="dt"> IOIndexing </span><span class="kw">end</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> IndexableIO <span class="op">&lt;:</span><span class="dt"> IOIndexing </span><span class="kw">end</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="fu">IOIndexing</span>(x) <span class="op">=</span> <span class="fu">IOIndexing</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="fu">IOIndexing</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> NotIndexable</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="fu">io_is_indexable</span>(io) <span class="op">=</span> <span class="fu">IOIndexing</span>(io) <span class="op">==</span> <span class="fu">IndexableIO</span>()</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="fu">ioeltype</span>(io) <span class="op">=</span> <span class="fu">isabstracttype</span>(<span class="fu">eltype</span>(io)) ? <span class="dt">UInt8</span> <span class="op">:</span> <span class="fu">eltype</span>(io)</span></code></pre></div>
+<h1 id="data-transfer-function">Data Transfer Function</h1>
+<pre><code>transfer(io, buffer, [n]; start=1, deadline=Inf) -&gt; n_transfered</code></pre>
+<p>Transfer at most <code>n</code> items between <code>io</code> and <code>buffer</code>. If <code>n</code> is not specified the number of items transferred depends on the number of items available and the capacity of <code>buffer</code>.</p>
+<p>The direction of transfer (<code>In</code>, <code>Out</code> or <code>Exchange</code>) depends on <code>TransferDirection(io)</code></p>
+<p>If no items are immediately available to transfer, <a href="#event-notification-mechanism-trait">wait</a> while <code>time() &lt; deadline</code> for at least one item to be transferred.</p>
+<p>Return the number of items transferred (zero if no items are available before the deadline).</p>
+<p><code>start</code> specifies the buffer starting index for the transfer. If <code>io_is_indexable(io)</code> then <code>start</code> can be a tuple <code>(io_start_byte_index, buffer_start_index)</code>.</p>
+<p>The type of items transferred depends on <code>ioeltype(buffer)</code>. By default <code>ioeltype(x) = eltype(x)</code>.</p>
+<p>The <code>buffer</code> can be an <code>AbstractArray</code>, an <code>AbstractChannel</code>, a <code>URI</code> or an <code>IO</code>.</p>
+<p>Or, the <code>buffer</code> can be any collection that implements the Iteration Interface, the Indexing Interface, the AbstractChannel interface, or the <code>push!</code>/<code>pop!</code> interface. In some cases it is necessary to define a method of <code>ToBufferInterface()</code> or <code>FromBufferInterface()</code> to specify the interface to use for a particular buffer type (e.g. if a buffer implements more than one of the supported interfaces). Defining these trait methods can also help to ensure that the most efficient interface is used for a particular buffer type.</p>
+<p>If either the <code>io</code> or the <code>buffer</code> is a <code>URI</code> then items are transferred to (or from) the identified resource. A transfer to a <code>URI</code> creates a new resource or replaces the resource (i.e. HTTP PUT semantics).</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">,</span> buf<span class="op">,</span> n<span class="op">=</span><span class="cn">missing</span><span class="op">;</span> start<span class="op">::</span><span class="dt">Union{Integer, NTuple{2,Integer}}=</span><span class="fl">1</span><span class="op">,</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>                                      deadline<span class="op">=</span><span class="cn">Inf</span>)</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@require</span> <span class="fu">isopen</span>(io)</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> buf<span class="op">,</span> n<span class="op">,</span> start<span class="op">,</span> deadline)</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer_complete</span>(io<span class="op">,</span> buf<span class="op">,</span> n)</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> n</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<p><code>transfer_complete</code> is called at the end of the top-level <code>transfer</code> method. A single call to the top-level <code>tansfer</code> method may result in many calls to low level driver methods. e.g. to transfer every item in a collection. The <code>transfer_complete</code> hook can be used, for example, to flush an output buffer at end of a transfer.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer_complete</span>(io<span class="op">,</span> buf<span class="op">,</span> n) <span class="op">=</span> <span class="cn">nothing</span></span></code></pre></div>
+<h3 id="transfera-b"><code>transfer(a =&gt; b)</code></h3>
+<pre><code>transfer(io =&gt; buffer, [n]; start=(1 =&gt; 1), kw...) -&gt; n_transfered
+transfer(buffer =&gt; io, [n]; start=(1 =&gt; 1), kw...) -&gt; n_transfered</code></pre>
+<p><code>io</code> and <code>buffer</code> can be passed to <code>transfer</code> as a pair. An <code>In</code> io must be on the left. An <code>Out</code> io must be on the right.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(t<span class="op">::</span><span class="dt">Pair{&lt;:TraitsIO,&lt;:Any},</span> a<span class="op">...;</span> start<span class="op">=</span>(<span class="fl">1</span> <span class="op">=&gt;</span> <span class="fl">1</span>)<span class="op">,</span> kw<span class="op">...</span>)</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@require</span> <span class="fu">TransferDirection</span>(t[<span class="fl">1</span>]) <span class="op">==</span> <span class="fu">In</span>()</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> start isa <span class="dt">Pair</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>        start <span class="op">=</span> (start[<span class="fl">1</span>]<span class="op">,</span> start[<span class="fl">2</span>])</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(t[<span class="fl">1</span>]<span class="op">,</span> t[<span class="fl">2</span>]<span class="op">,</span> a<span class="op">...;</span> start<span class="op">,</span> kw<span class="op">...</span>)</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(t<span class="op">::</span><span class="dt">Pair{&lt;:Any,&lt;:TraitsIO},</span> a<span class="op">...;</span> start<span class="op">=</span>(<span class="fl">1</span> <span class="op">=&gt;</span> <span class="fl">1</span>)<span class="op">,</span> kw<span class="op">...</span>)</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@require</span> <span class="fu">TransferDirection</span>(t[<span class="fl">2</span>]) <span class="op">==</span> <span class="fu">Out</span>()</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> start isa <span class="dt">Pair</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>        start <span class="op">=</span> (start[<span class="fl">2</span>]<span class="op">,</span> start[<span class="fl">1</span>])</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(t[<span class="fl">2</span>]<span class="op">,</span> t[<span class="fl">1</span>]<span class="op">,</span> a<span class="op">...;</span> start<span class="op">=</span>start<span class="op">,</span> kw<span class="op">...</span>)</span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<h1 id="buffer-interface-traits">Buffer Interface Traits</h1>
+<div class="sourceCode" id="cb9"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> BufferInterface <span class="kw">end</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> UsingIndex <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> UsingPtr <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> FromIO <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> FromPop <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> FromTake <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> FromIteration <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ToIO <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ToPush <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ToPut <span class="op">&lt;:</span><span class="dt"> BufferInterface </span><span class="kw">end</span></span></code></pre></div>
+<p>The <code>FromBufferInterface</code> trait defines what interface is used to take data from a particular buffer type (or what interface is preferred for best performance).</p>
+<p><code>FromBufferInterface(typeof(buffer))</code> returns one of:</p>
+<ul>
+<li><code>FromIO()</code> – Take data from the buffer using the <code>Base.IO</code> interface.</li>
+<li><code>FromPop()</code> – Use <code>pop!(buffer)</code> to read from the buffer.</li>
+<li><code>FromTake()</code> – Use <code>take!(buffer)</code>.</li>
+<li><code>FromIteration()</code> – Use <code>for x in buffer...</code>.</li>
+<li><code>UsingIndex()</code> – Use <code>buffer[i]</code> (the default).</li>
+<li><code>UsingPtr()</code> – Use <code>unsafe_copyto!(buffer, x, n)</code>.</li>
+</ul>
+<p>Default <code>FromBufferInterface</code> methods are built in for common buffer types:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="fu">FromBufferInterface</span>(x) <span class="op">=</span> <span class="fu">FromBufferInterface</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="fu">FromBufferInterface</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">FromIteration</span>()</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="fu">FromBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:IO})</span> <span class="op">=</span> <span class="fu">FromIO</span>()</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="fu">FromBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:AbstractChannel})</span> <span class="op">=</span> <span class="fu">FromTake</span>()</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="fu">FromBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:Ptr})</span> <span class="op">=</span> <span class="fu">UsingPtr</span>()</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="fu">FromBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:Ref})</span> <span class="op">=</span> <span class="fu">UsingPtr</span>()</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a><span class="fu">FromBufferInterface</span>(T<span class="op">::</span><span class="dt">Type{&lt;:AbstractArray})</span> <span class="op">=</span> <span class="fu">BufferInterface</span>(T)</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="fu">BufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:Array{T}})</span> <span class="kw">where</span> T <span class="op">=</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">isbitstype</span>(T) ? <span class="fu">UsingPtr</span>() <span class="op">:</span> <span class="fu">UsingIndex</span>()</span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a><span class="fu">BufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:Base.FastContiguousSubArray{T,&lt;:Any,&lt;:Array{T}}})</span> <span class="kw">where</span> T <span class="op">=</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    <span class="fu">isbitstype</span>(T) ? <span class="fu">UsingPtr</span>() <span class="op">:</span> <span class="fu">UsingIndex</span>()</span></code></pre></div>
+<p>The <code>ToBufferInterface</code> trait defines what interface is used to store data in a particular type of buffer (or what interface is preferred for best performance).</p>
+<p><code>ToBufferInterface(typeof(buffer))</code> one of:</p>
+<ul>
+<li><code>ToIO</code> – Write data to the buffer using the <code>Base.IO</code> interface.</li>
+<li><code>ToPush</code> – Use <code>push!(buffer, data)</code>.</li>
+<li><code>ToPut</code> – Use <code>put!(buffer, data)</code>.</li>
+<li><code>UsingIndex</code> – Use <code>buffer[i] = data (the default)</code>.</li>
+<li><code>UsingPtr</code> – Use <code>unsafe_copyto!(x, buffer, n)</code>.</li>
+</ul>
+<p>Default <code>ToBufferInterface</code> methods are built in for common buffer types.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ToBufferInterface</span>(x) <span class="op">=</span> <span class="fu">ToBufferInterface</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ToBufferInterface</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">ToPush</span>()</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ToBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:IO})</span> <span class="op">=</span> <span class="fu">ToIO</span>()</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="fu">ToBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:AbstractChannel})</span> <span class="op">=</span> <span class="fu">ToPut</span>()</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="fu">ToBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:Ref})</span> <span class="op">=</span> <span class="fu">UsingPtr</span>()</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="fu">ToBufferInterface</span>(<span class="op">::</span><span class="dt">Type{&lt;:Ptr})</span> <span class="op">=</span> <span class="fu">UsingPtr</span>()</span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="fu">ToBufferInterface</span>(T<span class="op">::</span><span class="dt">Type{&lt;:AbstractArray})</span> <span class="op">=</span> <span class="fu">BufferInterface</span>(T)</span></code></pre></div>
+<h2 id="transfer-function-dispatch">Transfer Function Dispatch</h2>
+<p>The top level <code>transfer</code> method promotes the keyword arguments (<code>start</code> and <code>deadline</code>) to positional arguments so we can dispatch on their types.</p>
+<p>First, <code>Tuple</code> type <code>start</code> indexes are normalised. The <code>IOIndexing</code> trait is used to check that <code>io</code> supports indexing. The <code>io</code> start index is bundled into a <code>Tuple</code> with the <code>io</code>.</p>
+<p>After this, the <code>start</code> index is always a simple <code>Integer</code> index into <code>buf</code>.</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">,</span> buf<span class="op">,</span> n<span class="op">,</span> start<span class="op">::</span><span class="dt">Tuple,</span> a<span class="op">...</span>)</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@require</span> <span class="fu">IOIndexing</span>(io) <span class="op">==</span> <span class="fu">IndexableIO</span>() <span class="op">||</span> start[<span class="fl">1</span>] <span class="op">==</span> <span class="fl">1</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> start[<span class="fl">1</span>] <span class="op">!=</span> <span class="fl">1</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>        io <span class="op">=</span> (io<span class="op">,</span> start[<span class="fl">1</span>])</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(io<span class="op">,</span> buf<span class="op">,</span> n<span class="op">,</span> start[<span class="fl">2</span>]<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<p>Next, the <code>IODriection</code> and <code>BufferInterface</code> traits are inserted into the argument list.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">,</span> buf<span class="op">,</span> n<span class="op">,</span> start<span class="op">::</span><span class="dt">Integer,</span> a<span class="op">...</span>) <span class="op">=</span> </span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(io<span class="op">,</span> <span class="fu">TransferDirection</span>(io)<span class="op">,</span> buf<span class="op">,</span> n<span class="op">,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">In,</span> buf<span class="op">,</span> a<span class="op">...</span>) <span class="op">=</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(io<span class="op">,</span> <span class="fu">In</span>()<span class="op">,</span> buf<span class="op">,</span> <span class="fu">ToBufferInterface</span>(io)<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">Out,</span> buf<span class="op">,</span> a<span class="op">...</span>) <span class="op">=</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(io<span class="op">,</span> <span class="fu">Out</span>()<span class="op">,</span> buf<span class="op">,</span> <span class="fu">FromBufferInterface</span>(io)<span class="op">,</span> a<span class="op">...</span>)</span></code></pre></div>
+<h1 id="transfer-specialisations-for-indexable-buffers">Transfer Specialisations for Indexable Buffers</h1>
+<p>Try to use the whole length of the buffer if <code>n</code> is missing.</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">AnyDirection,</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>                  buf<span class="op">,</span> <span class="op">::</span><span class="dt">Union{UsingPtr, UsingIndex},</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>                  n<span class="op">::</span><span class="dt">Missing,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> <span class="fu">length</span>(buffer) <span class="op">-</span> (start <span class="op">-</span> <span class="fl">1</span>)</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(io<span class="op">,</span> buffer<span class="op">,</span> n<span class="op">,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<p>Transfer via pointers for arrays of bytes.</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">AnyDirection,</span> buf<span class="op">,</span> <span class="op">::</span><span class="dt">UsingPtr,</span> n<span class="op">,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    <span class="fu">checkbounds</span>(buf<span class="op">,</span> (start<span class="op">-</span><span class="fl">1</span>) <span class="op">+</span> n)</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    GC.<span class="pp">@preserve</span> buf <span class="fu">transfer</span>(io<span class="op">,</span> <span class="fu">pointer</span>(buf)<span class="op">,</span> n<span class="op">,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<p>Transfer one item at a time for indexable buffers that are not accessible through pointers.</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">,</span> d<span class="op">::</span><span class="dt">AnyDirection,</span> buf<span class="op">,</span> <span class="op">::</span><span class="dt">UsingIndex,</span> n<span class="op">,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    T <span class="op">=</span> <span class="fu">ioeltype</span>(buf)</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> <span class="fu">Ref</span><span class="dt">{T}(</span>)</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    count <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> i <span class="kw">in</span> <span class="fu">eachindex</span>(<span class="fu">view</span>(buf<span class="op">,</span> start<span class="op">:</span>(start<span class="op">-</span><span class="fl">1</span>)<span class="op">+</span>n))</span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>        d <span class="op">==</span> <span class="fu">In</span>() <span class="op">||</span> (x[] <span class="op">=</span> buf[i])</span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>        n <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> x<span class="op">,</span> <span class="fl">1</span><span class="op">,</span> <span class="fl">1</span><span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> n <span class="op">==</span> <span class="fl">0</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>            <span class="cf">break</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>        d <span class="op">==</span> <span class="fu">Out</span>() <span class="op">||</span> (buf[i] <span class="op">=</span> x[])</span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>        count <span class="op">+=</span> n</span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>        io <span class="op">=</span> <span class="fu">next_io_index</span>(io<span class="op">,</span> T)</span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> count</span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a><span class="fu">next_io_index</span>((io<span class="op">,</span> i)<span class="op">,</span> T) <span class="op">=</span> (io<span class="op">,</span> i <span class="op">+</span> <span class="fu">sizeof</span>(T))</span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a><span class="fu">next_io_index</span>(io<span class="op">::</span><span class="dt">TraitsIO,</span> T) <span class="op">=</span> io</span></code></pre></div>
+<h1 id="transfer-specialisations-for-iterable-buffers">Transfer Specialisations for Iterable Buffers</h1>
+<p>Iterate over <code>buf</code> (skip items until <code>start</code> index is reached). Transfer each item one at a time.</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">In,</span> buf<span class="op">,</span> <span class="op">::</span><span class="dt">FromIteration,</span> n<span class="op">,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    count <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> x <span class="kw">in</span> buf</span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> start <span class="op">&gt;</span> <span class="fl">1</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>            start <span class="op">-=</span> <span class="fl">1</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>            <span class="cf">continue</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>        n <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> <span class="fu">Ref</span>(x)<span class="op">,</span> <span class="fl">1</span><span class="op">,</span> <span class="fl">1</span><span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> n <span class="op">==</span> <span class="fl">0</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>            <span class="cf">break</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>        count <span class="op">+=</span> n</span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>        io <span class="op">=</span> <span class="fu">next_io_index</span>(io<span class="op">,</span> <span class="fu">ioeltype</span>(buf))</span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> count</span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<h1 id="transfer-specialisations-for-iterable-buffers-1">Transfer Specialisations for Iterable Buffers</h1>
+<div class="sourceCode" id="cb18"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> <span class="op">::</span><span class="dt">ToPut,</span> a<span class="op">...</span>) <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> put<span class="op">!,</span> a<span class="op">...</span>)</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> <span class="op">::</span><span class="dt">ToPush,</span> a<span class="op">...</span>) <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> push<span class="op">!,</span> a<span class="op">...</span>)</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> <span class="op">::</span><span class="dt">FromPop,</span> a<span class="op">...</span>) <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> pop<span class="op">!,</span> a<span class="op">...</span>)</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> <span class="op">::</span><span class="dt">FromTake,</span> a<span class="op">...</span>) <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> dir<span class="op">,</span> buf<span class="op">,</span> take<span class="op">!,</span> a<span class="op">...</span>)</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">,</span> d<span class="op">::</span><span class="dt">TransferDirection,</span> buf<span class="op">,</span> f<span class="op">::</span><span class="dt">Function,</span> n<span class="op">,</span> start<span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@require</span> start <span class="op">==</span> <span class="fl">1</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>    T <span class="op">=</span> <span class="fu">ioeltype</span>(buf)</span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> <span class="fu">Ref</span><span class="dt">{T}(</span>)</span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    count <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> count <span class="op">&lt;</span> n</span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>        d <span class="op">==</span> <span class="fu">In</span>() <span class="op">||</span> (x[] <span class="op">=</span> <span class="fu">f</span>(buf))</span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a>        n <span class="op">=</span> <span class="fu">transfer</span>(io<span class="op">,</span> x<span class="op">,</span> <span class="fl">1</span><span class="op">,</span> <span class="fl">1</span><span class="op">,</span> a<span class="op">...</span>)</span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> n <span class="op">==</span> <span class="fl">0</span></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>            <span class="cf">break</span></span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a>        d <span class="op">==</span> <span class="fu">Out</span>() <span class="op">||</span> <span class="fu">f</span>(buf<span class="op">,</span> x[])</span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a>        count <span class="op">+=</span> n</span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a>        io <span class="op">=</span> <span class="fu">next_io_index</span>(io<span class="op">,</span> T)</span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> count</span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<h1 id="timeout-trait">Timeout Trait</h1>
+<div class="sourceCode" id="cb19"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co">#=</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="co">abstract type TimeoutSupport end</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="co">struct NoTimeout &lt;: TimeoutSupport end</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="co">struct ConfigurableTimeout &lt;: TimeoutSupport end</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="co">TimeoutSupport(x) = TimeoutSupport(typeof(x))</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="co">TimeoutSupport(::Type) = NoTimeout()</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a><span class="co">set_timeout(io, timeout) = set_timeout(io, TimeoutSupport(io), timeout)</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="co">set_timeout(io, ::NoTimeout, timeout) =</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="co">    timeout == Inf || throw(ArgumentError(&quot;$(typeof(io)) does not implement &quot; *</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="co">                                         &quot;IOTraits.ConfigurableTimeout&quot;))</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a><span class="co">default_timeout(io) = default_timeout(io, TimeoutSupport(io))</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a><span class="co">default_timeout(io, ::TimeoutSupport) = Inf</span></span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a><span class="co">default_deadline(io) = (t = default_timeout(io); t == Inf ? Inf : time() + t)</span></span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a><span class="co">=#</span></span></code></pre></div>
+<h1 id="total-size-trait">Total Size Trait</h1>
+<div class="sourceCode" id="cb20"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> TotalSize <span class="kw">end</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> UnknownTotalSize <span class="op">&lt;:</span><span class="dt"> TotalSize </span><span class="kw">end</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> InfiniteTotalSize <span class="op">&lt;:</span><span class="dt"> TotalSize </span><span class="kw">end</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> KnownTotalSize <span class="kw">end</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> VariableTotalSize <span class="op">&lt;:</span><span class="dt"> KnownTotalSize </span><span class="kw">end</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> FixedTotalSize <span class="op">&lt;:</span><span class="dt"> KnownTotalSize </span><span class="kw">end</span></span></code></pre></div>
+<h3 id="totalsize-data-size-trait."><code>TotalSize</code> – Data Size Trait.</h3>
+<p>The <code>TotalSize</code> trait describes how much data is available from an IO interface.</p>
+<p><code>TotalSize(typeof(io))</code> returns one of:</p>
+<ul>
+<li><code>VariableTotalSize()</code> – The total amount of data available can be queried using the <code>length</code> function. Note: the total size can change. e.g. new lines might be appended to a log file.</li>
+<li><code>FixedTotalSize()</code> – The amount of data is known and will not change. Applicable to block devices. Applicable to some network streams. e.g. a HTTP Message where Content-Length is known.</li>
+<li><code>InfiniteTotalSize()</code> – End of file will never be reached. Applicable to some device files.</li>
+<li><code>UnknownTotalSize()</code> – No known data size limit.</li>
+</ul>
+<div class="sourceCode" id="cb21"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="fu">TotalSize</span>(x) <span class="op">=</span> <span class="fu">TotalSize</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="fu">TotalSize</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">UnknownTotalSize</span>()</span></code></pre></div>
+<h1 id="transfer-size-trait">Transfer Size Trait</h1>
+<div class="sourceCode" id="cb22"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> TransferSize <span class="kw">end</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> UnknownTransferSize <span class="op">&lt;:</span><span class="dt"> TransferSize </span><span class="kw">end</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> KnownTransferSize <span class="op">&lt;:</span><span class="dt"> TransferSize </span><span class="kw">end</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> LimitedTransferSize <span class="op">&lt;:</span><span class="dt"> TransferSize </span><span class="kw">end</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> FixedTransferSize <span class="op">&lt;:</span><span class="dt"> TransferSize </span><span class="kw">end</span></span></code></pre></div>
+<h3 id="transfersize-transfer-size-trait."><code>TransferSize</code> – Transfer Size Trait.</h3>
+<p>The <code>TransferSize</code> trait describes how much data can be moved in a single transfer.</p>
+<p><code>TransferSize(typeof(io))</code> returns one of:</p>
+<ul>
+<li><code>UnknownTransferSize()</code> – Transfer size is not known in advance. The only way to know how much data is available is to attempt a transfer.</li>
+<li><code>KnownTransferSize()</code> – The amount of data immediately available for transfer can be queried using the <code>bytesavailable</code> function.</li>
+<li><code>LimitedTransferSize()</code> – The amount of data that can be moved in a single transfer is limited. e.g. by a device block size or buffer size. The maximum transfer size can queried using the <code>max_transfer_size</code> function. The amount of data immediately available for transfer can be queried using the <code>bytesavailable</code> function.</li>
+<li><code>FixedTransferSize()</code> – The amount of data moved by a single transfer is fixed. e.g. <code>/dev/input/event0</code> device always transfers <code>sizeof(input_event)</code> bytes.</li>
+</ul>
+<div class="sourceCode" id="cb23"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferSize</span>(x) <span class="op">=</span> <span class="fu">TransferSize</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferSize</span>(t<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">TransferSizeMechanism</span>(t) <span class="op">==</span> <span class="fu">NoSizeMechanism</span>() ?</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>                        <span class="fu">UnknownTransferSize</span>() <span class="op">:</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>                        <span class="fu">KnownTransferSize</span>()</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">bytesavailable</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">bytesavailable</span>(io<span class="op">,</span> <span class="fu">TransferSize</span>(io))</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a><span class="fu">bytesavailable</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">UnknownTransferSize)</span> <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a><span class="fu">max_transfer_size</span>(io) <span class="op">=</span> <span class="fu">max_transfer_size</span>(io<span class="op">,</span> <span class="fu">TransferSize</span>(io))</span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a><span class="fu">max_transfer_size</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">Union{UnknownTransferSize, KnownTransferSize})</span> <span class="op">=</span> <span class="cn">Inf</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> TransferSizeMechanism <span class="kw">end</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> NoSizeMechanism <span class="op">&lt;:</span><span class="dt"> TransferSizeMechanism </span><span class="kw">end</span></span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> SupportsFIONREAD <span class="op">&lt;:</span><span class="dt"> TransferSizeMechanism </span><span class="kw">end</span></span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> SuppoutsStatSize <span class="op">&lt;:</span><span class="dt"> TransferSizeMechanism </span><span class="kw">end</span></span></code></pre></div>
+<p><code>TransferSizeMechanism(typeof(io))</code> returns one of:</p>
+<ul>
+<li><code>SupportsFIONREAD()</code> – The underlying device supports <code>ioctl(2), FIONREAD</code>.</li>
+<li><code>SuppoutsStatSize()</code> – The underlying device supports <code>fstat(2), st_size</code>.</li>
+</ul>
+<div class="sourceCode" id="cb24"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferSizeMechanism</span>(x) <span class="op">=</span> <span class="fu">TransferSizeMechanism</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferSizeMechanism</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">NoSizeMechanism</span>()</span></code></pre></div>
+<h1 id="data-fragmentation-trait">Data Fragmentation Trait</h1>
+<div class="sourceCode" id="cb25"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> ReadFragmentation <span class="kw">end</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ReadsBytes         <span class="op">&lt;:</span><span class="dt"> ReadFragmentation </span><span class="kw">end</span></span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ReadsLines         <span class="op">&lt;:</span><span class="dt"> ReadFragmentation </span><span class="kw">end</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ReadsPackets       <span class="op">&lt;:</span><span class="dt"> ReadFragmentation </span><span class="kw">end</span></span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ReadsRequestedSize <span class="op">&lt;:</span><span class="dt"> ReadFragmentation </span><span class="kw">end</span></span></code></pre></div>
+<h3 id="readfragmentation-data-fragmentation-trait."><code>ReadFragmentation</code> – Data Fragmentation Trait.</h3>
+<p>The <code>ReadFragmentation</code> trait describes what guarantees an IO interface makes about fragmentation of data returned by the underlying <code>read(2)</code> system call.</p>
+<p><code>ReadFragmentation(typeof(io))</code> returns one of:</p>
+<ul>
+<li><p><code>ReadsBytes()</code> – No special guarantees about what is returned by <code>read(2)</code>. This is the default.</p></li>
+<li><p><code>ReadsLines()</code> – <code>read(2)</code> returns exactly one line at a time. Does not return partially buffered lines unless an explicit <code>EOL</code> or <code>EOF</code> control character is received. Applicable to Character devices in canonical mode. See <a href="https://man7.org/linux/man-pages/man3/termios.3.html">termios(3)</a>.</p></li>
+<li><p><code>ReadsPackets()</code> – <code>read(2)</code> returns exactly one packet at a time. Does not return partially buffered packets. Applicable to some sockets and pipes depending on configuration. e.g. See the <code>O_DIRECT</code> flag in <a href="https://man7.org/linux/man-pages/man2/pipe.2.html">pipe(2)</a>.</p></li>
+<li><p><code>ReadsRequestedSize()</code> – <code>read(2)</code> returns exactly the number of elements requested (or throws an exception). Applicable to local files and some virtual files (e.g. <code>/dev/random</code>, <code>/dev/null</code>).</p></li>
+</ul>
+<div class="sourceCode" id="cb26"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ReadFragmentation</span>(x) <span class="op">=</span> <span class="fu">ReadFragmentation</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a><span class="fu">ReadFragmentation</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">ReadsBytes</span>()</span></code></pre></div>
+<h1 id="performance-traits">Performance Traits</h1>
+<div class="sourceCode" id="cb27"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> TransferCost <span class="kw">end</span></span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> HighTransferCost <span class="op">&lt;:</span><span class="dt"> TransferCost </span><span class="kw">end</span></span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> LowTransferCost <span class="op">&lt;:</span><span class="dt"> TransferCost </span><span class="kw">end</span></span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferCost</span>(x) <span class="op">=</span> <span class="fu">TransferCost</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferCost</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">HighTransferCost</span>()</span></code></pre></div>
+<h1 id="cursor-traits">Cursor Traits</h1>
+<div class="sourceCode" id="cb28"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> CursorSupport <span class="kw">end</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> AbstractSeekable <span class="op">&lt;:</span><span class="dt"> CursorSupport </span><span class="kw">end</span></span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> NoCursors <span class="op">&lt;:</span><span class="dt"> CursorSupport </span><span class="kw">end</span></span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Seekable  <span class="op">&lt;:</span><span class="dt"> AbstractSeekable </span><span class="kw">end</span></span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Markable  <span class="op">&lt;:</span><span class="dt"> AbstractSeekable </span><span class="kw">end</span></span></code></pre></div>
+<h3 id="cursorsupport-seek-mark-trait."><code>CursorSupport</code> – Seek / Mark Trait.</h3>
+<p>The <code>CursorSupport</code> trait describes mark and seek capabilities.</p>
+<p><code>CursorSupport(typeof(io))</code> returns one of: * <code>NoCursors()</code> * <code>Seekable()</code> – Supports <code>seek</code>, <code>skip</code>, <code>seekstart</code> and <code>seekend</code>. * <code>Markable()</code> – Is seekable, and also supports <code>mark</code>, <code>ismarked</code>, <code>unmark</code>, <code>reset</code>.</p>
+<div class="sourceCode" id="cb29"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="fu">CursorSupport</span>(x) <span class="op">=</span> <span class="fu">CursorSupport</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="fu">CursorSupport</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">NoCursors</span>()</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> NotMarkable <span class="op">=</span> <span class="dt">Union</span>{NoCursors<span class="op">,</span>Seekable}</span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">seek</span>(io<span class="op">::</span><span class="dt">TraitsIO,</span> pos) <span class="op">=</span> <span class="fu">seek</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io)<span class="op">,</span> pos)</span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a><span class="fu">seek</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NoCursors,</span> pos) <span class="op">=</span> <span class="fu">trait_error</span>(io<span class="op">,</span> Seekable)</span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">skip</span>(io<span class="op">::</span><span class="dt">TraitsIO,</span> offset) <span class="op">=</span> <span class="fu">skip</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io)<span class="op">,</span> offset)</span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a><span class="fu">skip</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NoCursors,</span> offset) <span class="op">=</span> <span class="fu">trait_error</span>(io<span class="op">,</span> Seekable)</span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">position</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">position</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io))</span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a><span class="fu">position</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NoCursors)</span> <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-14"><a href="#cb29-14" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">seekend</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">seekend</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io))</span>
+<span id="cb29-15"><a href="#cb29-15" aria-hidden="true" tabindex="-1"></a><span class="fu">seekend</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NoCursors)</span> <span class="op">=</span> <span class="cn">nothing</span></span>
+<span id="cb29-16"><a href="#cb29-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-17"><a href="#cb29-17" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">mark</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">mark</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io))</span>
+<span id="cb29-18"><a href="#cb29-18" aria-hidden="true" tabindex="-1"></a><span class="fu">mark</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NotMarkable)</span> <span class="op">=</span> <span class="fu">trait_error</span>(io<span class="op">,</span> Markable)</span>
+<span id="cb29-19"><a href="#cb29-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-20"><a href="#cb29-20" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">unmark</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">unmark</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io))</span>
+<span id="cb29-21"><a href="#cb29-21" aria-hidden="true" tabindex="-1"></a><span class="fu">unmark</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NotMarkable)</span> <span class="op">=</span> <span class="fu">trait_error</span>(io<span class="op">,</span> Markable)</span>
+<span id="cb29-22"><a href="#cb29-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-23"><a href="#cb29-23" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">reset</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">reset</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io))</span>
+<span id="cb29-24"><a href="#cb29-24" aria-hidden="true" tabindex="-1"></a><span class="fu">reset</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NotMarkable)</span> <span class="op">=</span> <span class="fu">trait_error</span>(io<span class="op">,</span> Markable)</span>
+<span id="cb29-25"><a href="#cb29-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-26"><a href="#cb29-26" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">ismarked</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">ismarked</span>(io<span class="op">,</span> <span class="fu">CursorSupport</span>(io))</span>
+<span id="cb29-27"><a href="#cb29-27" aria-hidden="true" tabindex="-1"></a><span class="fu">ismarked</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">NotMarkable)</span> <span class="op">=</span> <span class="fu">trait_error</span>(io<span class="op">,</span> Markable)</span></code></pre></div>
+<h1 id="event-notification-mechanism-trait">Event Notification Mechanism Trait</h1>
+<div class="sourceCode" id="cb30"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> WaitingMechanism <span class="kw">end</span></span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> WaitBySleeping     <span class="op">&lt;:</span><span class="dt"> WaitingMechanism </span><span class="kw">end</span></span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> WaitUsingPosixPoll <span class="op">&lt;:</span><span class="dt"> WaitingMechanism </span><span class="kw">end</span></span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> WaitUsingEPoll     <span class="op">&lt;:</span><span class="dt"> WaitingMechanism </span><span class="kw">end</span></span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> WaitUsingPidFD     <span class="op">&lt;:</span><span class="dt"> WaitingMechanism </span><span class="kw">end</span></span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> WaitUsingKQueue    <span class="op">&lt;:</span><span class="dt"> WaitingMechanism </span><span class="kw">end</span></span></code></pre></div>
+<h3 id="waitingmechanism-event-notificaiton-mechanism-trait."><code>WaitingMechanism</code> – Event Notificaiton Mechanism Trait.</h3>
+<p>The <code>WaitingMechanism</code> trait describes ways of waiting for OS resources that are not immediately available. e.g. when <code>read(2)</code> returns <code>EAGAIN</code> (<code>EWOULDBLOCK</code>), or when <code>waitpid(2)</code> returns <code>0</code>.</p>
+<p>Resource types, <code>R</code>, that have an applicable <code>WaitingMechanism</code>, <code>T</code>, define a method of <code>Base.wait(::T, r::R)</code>.</p>
+<p>If a <code>WaitingMechanism</code>, <code>T</code>, is not available on a particular OS then <code>Base.isvalid(::T)</code> should be defined to return <code>false</code>.</p>
+<p><code>WaitingMechanism(typeof(io))</code> returns one of:</p>
+<ul>
+<li><p><code>WaitBySleeping</code> – Wait using a dumb retry/sleep loop (the default). This may be more efficient for small systems with simple IO requirements, or for systems that simply do not spend a lot of time waiting for IO.</p></li>
+<li><p><code>WaitUsingPosixPoll</code> – Wait using the POXSX <code>poll</code> mechanism. Wait for activity on a set of file descriptors. Applicable to FIFO pipes, sockets and character devices (but not local files). See <a href="https://man7.org/linux/man-pages/man2/poll.2.html"><code>poll(2)</code></a></p></li>
+<li><p><code>WaitUsingEPoll</code> – Wait using the Linux <code>epoll</code> mechanism. Like <code>poll</code> but scales better for workloads with a large number of waiting streams. See <a href="https://man7.org/linux/man-pages/man7/epoll.7.html"><code>epoll(7)</code></a></p></li>
+<li><p><code>WaitUsingKQueue</code> – Wait using the BSB <code>kqueue</code> mechanism. Like <code>epoll</code> but can also wait for files, processes, signals etc. See <a href="https://www.freebsd.org/cgi/man.cgi?kqueue"><code>kqueue(2)</code></a></p></li>
+<li><p><code>WaitUsingPidFD()</code> – Wait for process termination using the Linux <code>pidfd</code> mechanism. A <code>pidfd</code> is a special process monitoring file descriptor that can in turn be monitored by <code>poll</code> or <code>epoll</code>. See <a href="http://man7.org/linux/man-pages/man2/pidfd_open.2.html"><code>pidfd_open(2)</code></a>.</p></li>
+</ul>
+<p>TODO: Consider Linux AIO <code>io_getevents</code> for disk io?</p>
+<div class="sourceCode" id="cb31"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="fu">WaitingMechanism</span>(x) <span class="op">=</span> <span class="fu">WaitingMechanism</span>(<span class="fu">typeof</span>(x))</span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a><span class="fu">WaitingMechanism</span>(<span class="op">::</span><span class="dt">Type)</span> <span class="op">=</span> <span class="fu">WaitBySleeping</span>()</span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">isvalid</span>(<span class="op">::</span><span class="dt">WaitingMechanism)</span> <span class="op">=</span> <span class="cn">true</span></span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">isvalid</span>(<span class="op">::</span><span class="dt">WaitUsingEPoll)</span> <span class="op">=</span> <span class="bu">Sys</span>.<span class="fu">islinux</span>()</span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">isvalid</span>(<span class="op">::</span><span class="dt">WaitUsingPidFD)</span> <span class="op">=</span> <span class="bu">Sys</span>.<span class="fu">islinux</span>()</span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">isvalid</span>(<span class="op">::</span><span class="dt">WaitUsingKQueue)</span> <span class="op">=</span> <span class="bu">Sys</span>.<span class="fu">isbsd</span>() <span class="op">&amp;&amp;</span> <span class="cn">false</span> <span class="co"># not yet implemented.</span></span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-9"><a href="#cb31-9" aria-hidden="true" tabindex="-1"></a><span class="fu">firstvalid</span>(x<span class="op">,</span> xs<span class="op">...</span>) <span class="op">=</span> <span class="fu">isvalid</span>(x) ? x <span class="op">:</span> <span class="fu">firstvalid</span>(xs<span class="op">...</span>)</span>
+<span id="cb31-10"><a href="#cb31-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-11"><a href="#cb31-11" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> default_poll_mechanism <span class="op">=</span> <span class="fu">firstvalid</span>(<span class="fu">WaitUsingKQueue</span>()<span class="op">,</span></span>
+<span id="cb31-12"><a href="#cb31-12" aria-hidden="true" tabindex="-1"></a>                                          <span class="fu">WaitUsingEPoll</span>()<span class="op">,</span></span>
+<span id="cb31-13"><a href="#cb31-13" aria-hidden="true" tabindex="-1"></a>                                          <span class="fu">WaitUsingPosixPoll</span>()<span class="op">,</span></span>
+<span id="cb31-14"><a href="#cb31-14" aria-hidden="true" tabindex="-1"></a>                                          <span class="fu">WaitBySleeping</span>())</span>
+<span id="cb31-15"><a href="#cb31-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-16"><a href="#cb31-16" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">wait</span>(io<span class="op">::</span><span class="dt">TraitsIO)</span> <span class="op">=</span> <span class="fu">wait</span>(io<span class="op">,</span> <span class="fu">WaitingMechanism</span>(io))</span>
+<span id="cb31-17"><a href="#cb31-17" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">wait</span>(x<span class="op">,</span> <span class="op">::</span><span class="dt">WaitBySleeping)</span> <span class="op">=</span> <span class="fu">sleep</span>(<span class="fl">0.1</span>)</span></code></pre></div>
+<h2 id="preferred-polling-mechanism">Preferred Polling Mechanism</h2>
+<pre><code>set_poll_mechanism(name)</code></pre>
+<p>Configure the preferred event polling mechanism: “kqueue”, “epoll”, “poll”, or “sleep”.</p>
+<p>Note: this setting applies only to <code>poll(2)</code>-compatible file descriptors (i.e. it does not apply to local disk files).</p>
+<p>By default, IOTraits will try to choose the best available mechanism (see <code>default_poll_mechanism</code>).</p>
+<p>This setting is persistently stored through <a href="https://github.com/JuliaPackaging/Preferences.jl">Preferences.jl</a>.</p>
+<p>To find out what mechanism is used for a particular <code>FD</code> call: <code>WaitingMechanism(fd)</code></p>
+<div class="sourceCode" id="cb33"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">set_poll_mechanism</span>(x)</span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@require</span> <span class="fu">poll_mechanism</span>(x) <span class="op">!=</span> <span class="cn">nothing</span></span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@require</span> <span class="fu">isvalid</span>(<span class="fu">poll_mechanism</span>(x))</span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@set_preferences</span><span class="op">!</span>(<span class="st">&quot;waiting_mechanism&quot;</span> <span class="op">=&gt;</span> x)</span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@warn</span> <span class="st">&quot;Preferred IOTraits.WaitingMechanism set to $(poll_mechanism(x)).&quot;</span> <span class="op">*</span></span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a>          <span class="st">&quot;UnixIO must be recompiled for this setting to take effect.&quot;</span></span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-9"><a href="#cb33-9" aria-hidden="true" tabindex="-1"></a><span class="fu">poll_mechanism</span>(name) <span class="op">=</span> name <span class="op">==</span> <span class="st">&quot;kqueue&quot;</span> ? <span class="fu">WaitUsingKQueue</span>() <span class="op">:</span></span>
+<span id="cb33-10"><a href="#cb33-10" aria-hidden="true" tabindex="-1"></a>                       name <span class="op">==</span> <span class="st">&quot;epoll&quot;</span>  ? <span class="fu">WaitUsingEPoll</span>() <span class="op">:</span></span>
+<span id="cb33-11"><a href="#cb33-11" aria-hidden="true" tabindex="-1"></a>                       name <span class="op">==</span> <span class="st">&quot;poll&quot;</span>   ? <span class="fu">WaitUsingPosixPoll</span>() <span class="op">:</span></span>
+<span id="cb33-12"><a href="#cb33-12" aria-hidden="true" tabindex="-1"></a>                       name <span class="op">==</span> <span class="st">&quot;sleep&quot;</span>  ? <span class="fu">WaitBySleeping</span>() <span class="op">:</span></span>
+<span id="cb33-13"><a href="#cb33-13" aria-hidden="true" tabindex="-1"></a>                                          default_poll_mechanism</span>
+<span id="cb33-14"><a href="#cb33-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-15"><a href="#cb33-15" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> preferred_poll_mechanism <span class="op">=</span></span>
+<span id="cb33-16"><a href="#cb33-16" aria-hidden="true" tabindex="-1"></a>    <span class="fu">poll_mechanism</span>(<span class="pp">@load_preference</span>(<span class="st">&quot;waiting_mechanism&quot;</span>))</span></code></pre></div>
+<h1 id="null-io">Null IO</h1>
+<p><code>NullIn()</code> is an input IO that does nothing. It is intended to be used for testing IO Delegates.</p>
+<div class="sourceCode" id="cb34"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> NullIn <span class="op">&lt;:</span><span class="dt"> TraitsIO </span><span class="kw">end</span></span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferDirection</span>(<span class="op">::</span><span class="dt">Type{NullIn})</span> <span class="op">=</span> <span class="fu">In</span>()</span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a><span class="fu">transfer</span>(io<span class="op">::</span><span class="dt">NullIn,</span> buf<span class="op">::</span><span class="dt">Ptr{UInt8},</span> n<span class="op">;</span> kw<span class="op">...</span>) <span class="op">=</span> n</span>
+<span id="cb34-6"><a href="#cb34-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-7"><a href="#cb34-7" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">eof</span>(<span class="op">::</span><span class="dt">NullIn)</span> <span class="op">=</span> <span class="cn">false</span></span></code></pre></div>
+<h1 id="io-delegate">IO Delegate</h1>
+<div class="sourceCode" id="cb35"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> IODelegate{T<span class="op">&lt;:</span><span class="dt">TraitsIO</span>} <span class="op">&lt;:</span><span class="dt"> TraitsIO </span><span class="kw">end</span></span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> InDelegate{T} <span class="op">&lt;:</span><span class="dt"> IODelegate{T} </span><span class="kw">end</span></span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> FatInDelegate{T} <span class="op">&lt;:</span><span class="dt"> InDelegate{T} </span><span class="kw">end</span></span></code></pre></div>
+<pre><code>unwrap(::IODelegate) -&gt; IO</code></pre>
+<p>Retrieve the underlying IO that is wrapped by an <code>IODelegate</code>.</p>
+<div class="sourceCode" id="cb37"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="fu">unwrap</span>(d<span class="op">::</span><span class="dt">IODelegate)</span> <span class="op">=</span> d.io</span>
+<span id="cb37-2"><a href="#cb37-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb37-3"><a href="#cb37-3" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferDirection</span>(<span class="op">::</span><span class="dt">Type{&lt;:IODelegate{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">TransferDirection</span>(T)</span>
+<span id="cb37-4"><a href="#cb37-4" aria-hidden="true" tabindex="-1"></a><span class="fu">TotalSize</span>(<span class="op">::</span><span class="dt">Type{&lt;:IODelegate{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">TotalSize</span>(T)</span>
+<span id="cb37-5"><a href="#cb37-5" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferSize</span>(<span class="op">::</span><span class="dt">Type{&lt;:IODelegate{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">TransferSize</span>(T)</span>
+<span id="cb37-6"><a href="#cb37-6" aria-hidden="true" tabindex="-1"></a><span class="fu">ReadFragmentation</span>(<span class="op">::</span><span class="dt">Type{&lt;:IODelegate{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">ReadFragmentation</span>(T)</span>
+<span id="cb37-7"><a href="#cb37-7" aria-hidden="true" tabindex="-1"></a><span class="fu">WaitingMechanism</span>(<span class="op">::</span><span class="dt">Type{&lt;:IODelegate{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">WaitingMechanism</span>(T)</span>
+<span id="cb37-8"><a href="#cb37-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb37-9"><a href="#cb37-9" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">isopen</span>(io<span class="op">::</span><span class="dt">IODelegate)</span> <span class="op">=</span> <span class="fu">isopen</span>(io.io)</span>
+<span id="cb37-10"><a href="#cb37-10" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">eof</span>(io<span class="op">::</span><span class="dt">IODelegate)</span> <span class="op">=</span> <span class="fu">eof</span>(io.io)</span>
+<span id="cb37-11"><a href="#cb37-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb37-12"><a href="#cb37-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb37-13"><a href="#cb37-13" aria-hidden="true" tabindex="-1"></a><span class="fu">include</span>(<span class="st">&quot;wrap.jl&quot;</span>)</span></code></pre></div>
+<p>Create wrapper methods for function <code>f</code>. Create a separate method with a specific 2nd argument type for each 2nd argument type used in pre-existing methods of <code>f</code> (to method selection ambiguity). e.g.</p>
+<pre><code>f(io::IODelegate; kw...) = f(unwrap(io); kw...)
+f(io::IODelegate, a2::T, a...; kw...) = f(unwrap(io), a2, a...; kw...)</code></pre>
+<div class="sourceCode" id="cb39"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="kw">macro</span> <span class="fu">delegate_io</span>(f<span class="op">,</span> D<span class="op">=</span>FatInDelegate<span class="op">,</span> u<span class="op">=</span>unwrap)</span>
+<span id="cb39-2"><a href="#cb39-2" aria-hidden="true" tabindex="-1"></a>    methods <span class="op">=</span> [</span>
+<span id="cb39-3"><a href="#cb39-3" aria-hidden="true" tabindex="-1"></a>      <span class="fu">esc</span>(<span class="op">:</span>(( <span class="op">$</span><span class="fu">f</span>(io<span class="op">::</span><span class="dt">$D              </span><span class="op">;</span> k<span class="op">...</span>) <span class="op">=</span> <span class="op">$</span><span class="fu">f</span>(<span class="op">$</span><span class="fu">u</span>(io)          <span class="op">;</span> k<span class="op">...</span>)   )))<span class="op">,</span></span>
+<span id="cb39-4"><a href="#cb39-4" aria-hidden="true" tabindex="-1"></a>    ( <span class="fu">esc</span>(<span class="op">:</span>(( <span class="op">$</span><span class="fu">f</span>(io<span class="op">::</span><span class="dt">$D,</span> a<span class="op">::</span><span class="dt">$T,</span> aa<span class="op">...;</span> k<span class="op">...</span>) <span class="op">=</span> <span class="op">$</span><span class="fu">f</span>(<span class="op">$</span><span class="fu">u</span>(io)<span class="op">,</span> a<span class="op">,</span> aa<span class="op">...;</span> k<span class="op">...</span>)   )))</span>
+<span id="cb39-5"><a href="#cb39-5" aria-hidden="true" tabindex="-1"></a>                         <span class="cf">for</span> T <span class="kw">in</span> <span class="fu">arg2_types</span>(<span class="bu">Main</span>.<span class="fu">eval</span>(<span class="op">:</span>(<span class="op">$</span>f)))</span>
+<span id="cb39-6"><a href="#cb39-6" aria-hidden="true" tabindex="-1"></a>    )<span class="op">...</span>]</span>
+<span id="cb39-7"><a href="#cb39-7" aria-hidden="true" tabindex="-1"></a>    (m<span class="op">-&gt;</span><span class="pp">@debug</span> m).(methods)</span>
+<span id="cb39-8"><a href="#cb39-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">Expr</span>(<span class="op">:</span>block<span class="op">,</span> methods<span class="op">...</span>)</span>
+<span id="cb39-9"><a href="#cb39-9" aria-hidden="true" tabindex="-1"></a><span class="cf">end</span></span>
+<span id="cb39-10"><a href="#cb39-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-11"><a href="#cb39-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb39-12"><a href="#cb39-12" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.read<span class="op">!</span></span>
+<span id="cb39-13"><a href="#cb39-13" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.readuntil</span>
+<span id="cb39-14"><a href="#cb39-14" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.readline</span>
+<span id="cb39-15"><a href="#cb39-15" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.countlines</span>
+<span id="cb39-16"><a href="#cb39-16" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.eachline</span>
+<span id="cb39-17"><a href="#cb39-17" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.readeach</span>
+<span id="cb39-18"><a href="#cb39-18" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.unsafe_read</span>
+<span id="cb39-19"><a href="#cb39-19" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.peek</span>
+<span id="cb39-20"><a href="#cb39-20" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.readavailable</span>
+<span id="cb39-21"><a href="#cb39-21" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.mark</span>
+<span id="cb39-22"><a href="#cb39-22" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.ismarked</span>
+<span id="cb39-23"><a href="#cb39-23" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.unmark</span>
+<span id="cb39-24"><a href="#cb39-24" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.reset</span>
+<span id="cb39-25"><a href="#cb39-25" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.seek</span>
+<span id="cb39-26"><a href="#cb39-26" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.position</span>
+<span id="cb39-27"><a href="#cb39-27" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.seekend</span>
+<span id="cb39-28"><a href="#cb39-28" aria-hidden="true" tabindex="-1"></a><span class="pp">@delegate_io</span> <span class="bu">Base</span>.seekstart</span></code></pre></div>
+<h1 id="bufferedio">BufferedIO</h1>
+<pre><code>BufferedIn(io; [buffer_size=65536]) -&gt; IO</code></pre>
+<p>Create a wrapper around <code>io</code> to buffer input transfers.</p>
+<p>The wrapper will try to read <code>buffer_size</code> bytes in every transfer from <code>io</code>.</p>
+<p><code>io</code> must not be used directly after the wrapper is created.</p>
+<div class="sourceCode" id="cb41"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb41-1"><a href="#cb41-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> BufferedIn{T} <span class="op">&lt;:</span><span class="dt"> InDelegate{T}</span></span>
+<span id="cb41-2"><a href="#cb41-2" aria-hidden="true" tabindex="-1"></a>    io<span class="op">::</span><span class="dt">T</span></span>
+<span id="cb41-3"><a href="#cb41-3" aria-hidden="true" tabindex="-1"></a>    buffer<span class="op">::</span><span class="dt">IOBuffer</span></span>
+<span id="cb41-4"><a href="#cb41-4" aria-hidden="true" tabindex="-1"></a>    buffer_size<span class="op">::</span><span class="dt">Int</span></span>
+<span id="cb41-5"><a href="#cb41-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">function</span> <span class="fu">BufferedIn</span>(io<span class="op">::</span><span class="dt">T;</span> buffer_size<span class="op">=</span><span class="fl">65536</span>) <span class="kw">where</span> T</span>
+<span id="cb41-6"><a href="#cb41-6" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@require</span> <span class="fu">TransferDirection</span>(io) <span class="op">==</span> <span class="fu">In</span>()</span>
+<span id="cb41-7"><a href="#cb41-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="fu">ReadFragmentation</span>(io) <span class="op">!=</span> <span class="fu">ReadsBytes</span>()</span>
+<span id="cb41-8"><a href="#cb41-8" aria-hidden="true" tabindex="-1"></a>            <span class="pp">@warn</span> <span class="st">&quot;Wrapping $(typeof(io)) with `BufferedIn` causes &quot;</span> <span class="op">*</span></span>
+<span id="cb41-9"><a href="#cb41-9" aria-hidden="true" tabindex="-1"></a>                  <span class="st">&quot;the $(ReadFragmentation(io)) trait to be ignored!&quot;</span></span>
+<span id="cb41-10"><a href="#cb41-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb41-11"><a href="#cb41-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="fu">TransferCost</span>(io) <span class="op">==</span> <span class="fu">LowTransferCost</span>()</span>
+<span id="cb41-12"><a href="#cb41-12" aria-hidden="true" tabindex="-1"></a>            <span class="pp">@warn</span> <span class="st">&quot;$(typeof(io)) already has LowTransfterCost. &quot;</span> <span class="op">*</span></span>
+<span id="cb41-13"><a href="#cb41-13" aria-hidden="true" tabindex="-1"></a>                  <span class="st">&quot;Wrapping with `BufferedIn` may not improve performance.&quot;</span></span>
+<span id="cb41-14"><a href="#cb41-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb41-15"><a href="#cb41-15" aria-hidden="true" tabindex="-1"></a>        <span class="fu">new</span><span class="dt">{T}(</span>io<span class="op">,</span> <span class="fu">PipeBuffer</span>()<span class="op">,</span> buffer_size)</span>
+<span id="cb41-16"><a href="#cb41-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">end</span></span>
+<span id="cb41-17"><a href="#cb41-17" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb41-18"><a href="#cb41-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-19"><a href="#cb41-19" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferCost</span>(<span class="op">::</span><span class="dt">Type{BufferedIn{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">LowTransferCost</span>()</span>
+<span id="cb41-20"><a href="#cb41-20" aria-hidden="true" tabindex="-1"></a><span class="fu">TransferSize</span>(<span class="op">::</span><span class="dt">Type{BufferedIn{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">LimitedTransferSize</span>()</span>
+<span id="cb41-21"><a href="#cb41-21" aria-hidden="true" tabindex="-1"></a><span class="fu">ReadFragmentation</span>(<span class="op">::</span><span class="dt">Type{BufferedIn{T}})</span> <span class="kw">where</span> T <span class="op">=</span> <span class="fu">ReadsBytes</span>()</span>
+<span id="cb41-22"><a href="#cb41-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-23"><a href="#cb41-23" aria-hidden="true" tabindex="-1"></a><span class="fu">max_transfer_size</span>(io<span class="op">::</span><span class="dt">BufferedIn)</span> <span class="op">=</span> io.buffer_size</span>
+<span id="cb41-24"><a href="#cb41-24" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">bytesavailable</span>(io<span class="op">::</span><span class="dt">BufferedIn)</span> <span class="op">=</span> <span class="fu">bytesavailable</span>(io.buffer) </span>
+<span id="cb41-25"><a href="#cb41-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-26"><a href="#cb41-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-27"><a href="#cb41-27" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">eof</span>(ib<span class="op">::</span><span class="dt">BufferedIn)</span> <span class="op">=</span> ( <span class="fu">bytesavailable</span>(ib.buffer) <span class="op">==</span> <span class="fl">0</span></span>
+<span id="cb41-28"><a href="#cb41-28" aria-hidden="true" tabindex="-1"></a>                          <span class="op">&amp;&amp;</span> <span class="fu">eof</span>(io.io) )</span>
+<span id="cb41-29"><a href="#cb41-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-30"><a href="#cb41-30" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">close</span>(ib<span class="op">::</span><span class="dt">BufferedIn)</span> <span class="op">=</span> ( <span class="fu">take!</span>(ib.buffer)<span class="op">;</span></span>
+<span id="cb41-31"><a href="#cb41-31" aria-hidden="true" tabindex="-1"></a>                               <span class="bu">Base</span>.<span class="fu">close</span>(ib.io) )</span>
+<span id="cb41-32"><a href="#cb41-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-33"><a href="#cb41-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-34"><a href="#cb41-34" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> DEFAULT_BUFFER_SIZE <span class="op">=</span> <span class="fl">65536</span></span>
+<span id="cb41-35"><a href="#cb41-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-36"><a href="#cb41-36" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">refill_internal_buffer</span>(io<span class="op">::</span><span class="dt">BufferedIn,</span> n<span class="op">=</span><span class="fl">1</span><span class="op">;</span> kw<span class="op">...</span>)</span>
+<span id="cb41-37"><a href="#cb41-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-38"><a href="#cb41-38" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> <span class="fu">max</span>(DEFAULT_BUFFER_SIZE<span class="op">,</span> n)</span>
+<span id="cb41-39"><a href="#cb41-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-40"><a href="#cb41-40" aria-hidden="true" tabindex="-1"></a>    <span class="co"># If needed, expand the buffer.</span></span>
+<span id="cb41-41"><a href="#cb41-41" aria-hidden="true" tabindex="-1"></a>    iob <span class="op">=</span> io.buffer</span>
+<span id="cb41-42"><a href="#cb41-42" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@assert</span> iob.append</span>
+<span id="cb41-43"><a href="#cb41-43" aria-hidden="true" tabindex="-1"></a>    <span class="bu">Base</span>.<span class="fu">ensureroom</span>(iob<span class="op">,</span> n)</span>
+<span id="cb41-44"><a href="#cb41-44" aria-hidden="true" tabindex="-1"></a>    <span class="fu">checkbounds</span>(iob.data<span class="op">,</span> iob.size<span class="op">+</span>n)</span>
+<span id="cb41-45"><a href="#cb41-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-46"><a href="#cb41-46" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Transfer from the IO to the buffer.</span></span>
+<span id="cb41-47"><a href="#cb41-47" aria-hidden="true" tabindex="-1"></a>    p <span class="op">=</span> <span class="fu">pointer</span>(iob.data<span class="op">,</span> iob.size<span class="op">+</span><span class="fl">1</span>)</span>
+<span id="cb41-48"><a href="#cb41-48" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> GC.<span class="pp">@preserve</span> iob <span class="fu">transfer</span>(ib.io<span class="op">,</span> p<span class="op">,</span> n<span class="op">;</span> kw<span class="op">...</span>)</span>
+<span id="cb41-49"><a href="#cb41-49" aria-hidden="true" tabindex="-1"></a>    iob.size <span class="op">+=</span> n</span>
+<span id="cb41-50"><a href="#cb41-50" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb41-51"><a href="#cb41-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-52"><a href="#cb41-52" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-53"><a href="#cb41-53" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(io<span class="op">::</span><span class="dt">BufferedIn,</span> buffer<span class="op">::</span><span class="dt">Ptr{UInt8},</span> n<span class="op">;</span> kw<span class="op">...</span>)</span>
+<span id="cb41-54"><a href="#cb41-54" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@info</span> <span class="st">&quot;transfer(t::BufferedIn, ...)&quot;</span></span>
+<span id="cb41-55"><a href="#cb41-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-56"><a href="#cb41-56" aria-hidden="true" tabindex="-1"></a>    iob <span class="op">=</span> io.buffer</span>
+<span id="cb41-57"><a href="#cb41-57" aria-hidden="true" tabindex="-1"></a>    <span class="co"># If there are not enough bytes in `iob`, read more from the wrapped IO.</span></span>
+<span id="cb41-58"><a href="#cb41-58" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="fu">bytesavailable</span>(iob) <span class="op">&lt;</span> n</span>
+<span id="cb41-59"><a href="#cb41-59" aria-hidden="true" tabindex="-1"></a>        <span class="fu">refill_internal_buffer</span>(io<span class="op">,</span> n)</span>
+<span id="cb41-60"><a href="#cb41-60" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb41-61"><a href="#cb41-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-62"><a href="#cb41-62" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Read available bytes from `iob` into the caller&#39;s `buffer`.</span></span>
+<span id="cb41-63"><a href="#cb41-63" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> <span class="fu">min</span>(n<span class="op">,</span> <span class="fu">bytesavailable</span>(iob))</span>
+<span id="cb41-64"><a href="#cb41-64" aria-hidden="true" tabindex="-1"></a>    <span class="fu">unsafe_read</span>(iob<span class="op">,</span> buffer<span class="op">,</span> n)</span>
+<span id="cb41-65"><a href="#cb41-65" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> n</span>
+<span id="cb41-66"><a href="#cb41-66" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb41-67"><a href="#cb41-67" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-68"><a href="#cb41-68" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-69"><a href="#cb41-69" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="bu">Base</span>.<span class="fu">readavailable</span>(io<span class="op">::</span><span class="dt">BufferedIn;</span> kw<span class="op">...</span>)</span>
+<span id="cb41-70"><a href="#cb41-70" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">Base</span>.<span class="fu">bytesavailable</span>(io.buffer) <span class="op">==</span> <span class="fl">0</span></span>
+<span id="cb41-71"><a href="#cb41-71" aria-hidden="true" tabindex="-1"></a>        <span class="fu">refill_internal_buffer</span>(io<span class="op">;</span> kw<span class="op">...</span>)</span>
+<span id="cb41-72"><a href="#cb41-72" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb41-73"><a href="#cb41-73" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="fu">readavailable</span>(io.buffer)</span>
+<span id="cb41-74"><a href="#cb41-74" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb41-75"><a href="#cb41-75" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-76"><a href="#cb41-76" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-77"><a href="#cb41-77" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="bu">Base</span>.<span class="fu">read</span>(io<span class="op">::</span><span class="dt">BufferedIn,</span> <span class="op">::</span><span class="dt">Type{UInt8};</span> kw<span class="op">...</span>)</span>
+<span id="cb41-78"><a href="#cb41-78" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">Base</span>.<span class="fu">bytesavailable</span>(io.buffer) <span class="op">!=</span> <span class="fl">0</span></span>
+<span id="cb41-79"><a href="#cb41-79" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="bu">Base</span>.<span class="fu">read</span>(io.buffer<span class="op">,</span> <span class="dt">UInt8</span>)</span>
+<span id="cb41-80"><a href="#cb41-80" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb41-81"><a href="#cb41-81" aria-hidden="true" tabindex="-1"></a>    <span class="fu">eof</span>(io.io<span class="op">;</span> kw<span class="op">...</span>) <span class="op">&amp;&amp;</span> <span class="fu">throw</span>(<span class="fu">EOFError</span>())</span>
+<span id="cb41-82"><a href="#cb41-82" aria-hidden="true" tabindex="-1"></a>    <span class="fu">refill_internal_buffer</span>(io<span class="op">;</span> kw<span class="op">...</span>)</span>
+<span id="cb41-83"><a href="#cb41-83" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">Base</span>.<span class="fu">read</span>(io.buffer<span class="op">,</span> <span class="dt">UInt8</span>)</span>
+<span id="cb41-84"><a href="#cb41-84" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb41-85"><a href="#cb41-85" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-86"><a href="#cb41-86" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb41-87"><a href="#cb41-87" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="bu">Base</span>.<span class="fu">peek</span>(io<span class="op">::</span><span class="dt">BufferedIn,</span> <span class="op">::</span><span class="dt">Type{T};</span> kw<span class="op">...</span>) <span class="kw">where</span> T</span>
+<span id="cb41-88"><a href="#cb41-88" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">Base</span>.<span class="fu">bytesavailable</span>(io.buffer) <span class="op">&gt;=</span> <span class="fu">sizeof</span>(T)</span>
+<span id="cb41-89"><a href="#cb41-89" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="bu">Base</span>.<span class="fu">peek</span>(io.buffer<span class="op">,</span> T)</span>
+<span id="cb41-90"><a href="#cb41-90" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb41-91"><a href="#cb41-91" aria-hidden="true" tabindex="-1"></a>    <span class="fu">eof</span>(io.io<span class="op">;</span> kw<span class="op">...</span>) <span class="op">&amp;&amp;</span> <span class="fu">throw</span>(<span class="fu">EOFError</span>())</span>
+<span id="cb41-92"><a href="#cb41-92" aria-hidden="true" tabindex="-1"></a>    <span class="fu">refill_internal_buffer</span>(io<span class="op">;</span> kw<span class="op">...</span>)</span>
+<span id="cb41-93"><a href="#cb41-93" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">Base</span>.<span class="fu">peek</span>(io.buffer<span class="op">,</span> T)</span>
+<span id="cb41-94"><a href="#cb41-94" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<h1 id="intransaction">InTransaction</h1>
+<div class="sourceCode" id="cb42"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb42-1"><a href="#cb42-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> InTransaction{T} <span class="op">&lt;:</span><span class="dt"> FatInDelegate{T}</span></span>
+<span id="cb42-2"><a href="#cb42-2" aria-hidden="true" tabindex="-1"></a>    io<span class="op">::</span><span class="dt">T</span></span>
+<span id="cb42-3"><a href="#cb42-3" aria-hidden="true" tabindex="-1"></a>    deadline<span class="op">::</span><span class="dt">Float64</span></span>
+<span id="cb42-4"><a href="#cb42-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">function</span> <span class="fu">InTransaction</span>(io<span class="op">::</span><span class="dt">T,</span> timeout) <span class="kw">where</span> T</span>
+<span id="cb42-5"><a href="#cb42-5" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@require</span> timeout <span class="op">&lt;</span> <span class="cn">Inf</span></span>
+<span id="cb42-6"><a href="#cb42-6" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@require</span> <span class="fu">IODiretion</span>(io) <span class="op">==</span> <span class="fu">In</span>()</span>
+<span id="cb42-7"><a href="#cb42-7" aria-hidden="true" tabindex="-1"></a>        <span class="fu">new</span><span class="dt">{T}(</span>io<span class="op">,</span> <span class="fu">time</span>() <span class="op">+</span> timeout)</span>
+<span id="cb42-8"><a href="#cb42-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">end</span></span>
+<span id="cb42-9"><a href="#cb42-9" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb42-10"><a href="#cb42-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb42-11"><a href="#cb42-11" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">transfer</span>(t<span class="op">::</span><span class="dt">InTransaction{T},</span> buffer<span class="op">,</span> n<span class="op">;</span> kw<span class="op">...</span>) <span class="kw">where</span> T</span>
+<span id="cb42-12"><a href="#cb42-12" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@info</span> <span class="st">&quot;transfer(t::InTransaction, ...)&quot;</span></span>
+<span id="cb42-13"><a href="#cb42-13" aria-hidden="true" tabindex="-1"></a>    <span class="fu">transfer</span>(t.io<span class="op">,</span> buffer<span class="op">,</span> n<span class="op">;</span> deadline <span class="op">=</span> t.deadline)</span>
+<span id="cb42-14"><a href="#cb42-14" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<h1 id="base.io-interface">Base.IO Interface</h1>
+<div class="sourceCode" id="cb43"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb43-1"><a href="#cb43-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> TraitsIODriver <span class="op">&lt;:</span><span class="dt"> TraitsIO </span><span class="kw">end</span></span>
+<span id="cb43-2"><a href="#cb43-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-3"><a href="#cb43-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-4"><a href="#cb43-4" aria-hidden="true" tabindex="-1"></a><span class="bu">Base</span>.<span class="fu">read</span>(io<span class="op">::</span><span class="dt">TraitsIO,</span> <span class="op">::</span><span class="dt">Type{UInt8})</span> <span class="op">=</span></span>
+<span id="cb43-5"><a href="#cb43-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">read</span>(io<span class="op">,</span> <span class="fu">TransferCost</span>(io)<span class="op">,</span> <span class="dt">UInt8</span>)</span>
+<span id="cb43-6"><a href="#cb43-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-7"><a href="#cb43-7" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">read</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">LowTransferCost,</span> <span class="op">::</span><span class="dt">Type{UInt8})</span></span>
+<span id="cb43-8"><a href="#cb43-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="fu">ReadFragmentation</span>(io) <span class="op">==</span> <span class="fu">ReadsLines</span>()</span>
+<span id="cb43-9"><a href="#cb43-9" aria-hidden="true" tabindex="-1"></a>        <span class="pp">@warn</span> <span class="st">&quot;read(::$(typeof(io)), UInt8): &quot;</span> <span class="op">*</span></span>
+<span id="cb43-10"><a href="#cb43-10" aria-hidden="true" tabindex="-1"></a>              <span class="st">&quot;Reading one byte at a time is not efficient.&quot;</span> <span class="op">*</span></span>
+<span id="cb43-11"><a href="#cb43-11" aria-hidden="true" tabindex="-1"></a>              <span class="st">&quot;`readline` should be used instead (see IOTraits.ReadsLines).&quot;</span></span>
+<span id="cb43-12"><a href="#cb43-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb43-13"><a href="#cb43-13" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> <span class="fu">Ref</span><span class="dt">{UInt8}(</span>)</span>
+<span id="cb43-14"><a href="#cb43-14" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> GC.<span class="pp">@preserve</span> x <span class="fu">transfer</span>(io <span class="op">=&gt;</span> <span class="fu">pointer</span>(x)<span class="op">,</span> <span class="fl">1</span>)</span>
+<span id="cb43-15"><a href="#cb43-15" aria-hidden="true" tabindex="-1"></a>    n <span class="op">==</span> <span class="fl">1</span> <span class="op">||</span> <span class="fu">throw</span>(<span class="fu">EOFError</span>())</span>
+<span id="cb43-16"><a href="#cb43-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x[]</span>
+<span id="cb43-17"><a href="#cb43-17" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb43-18"><a href="#cb43-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-19"><a href="#cb43-19" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">read</span>(io<span class="op">,</span> f<span class="op">::</span><span class="dt">ReadsLines,</span> <span class="op">::</span><span class="dt">LowTransferCost,</span> <span class="op">::</span><span class="dt">Type{UInt8})</span></span>
+<span id="cb43-20"><a href="#cb43-20" aria-hidden="true" tabindex="-1"></a>    <span class="fu">read</span>(io<span class="op">,</span> <span class="fu">ReadsBytes</span>()<span class="op">,</span> <span class="fu">LowTransferCost</span>()<span class="op">,</span> <span class="dt">UInt8</span>)</span>
+<span id="cb43-21"><a href="#cb43-21" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb43-22"><a href="#cb43-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-23"><a href="#cb43-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb43-24"><a href="#cb43-24" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="bu">Base</span>.<span class="fu">read</span>(io<span class="op">::</span><span class="dt">TraitsIO,</span> <span class="op">::</span><span class="dt">Type{String};</span> timeout<span class="op">=</span><span class="cn">Inf</span>)</span>
+<span id="cb43-25"><a href="#cb43-25" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> timeout <span class="op">==</span> <span class="cn">Inf</span></span>
+<span id="cb43-26"><a href="#cb43-26" aria-hidden="true" tabindex="-1"></a>        <span class="fu">String</span>(<span class="fu">read</span>(io<span class="op">,</span> <span class="dt">UInt8</span>))</span>
+<span id="cb43-27"><a href="#cb43-27" aria-hidden="true" tabindex="-1"></a>    <span class="cf">else</span></span>
+<span id="cb43-28"><a href="#cb43-28" aria-hidden="true" tabindex="-1"></a>        <span class="fu">String</span>(<span class="fu">read</span>(<span class="fu">InTransaction</span>(io<span class="op">,</span> timeout)<span class="op">,</span> <span class="dt">UInt8</span>))</span>
+<span id="cb43-29"><a href="#cb43-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb43-30"><a href="#cb43-30" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<h2 id="function-unsafe_read">Function <code>unsafe_read</code></h2>
+<div class="sourceCode" id="cb44"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb44-1"><a href="#cb44-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="bu">Base</span>.<span class="fu">unsafe_read</span>(io<span class="op">::</span><span class="dt">TraitsIO,</span> buf<span class="op">::</span><span class="dt">Ptr{UInt8},</span> nbytes<span class="op">::</span><span class="dt">UInt)</span></span>
+<span id="cb44-2"><a href="#cb44-2" aria-hidden="true" tabindex="-1"></a>    nread <span class="op">=</span> <span class="fl">0</span></span>
+<span id="cb44-3"><a href="#cb44-3" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@debug</span> <span class="st">&quot;Base.unsafe_read(io::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt)&quot;</span></span>
+<span id="cb44-4"><a href="#cb44-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> nread <span class="op">&lt;</span> nbytes</span>
+<span id="cb44-5"><a href="#cb44-5" aria-hidden="true" tabindex="-1"></a>        n <span class="op">=</span> <span class="fu">transfer</span>(io <span class="op">=&gt;</span> buf <span class="op">+</span> nread<span class="op">,</span> nbytes <span class="op">-</span> nread)</span>
+<span id="cb44-6"><a href="#cb44-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> n <span class="op">==</span> <span class="fl">0</span></span>
+<span id="cb44-7"><a href="#cb44-7" aria-hidden="true" tabindex="-1"></a>            <span class="fu">throw</span>(<span class="fu">EOFError</span>())</span>
+<span id="cb44-8"><a href="#cb44-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb44-9"><a href="#cb44-9" aria-hidden="true" tabindex="-1"></a>        nread <span class="op">+=</span> n</span>
+<span id="cb44-10"><a href="#cb44-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb44-11"><a href="#cb44-11" aria-hidden="true" tabindex="-1"></a>    <span class="pp">@ensure</span> nread <span class="op">==</span> nbytes</span>
+<span id="cb44-12"><a href="#cb44-12" aria-hidden="true" tabindex="-1"></a>    <span class="cn">nothing</span></span>
+<span id="cb44-13"><a href="#cb44-13" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code></pre></div>
+<h2 id="function-readline">Function <code>readline</code></h2>
+<p>Defaults to <code>Base.readline()</code>.</p>
+<div class="sourceCode" id="cb45"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb45-1"><a href="#cb45-1" aria-hidden="true" tabindex="-1"></a><span class="co">#=</span></span>
+<span id="cb45-2"><a href="#cb45-2" aria-hidden="true" tabindex="-1"></a><span class="co">function Base.readline(io::TraitsIO; timeout=Inf, kw...)</span></span>
+<span id="cb45-3"><a href="#cb45-3" aria-hidden="true" tabindex="-1"></a><span class="co">    deadline = timeout_deadline(timeout)</span></span>
+<span id="cb45-4"><a href="#cb45-4" aria-hidden="true" tabindex="-1"></a><span class="co">    readline(io, ReadFragmentation(io); deadline, kw...)</span></span>
+<span id="cb45-5"><a href="#cb45-5" aria-hidden="true" tabindex="-1"></a><span class="co">end</span></span>
+<span id="cb45-6"><a href="#cb45-6" aria-hidden="true" tabindex="-1"></a><span class="co">readline(io, ::ReadFragmentation; deadline, kw...) =</span></span>
+<span id="cb45-7"><a href="#cb45-7" aria-hidden="true" tabindex="-1"></a><span class="co">    @invoke Base.readline(IOTransaction(io, deadline)::IO; kw...)</span></span>
+<span id="cb45-8"><a href="#cb45-8" aria-hidden="true" tabindex="-1"></a><span class="co">    =#</span></span>
+<span id="cb45-9"><a href="#cb45-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb45-10"><a href="#cb45-10" aria-hidden="true" tabindex="-1"></a><span class="fu">readline</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">ReadsBytes;</span> kw<span class="op">...</span>) <span class="op">=</span> <span class="pp">@invoke</span> <span class="bu">Base</span>.<span class="fu">readline</span>(io<span class="op">::</span><span class="dt">IO;</span> kw<span class="op">...</span>)</span></code></pre></div>
+<h3 id="readlineio-readslines"><code>readline(io, ::ReadsLines)</code></h3>
+<p>Character or Terminal devices (<code>S_IFCHR</code>) are usually used in “canonical mode” (<code>ICANON</code>).</p>
+<blockquote>
+<p>In canonical mode: Input is made available line by line. <a href="https://man7.org/linux/man-pages/man3/termios.3.html">termios(3)</a>.</p>
+</blockquote>
+<p>For these devices calling <code>read(2)</code> will usually return exactly one line. It will only ever return an incomplete line if length exceeded <code>MAX_CANON</code>. Note that in canonical mode a line can be terminated by <code>CEOF</code> rather than “”, but <code>read(2)</code> does not return the <code>CEOF</code> character (e.g. when the shell sends a “bash$” prompt without a newline).</p>
+<p>If <code>io</code> has the <code>ReadsLines</code> trait calling <code>transfer</code> once will read one line.</p>
+<div class="sourceCode" id="cb46"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb46-1"><a href="#cb46-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">readline</span>(io<span class="op">,</span> <span class="op">::</span><span class="dt">ReadsLines;</span> keep<span class="op">::</span><span class="dt">Bool=</span><span class="cn">false</span><span class="op">,</span> kw<span class="op">...</span>)</span>
+<span id="cb46-2"><a href="#cb46-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-3"><a href="#cb46-3" aria-hidden="true" tabindex="-1"></a>    v <span class="op">=</span> <span class="bu">Base</span>.<span class="fu">StringVector</span>(max_line)</span>
+<span id="cb46-4"><a href="#cb46-4" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> <span class="fu">transfer</span>(io <span class="op">=&gt;</span> v<span class="op">;</span> kw<span class="op">...</span>)</span>
+<span id="cb46-5"><a href="#cb46-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> n <span class="op">==</span> <span class="fl">0</span></span>
+<span id="cb46-6"><a href="#cb46-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;&quot;</span></span>
+<span id="cb46-7"><a href="#cb46-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb46-8"><a href="#cb46-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-9"><a href="#cb46-9" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Trim end of line characters.</span></span>
+<span id="cb46-10"><a href="#cb46-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="op">!</span>keep <span class="op">&amp;&amp;</span> n <span class="op">&gt;</span> <span class="fl">0</span> <span class="op">&amp;&amp;</span> (v[n] <span class="op">==</span> <span class="fu">UInt8</span>(<span class="ch">&#39;\r&#39;</span>) <span class="op">||</span></span>
+<span id="cb46-11"><a href="#cb46-11" aria-hidden="true" tabindex="-1"></a>                             v[n] <span class="op">==</span> <span class="fu">UInt8</span>(<span class="ch">&#39;\n&#39;</span>))</span>
+<span id="cb46-12"><a href="#cb46-12" aria-hidden="true" tabindex="-1"></a>        n <span class="op">-=</span> <span class="fl">1</span></span>
+<span id="cb46-13"><a href="#cb46-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb46-14"><a href="#cb46-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-15"><a href="#cb46-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="fu">String</span>(<span class="fu">resize!</span>(v<span class="op">,</span> n))</span>
+<span id="cb46-16"><a href="#cb46-16" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb46-17"><a href="#cb46-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-18"><a href="#cb46-18" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> max_line <span class="op">=</span> <span class="fl">1024</span> <span class="co"># UnixIO.C.MAX_CANON</span></span></code></pre></div>
+<h1 id="exports">Exports</h1>
+<div class="sourceCode" id="cb47"><pre class="sourceCode julia"><code class="sourceCode julia"><span id="cb47-1"><a href="#cb47-1" aria-hidden="true" tabindex="-1"></a><span class="kw">export</span> TraitsIO<span class="op">,</span> TransferDirection<span class="op">,</span> transfer</span>
+<span id="cb47-2"><a href="#cb47-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-3"><a href="#cb47-3" aria-hidden="true" tabindex="-1"></a><span class="kw">export</span> TotalSize<span class="op">,</span></span>
+<span id="cb47-4"><a href="#cb47-4" aria-hidden="true" tabindex="-1"></a>       UnknownTotalSize<span class="op">,</span> InfiniteTotalSize<span class="op">,</span> KnownTotalSize<span class="op">,</span> VariableTotalSize<span class="op">,</span></span>
+<span id="cb47-5"><a href="#cb47-5" aria-hidden="true" tabindex="-1"></a>       FixedTotalSize</span>
+<span id="cb47-6"><a href="#cb47-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-7"><a href="#cb47-7" aria-hidden="true" tabindex="-1"></a><span class="kw">export</span> TransferSize<span class="op">,</span></span>
+<span id="cb47-8"><a href="#cb47-8" aria-hidden="true" tabindex="-1"></a>       UnknownTransferSize<span class="op">,</span> KnownTransferSize<span class="op">,</span> LimitedTransferSize<span class="op">,</span></span>
+<span id="cb47-9"><a href="#cb47-9" aria-hidden="true" tabindex="-1"></a>       FixedTransferSize</span>
+<span id="cb47-10"><a href="#cb47-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-11"><a href="#cb47-11" aria-hidden="true" tabindex="-1"></a><span class="kw">export</span> TransferSizeMechanism<span class="op">,</span></span>
+<span id="cb47-12"><a href="#cb47-12" aria-hidden="true" tabindex="-1"></a>       NoSizeMechanism<span class="op">,</span> SupportsFIONREAD<span class="op">,</span> SuppoutsStatSize</span>
+<span id="cb47-13"><a href="#cb47-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-14"><a href="#cb47-14" aria-hidden="true" tabindex="-1"></a><span class="kw">export</span> ReadFragmentation<span class="op">,</span></span>
+<span id="cb47-15"><a href="#cb47-15" aria-hidden="true" tabindex="-1"></a>       ReadsBytes<span class="op">,</span> ReadsLines<span class="op">,</span> ReadsPackets<span class="op">,</span> ReadsRequestedSize</span>
+<span id="cb47-16"><a href="#cb47-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-17"><a href="#cb47-17" aria-hidden="true" tabindex="-1"></a><span class="kw">export</span> WaitingMechanism<span class="op">,</span></span>
+<span id="cb47-18"><a href="#cb47-18" aria-hidden="true" tabindex="-1"></a>       WaitBySleeping<span class="op">,</span> WaitUsingPosixPoll<span class="op">,</span> WaitUsingEPoll<span class="op">,</span> WaitUsingPidFD<span class="op">,</span></span>
+<span id="cb47-19"><a href="#cb47-19" aria-hidden="true" tabindex="-1"></a>       WaitUsingKQueue</span>
+<span id="cb47-20"><a href="#cb47-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-21"><a href="#cb47-21" aria-hidden="true" tabindex="-1"></a><span class="kw">using</span> ReadmeDocs</span>
+<span id="cb47-22"><a href="#cb47-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-23"><a href="#cb47-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-24"><a href="#cb47-24" aria-hidden="true" tabindex="-1"></a><span class="fu">include</span>(<span class="st">&quot;ioinfo.jl&quot;</span>)</span>
+<span id="cb47-25"><a href="#cb47-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-26"><a href="#cb47-26" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span> <span class="co"># module IOTraits</span></span></code></pre></div>
+<h1 id="method-resolution-info">Method Resolution Info</h1>
+<h2 id="bufferedin">BufferedIn</h2>
+<h2 id="io-traits">IO Traits</h2>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Trait</th>
+<th style="text-align: left;">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">TransferDirection</td>
+<td style="text-align: left;">IOTraits.In()</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">TotalSize</td>
+<td style="text-align: left;">UnknownTotalSize()</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">TransferSize</td>
+<td style="text-align: left;">LimitedTransferSize()</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">ReadFragmentation</td>
+<td style="text-align: left;">ReadsBytes()</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">WaitingMechanism</td>
+<td style="text-align: left;">WaitBySleeping()</td>
+</tr>
+</tbody>
+</table>
+<h2 id="core-read-methods">Core Read Methods</h2>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 17%" />
+<col style="width: 15%" />
+<col style="width: 55%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">isreadable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:169</td>
+<td style="text-align: left;">isreadable(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Type{UInt8}</td>
+<td style="text-align: left;">IOTraits.jl:976</td>
+<td style="text-align: left;">read(io::IOTraits.BufferedIn, ::Type{UInt8}; kw…)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">unsafe_read</td>
+<td style="text-align: left;">Ptr{UInt8}, UInt64</td>
+<td style="text-align: left;">IOTraits.jl:1056</td>
+<td style="text-align: left;">unsafe_read(io::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt64)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">eof</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:926</td>
+<td style="text-align: left;">eof(ib::IOTraits.BufferedIn)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">reseteof</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:28</td>
+<td style="text-align: left;">reseteof(x::IO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">peek</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:267</td>
+<td style="text-align: left;">peek(s)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">peek</td>
+<td style="text-align: left;">Type{UInt8}</td>
+<td style="text-align: left;">IOTraits.jl:986</td>
+<td style="text-align: left;">peek(io::IOTraits.BufferedIn, ::Type{T}; kw…) where T</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">peek</td>
+<td style="text-align: left;">Type{Int64}</td>
+<td style="text-align: left;">IOTraits.jl:986</td>
+<td style="text-align: left;">peek(io::IOTraits.BufferedIn, ::Type{T}; kw…) where T</td>
+</tr>
+</tbody>
+</table>
+<h2 id="core-write-methods">Core Write Methods</h2>
+<table>
+<colgroup>
+<col style="width: 13%" />
+<col style="width: 20%" />
+<col style="width: 17%" />
+<col style="width: 48%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">iswritable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:170</td>
+<td style="text-align: left;">iswritable(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">write</td>
+<td style="text-align: left;">UInt8</td>
+<td style="text-align: left;">io.jl:224</td>
+<td style="text-align: left;">write(s::IO, x::UInt8)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">unsafe_write</td>
+<td style="text-align: left;">Ptr{UInt8}, UInt64</td>
+<td style="text-align: left;">io.jl:235</td>
+<td style="text-align: left;">unsafe_write(s::IO, p::Ptr{UInt8}, n::UInt64)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">flush</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:1118</td>
+<td style="text-align: left;">flush(io::IO)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="state-methods">State Methods</h2>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">close</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:929</td>
+<td style="text-align: left;">close(ib::IOTraits.BufferedIn)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">isopen</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:843</td>
+<td style="text-align: left;">isopen(io::IOTraits.IODelegate)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">lock</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:26</td>
+<td style="text-align: left;">lock(::IO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">unlock</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:27</td>
+<td style="text-align: left;">unlock(::IO)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cursor-methods">Cursor Methods</h2>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">skip</td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;">IOTraits.jl:674</td>
+<td style="text-align: left;">skip(io::TraitsIO, offset)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">seek</td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;">IOTraits.jl:671</td>
+<td style="text-align: left;">seek(io::TraitsIO, pos)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">position</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:677</td>
+<td style="text-align: left;">position(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">seekstart</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">iostream.jl:154</td>
+<td style="text-align: left;">seekstart(s::IO)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">seekend</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:680</td>
+<td style="text-align: left;">seekend(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">mark</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:683</td>
+<td style="text-align: left;">mark(io::TraitsIO)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">unmark</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:686</td>
+<td style="text-align: left;">unmark(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">reset</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:689</td>
+<td style="text-align: left;">reset(io::TraitsIO)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">ismarked</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:692</td>
+<td style="text-align: left;">ismarked(io::TraitsIO)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="extra-read-methods">Extra Read Methods</h2>
+<table>
+<colgroup>
+<col style="width: 7%" />
+<col style="width: 12%" />
+<col style="width: 7%" />
+<col style="width: 73%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">bytesavailable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:923</td>
+<td style="text-align: left;">bytesavailable(io::IOTraits.BufferedIn)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">max_transfer_size</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:922</td>
+<td style="text-align: left;">max_transfer_size(io::IOTraits.BufferedIn)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readavailable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:968</td>
+<td style="text-align: left;">readavailable(io::IOTraits.BufferedIn; kw…)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readline</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:506</td>
+<td style="text-align: left;">readline(s::IO; keep)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Type{Int64}</td>
+<td style="text-align: left;">io.jl:726</td>
+<td style="text-align: left;">read(s::IO, T::Union{Type{Float16}, Type{Float32}, Type{Float64}, Type{Int128}, Type{Int16}, Type{Int32}, Type{Int64}, Type{UInt128}, Type{UInt16}, Type{UInt32}, Type{UInt64}})</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Type{String}</td>
+<td style="text-align: left;">IOTraits.jl:1043</td>
+<td style="text-align: left;">read(io::TraitsIO, ::Type{String}; timeout)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;">io.jl:958</td>
+<td style="text-align: left;">read(s::IO, nb::Integer)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readbytes!</td>
+<td style="text-align: left;">Vector{UInt8}</td>
+<td style="text-align: left;">io.jl:934</td>
+<td style="text-align: left;">readbytes!(s::IO, b::AbstractArray{UInt8, N} where N)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readbytes!</td>
+<td style="text-align: left;">AbstractVector{UInt8}, Number</td>
+<td style="text-align: left;">io.jl:934</td>
+<td style="text-align: left;">readbytes!(s::IO, b::AbstractArray{UInt8, N} where N, nb)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">read!</td>
+<td style="text-align: left;">AbstractArray</td>
+<td style="text-align: left;">io.jl:738</td>
+<td style="text-align: left;">read!(s::IO, a::AbstractArray{T, N} where N) where T</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readuntil</td>
+<td style="text-align: left;">Any</td>
+<td style="text-align: left;">io.jl:786</td>
+<td style="text-align: left;">readuntil(s::IO, delim::T; keep) where T</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">countlines</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:1175</td>
+<td style="text-align: left;">countlines(io::IO; eol)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">eachline</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:1004</td>
+<td style="text-align: left;">eachline(stream::IO; keep)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readeach</td>
+<td style="text-align: left;">Type{Char}</td>
+<td style="text-align: left;">io.jl:1047</td>
+<td style="text-align: left;">readeach(stream::IOT, T::Type) where IOT&lt;:IO</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readeach</td>
+<td style="text-align: left;">Type{Int64}</td>
+<td style="text-align: left;">io.jl:1047</td>
+<td style="text-align: left;">readeach(stream::IOT, T::Type) where IOT&lt;:IO</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readeach</td>
+<td style="text-align: left;">Type{UInt8}</td>
+<td style="text-align: left;">io.jl:1047</td>
+<td style="text-align: left;">readeach(stream::IOT, T::Type) where IOT&lt;:IO</td>
+</tr>
+</tbody>
+</table>
+<h2 id="nullin">NullIn</h2>
+<h2 id="io-traits-1">IO Traits</h2>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Trait</th>
+<th style="text-align: left;">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">TransferDirection</td>
+<td style="text-align: left;">IOTraits.In()</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">TotalSize</td>
+<td style="text-align: left;">UnknownTotalSize()</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">TransferSize</td>
+<td style="text-align: left;">UnknownTransferSize()</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">ReadFragmentation</td>
+<td style="text-align: left;">ReadsBytes()</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">WaitingMechanism</td>
+<td style="text-align: left;">WaitBySleeping()</td>
+</tr>
+</tbody>
+</table>
+<h2 id="core-read-methods-1">Core Read Methods</h2>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 17%" />
+<col style="width: 15%" />
+<col style="width: 55%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">isreadable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:169</td>
+<td style="text-align: left;">isreadable(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Type{UInt8}</td>
+<td style="text-align: left;">IOTraits.jl:1023</td>
+<td style="text-align: left;">read(io::TraitsIO, ::Type{UInt8})</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">unsafe_read</td>
+<td style="text-align: left;">Ptr{UInt8}, UInt64</td>
+<td style="text-align: left;">IOTraits.jl:1056</td>
+<td style="text-align: left;">unsafe_read(io::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt64)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">eof</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:820</td>
+<td style="text-align: left;">eof(::IOTraits.NullIn)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">reseteof</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:28</td>
+<td style="text-align: left;">reseteof(x::IO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">peek</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:267</td>
+<td style="text-align: left;">peek(s)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">peek</td>
+<td style="text-align: left;">Type{UInt8}</td>
+<td style="text-align: left;">io.jl:259</td>
+<td style="text-align: left;">peek(s::IO, ::Type{T}) where T</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">peek</td>
+<td style="text-align: left;">Type{Int64}</td>
+<td style="text-align: left;">io.jl:259</td>
+<td style="text-align: left;">peek(s::IO, ::Type{T}) where T</td>
+</tr>
+</tbody>
+</table>
+<h2 id="core-write-methods-1">Core Write Methods</h2>
+<table>
+<colgroup>
+<col style="width: 13%" />
+<col style="width: 20%" />
+<col style="width: 17%" />
+<col style="width: 48%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">iswritable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:170</td>
+<td style="text-align: left;">iswritable(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">write</td>
+<td style="text-align: left;">UInt8</td>
+<td style="text-align: left;">io.jl:224</td>
+<td style="text-align: left;">write(s::IO, x::UInt8)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">unsafe_write</td>
+<td style="text-align: left;">Ptr{UInt8}, UInt64</td>
+<td style="text-align: left;">io.jl:235</td>
+<td style="text-align: left;">unsafe_write(s::IO, p::Ptr{UInt8}, n::UInt64)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">flush</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:1118</td>
+<td style="text-align: left;">flush(io::IO)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="state-methods-1">State Methods</h2>
+<table>
+<colgroup>
+<col style="width: 3%" />
+<col style="width: 1%" />
+<col style="width: 3%" />
+<col style="width: 90%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">close</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">⚠️</td>
+<td style="text-align: left;">ErrorException(“no unique matching method found for the specified argument types”)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">MethodError: no method matching close(::IOTraits.NullIn)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">Closest candidates are:</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">close(!Matched::Union{Base.AsyncCondition, Timer}) at asyncevent.jl:136</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">close(!Matched::Union{FileWatching.FileMonitor, FileWatching.FolderMonitor, FileWatching.PollingFileWatcher}) at /Users/julia/buildbot/worker/package_macos64/build/usr/share/julia/stdlib/v1.6/FileWatching/src/FileWatching.jl:304</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">close(!Matched::Base.GenericIOBuffer{T}) where T at iobuffer.jl:337</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">…</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">isopen</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">⚠️</td>
+<td style="text-align: left;">ErrorException(“no unique matching method found for the specified argument types”)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">MethodError: no method matching isopen(::IOTraits.NullIn)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">Closest candidates are:</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">isopen(!Matched::Base.DevNull) at coreio.jl:14</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">isopen(!Matched::Base.AbstractPipe) at io.jl:385</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">isopen(!Matched::Base.GenericIOBuffer) at iobuffer.jl:351</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">…</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">lock</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:26</td>
+<td style="text-align: left;">lock(::IO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">unlock</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:27</td>
+<td style="text-align: left;">unlock(::IO)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cursor-methods-1">Cursor Methods</h2>
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">skip</td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;">IOTraits.jl:674</td>
+<td style="text-align: left;">skip(io::TraitsIO, offset)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">seek</td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;">IOTraits.jl:671</td>
+<td style="text-align: left;">seek(io::TraitsIO, pos)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">position</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:677</td>
+<td style="text-align: left;">position(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">seekstart</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">iostream.jl:154</td>
+<td style="text-align: left;">seekstart(s::IO)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">seekend</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:680</td>
+<td style="text-align: left;">seekend(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">mark</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:683</td>
+<td style="text-align: left;">mark(io::TraitsIO)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">unmark</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:686</td>
+<td style="text-align: left;">unmark(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">reset</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:689</td>
+<td style="text-align: left;">reset(io::TraitsIO)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">ismarked</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:692</td>
+<td style="text-align: left;">ismarked(io::TraitsIO)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="extra-read-methods-1">Extra Read Methods</h2>
+<table>
+<colgroup>
+<col style="width: 7%" />
+<col style="width: 12%" />
+<col style="width: 7%" />
+<col style="width: 73%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Function</th>
+<th style="text-align: left;">Args</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Method</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">bytesavailable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:575</td>
+<td style="text-align: left;">bytesavailable(io::TraitsIO)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">max_transfer_size</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">IOTraits.jl:577</td>
+<td style="text-align: left;">max_transfer_size(io)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readavailable</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">⚠️</td>
+<td style="text-align: left;">ErrorException(“no unique matching method found for the specified argument types”)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">MethodError: no method matching readavailable(::IOTraits.NullIn)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">Closest candidates are:</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">readavailable(!Matched::Base.AbstractPipe) at io.jl:380</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">readavailable(!Matched::Base.GenericIOBuffer) at iobuffer.jl:470</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">readavailable(!Matched::IOStream) at iostream.jl:379</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">…</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readline</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:506</td>
+<td style="text-align: left;">readline(s::IO; keep)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Type{Int64}</td>
+<td style="text-align: left;">io.jl:726</td>
+<td style="text-align: left;">read(s::IO, T::Union{Type{Float16}, Type{Float32}, Type{Float64}, Type{Int128}, Type{Int16}, Type{Int32}, Type{Int64}, Type{UInt128}, Type{UInt16}, Type{UInt32}, Type{UInt64}})</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Type{String}</td>
+<td style="text-align: left;">IOTraits.jl:1043</td>
+<td style="text-align: left;">read(io::TraitsIO, ::Type{String}; timeout)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">read</td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;">io.jl:958</td>
+<td style="text-align: left;">read(s::IO, nb::Integer)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readbytes!</td>
+<td style="text-align: left;">Vector{UInt8}</td>
+<td style="text-align: left;">io.jl:934</td>
+<td style="text-align: left;">readbytes!(s::IO, b::AbstractArray{UInt8, N} where N)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readbytes!</td>
+<td style="text-align: left;">AbstractVector{UInt8}, Number</td>
+<td style="text-align: left;">io.jl:934</td>
+<td style="text-align: left;">readbytes!(s::IO, b::AbstractArray{UInt8, N} where N, nb)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">read!</td>
+<td style="text-align: left;">AbstractArray</td>
+<td style="text-align: left;">io.jl:738</td>
+<td style="text-align: left;">read!(s::IO, a::AbstractArray{T, N} where N) where T</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readuntil</td>
+<td style="text-align: left;">Any</td>
+<td style="text-align: left;">io.jl:786</td>
+<td style="text-align: left;">readuntil(s::IO, delim::T; keep) where T</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">countlines</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:1175</td>
+<td style="text-align: left;">countlines(io::IO; eol)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">eachline</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">io.jl:1004</td>
+<td style="text-align: left;">eachline(stream::IO; keep)</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readeach</td>
+<td style="text-align: left;">Type{Char}</td>
+<td style="text-align: left;">io.jl:1047</td>
+<td style="text-align: left;">readeach(stream::IOT, T::Type) where IOT&lt;:IO</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">readeach</td>
+<td style="text-align: left;">Type{Int64}</td>
+<td style="text-align: left;">io.jl:1047</td>
+<td style="text-align: left;">readeach(stream::IOT, T::Type) where IOT&lt;:IO</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">readeach</td>
+<td style="text-align: left;">Type{UInt8}</td>
+<td style="text-align: left;">io.jl:1047</td>
+<td style="text-align: left;">readeach(stream::IOT, T::Type) where IOT&lt;:IO</td>
+</tr>
+</tbody>
+</table>
+</main>
+
+<script>
+;(function() {
+  // Non-essential if user has JavaScript off. Just makes checkboxes look nicer.
+  var selector = '.task-list > li > input[type="checkbox"]';
+  var checkboxes = document.querySelectorAll(selector);
+  Array.from(checkboxes).forEach((checkbox) => {
+    var wasChecked = checkbox.checked;
+    checkbox.disabled = false;
+    checkbox.addEventListener('click', (ev) => {ev.target.checked = wasChecked});
+  });
+})();
+</script>
+</body>
+</html>
