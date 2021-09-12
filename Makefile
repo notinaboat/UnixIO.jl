@@ -8,6 +8,39 @@ export JULIA_UNIX_IO_DEBUG_LEVEL=0
 
 all: README.md test
 
+#README_DOCS_DIR := $(shell julia --project -e \
+#                     "using ReadmeDocs; println(pkgdir(ReadmeDocs))")
+README_DOCS_DIR := ../ReadmeDocs
+
+HTTP_ROOT := $(CURDIR)
+HTML_TITLE_LINK := https://github.com/notinaboat/UnixIO.jl
+
+include $(README_DOCS_DIR)/Makefile.shared
+
+HTML_FILES = packages/IOTraits/README.md.html
+HTML_FILES = packages/IOTraits/README.md.html
+.PHONY: docs
+docs: $(HTML_FILES:%=docs/%)
+	cp -a $(README_DOCS_DIR)/css docs
+
+docs/%.html: %.html
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+docgen:
+	while kqwait packages/IOTraits/src/ ; do \
+		$(MAKE) docs; \
+		osascript -e 'tell application "Safari"' -e \
+    		'set docUrl to URL of document 1' -e \
+    		'set URL of document 1 to docUrl' -e \
+		'end tell' ; \
+	done
+	
+packages/IOTraits/README.md: packages/IOTraits/src/IOTraits.jl.md
+	cp $< $@.tmp
+	$(JL) -e "using IOTraits; IOTraits.dump_info()" >> $@.tmp
+	mv $@.tmp $@
+
 JL := ln -sf Manifest.toml.1.6 Manifest.toml; julia
 JL15 := ln -sf Manifest.toml.1.5 Manifest.toml; julia15
 
@@ -15,10 +48,10 @@ JL15 := ln -sf Manifest.toml.1.5 Manifest.toml; julia15
 README.md:
 	julia --project -e "using $(PACKAGE); $(PACKAGE).readme_docs_generate()"
 
-doc:
-	cd docs; \
-	$(JL) -e "using Documenter, $(PACKAGE); \
-	          makedocs(sitename=\"$(PACKAGE)\")"
+#doc:
+#	cd docs; \
+#	$(JL) -e "using Documenter, $(PACKAGE); \
+#	          makedocs(sitename=\"$(PACKAGE)\")"
 
 .PHONY: test
 test:
@@ -32,6 +65,9 @@ testpt:
 
 jl:
 	$(JL) -i -e "using $(PACKAGE)"
+
+revise:
+	$(JL) -i -e "using Revise; using $(PACKAGE)"
 
 jl15:
 	$(JL15)

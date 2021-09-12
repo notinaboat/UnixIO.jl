@@ -60,6 +60,12 @@ git-tree-sha1 = "727e463cfebd0c7b999bbf3e9e7e16f254b94193"
 uuid = "34da2185-b29b-5c13-b0c7-acf172513d20"
 version = "3.34.0"
 
+[[ConstructionBase]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "f74e9d5388b8620b4cee35d4c5a618dd4dc547f4"
+uuid = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
+version = "1.3.0"
+
 [[Crayons]]
 git-tree-sha1 = "3f71217b538d7aaee0b69ab47d9b7724ca8afa0d"
 uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
@@ -104,6 +110,9 @@ path = "packages/DuplexIOs"
 uuid = "c20a4678-4bba-4df2-bd7d-5c4d76fa7d4b"
 version = "0.1.1"
 
+[[FileWatching]]
+uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
+
 [[IOCapture]]
 deps = ["Logging", "Random"]
 git-tree-sha1 = "f7be53659ab06ddc986428d3a9dcc95f6fa6705a"
@@ -111,10 +120,10 @@ uuid = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
 version = "0.2.2"
 
 [[IOTraits]]
-deps = ["Documenter", "Preconditions", "Preferences", "ReadmeDocs"]
+deps = ["Crayons", "Documenter", "InteractiveUtils", "Markdown", "Mmap", "Preconditions", "Preferences", "ReadmeDocs", "Unitful"]
 path = "packages/IOTraits"
 uuid = "8782331d-1791-483a-a4c8-2712d2c95aed"
-version = "0.1.0"
+version = "0.1.1"
 
 [[InteractiveUtils]]
 deps = ["Markdown"]
@@ -131,6 +140,12 @@ deps = ["Dates", "Mmap", "Parsers", "Unicode"]
 git-tree-sha1 = "8076680b162ada2a031f707ac7b4953e30667a37"
 uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 version = "0.21.2"
+
+[[JuliaInterpreter]]
+deps = ["CodeTracking", "InteractiveUtils", "Random", "UUIDs"]
+git-tree-sha1 = "76112882a210564b616dbdf371fc0fbbae28d31f"
+uuid = "aa1ae85d-cabe-5617-a682-6adf51b2e16a"
+version = "0.8.19"
 
 [[LibCURL]]
 deps = ["LibCURL_jll", "MozillaCACerts_jll"]
@@ -169,6 +184,12 @@ deps = ["Crayons", "DataStructures", "Dates", "Logging", "LoggingExtras", "Test"
 git-tree-sha1 = "64a9c9b528ff6416de30d3d894ce918fbad8000c"
 uuid = "c2339e6d-2e7f-4cf9-92d2-844738085fb8"
 version = "0.2.2"
+
+[[LoweredCodeUtils]]
+deps = ["JuliaInterpreter"]
+git-tree-sha1 = "9e3377afc44de61ae2abeaee4fa3a971f9a5c0bc"
+uuid = "6f1432cf-f94c-5a45-995e-cdbf5db27b0b"
+version = "2.0.0"
 
 [[Markdown]]
 deps = ["Base64"]
@@ -209,8 +230,8 @@ deps = ["Artifacts", "Dates", "Downloads", "LibGit2", "Libdl", "Logging", "Markd
 uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 
 [[Preconditions]]
-deps = ["ReadmeDocs"]
-git-tree-sha1 = "3b114354f3b0ee9c946c509276b5da7fe3abd8bc"
+deps = ["Preferences", "ReadmeDocs"]
+path = "../Preconditions"
 uuid = "059f9e2d-edd5-4920-8ad6-95789b106d09"
 version = "0.2.0"
 
@@ -236,6 +257,18 @@ uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 git-tree-sha1 = "8119d6552b8888bbe5c0e65cf9bd4ea6055d9075"
 uuid = "c63066b3-de92-487d-9da7-7c375a07912b"
 version = "0.2.1"
+
+[[Requires]]
+deps = ["UUIDs"]
+git-tree-sha1 = "4036a3bd08ac7e968e27c203d45f5fff15020621"
+uuid = "ae029012-a4dd-5104-9daa-d747884805df"
+version = "1.1.3"
+
+[[Revise]]
+deps = ["CodeTracking", "Distributed", "FileWatching", "JuliaInterpreter", "LibGit2", "LoweredCodeUtils", "OrderedCollections", "Pkg", "REPL", "Requires", "UUIDs", "Unicode"]
+git-tree-sha1 = "f8bc496aae6ff4b506e9fca0f8127900aac833a3"
+uuid = "295af30f-e4ad-537b-8983-00126c2a3abe"
+version = "3.1.15"
 
 [[SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
@@ -287,6 +320,12 @@ uuid = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 
 [[Unicode]]
 uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
+
+[[Unitful]]
+deps = ["ConstructionBase", "Dates", "LinearAlgebra", "Random"]
+git-tree-sha1 = "a981a8ef8714cba2fd9780b22fd7a469e7aaf56d"
+uuid = "1986cc42-f94f-5a68-af5c-568840ba703d"
+version = "1.9.0"
 
 [[UnixIOHeaders]]
 deps = ["CEnum", "CInclude"]

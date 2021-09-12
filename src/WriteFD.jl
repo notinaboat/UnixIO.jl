@@ -13,10 +13,12 @@ shutdown(fd::FD{Out}) = shutdown(fd, C.SHUT_WR)
 end
 
 
+#=
 Base.iswritable(fd::FD{Out}) = Base.isopen(fd)
 
 
 Base.isreadable(::FD{Out}) = false
+=#
 
 
 @db 1 function Base.unsafe_write(fd::FD{Out}, buf::Ptr{UInt8}, nbytes::UInt)

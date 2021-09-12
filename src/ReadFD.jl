@@ -44,10 +44,12 @@ is still alive and returning `0` if it has terminated.
 end
 
 
+#=
 @db function Base.close(fd::FD{In})
     take!(fd.buffer)
     @invoke Base.close(fd::FD)
 end
+=#
 
 
 shutdown(fd::FD{In}) = shutdown(fd, C.SHUT_RD)
@@ -56,6 +58,7 @@ shutdown(fd::FD{In}) = shutdown(fd, C.SHUT_RD)
     Base.shutdown(fd::FD{In}) = UnixIO.shutdown(fd, C.SHUT_RD)
 end
 
+#=
 
 Base.isreadable(fd::FD{In}) = Base.isopen(fd)
 
@@ -65,24 +68,26 @@ Base.iswritable(::FD{In}) = false
 Base.bytesavailable(fd::FD{In}) = bytesavailable(fd, TransferSizeMechanism(fd))
 
 Base.bytesavailable(fd::FD, ::NoSizeMechanism) = bytesavailable(fd.buffer)
+=#
 
-@db 1 function Base.bytesavailable(fd::FD, ::SuppoutsStatSize)
-    n = bytesavailable(fd.buffer)
+@db 1 function IOTraits._bytesavailable(fd::FD, ::SupportsStatSize)
     pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
-    if pos != -1
-        n += stat(fd).size - pos
+    if pos == -1
+        return 0
     end
-    @db 1 return n
+    @db 1 return stat(fd).size - pos
 end
 
-@db 1 function Base.bytesavailable(fd::FD, ::SupportsFIONREAD)
-    @assert bytesavailable(fd.buffer) == 0
+@db 1 function IOTraits._bytesavailable(fd::FD, ::SupportsFIONREAD)
     x = Ref(Cint(0))
     @cerr C.ioctl(fd, C.FIONREAD, x)
     @db 1 return x[]
 end
 
+IOTraits.position(io, ::AbstractSeekable) = 
+    @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
 
+#=
 Base.eof(fd::FD{In}; kw...) = eof(fd, TotalSize(fd); kw...)
 
 Base.eof(fd::FD, ::InfiniteTotalSize; kw...) = @assert false  
@@ -103,8 +108,10 @@ Base.eof(fd::FD, ::KnownTotalSize; kw...) = bytesavailable(fd) == 0
     end
     @db 1 return bytesavailable(fd.buffer) == 0
 end
+=#
 
 
+#=
 @db 1 function Base.unsafe_read(fd::FD{In}, buf::Ptr{UInt8}, nbytes::UInt;
                                 timeout=fd.timeout)
     @require !fd.isclosed
@@ -122,8 +129,9 @@ end
         nothing
     end
 end
+=#
 
-
+#=
 @db 2 function Base.read(fd::FD{In}, ::Type{UInt8}; kw...)
     @require !fd.isclosed
     eof(fd; kw...) && throw(EOFError())
@@ -133,8 +141,10 @@ end
     r = Base.read(fd.buffer, UInt8)
     @db 2 return r                                "$(repr(Char(r))) $(repr(r))"
 end
+=#
 
 
+#=
 Base.readbytes!(fd::FD{In}, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
     readbytes!(fd, buf, UInt(nbytes); kw...)
 
@@ -163,10 +173,12 @@ Base.readbytes!(fd::FD{In}, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
         @db 1 return nread
     end
 end
+=#
 
 
 const BUFFER_SIZE = 65536
 
+#=
 @db 5 function Base.readavailable(fd::FD{In}; timeout=0)
     @require !fd.isclosed
     n = bytesavailable(fd)
@@ -177,61 +189,18 @@ const BUFFER_SIZE = 65536
     n = UnixIO.read(fd, buf; timeout)                          ;@db 5 n
     resize!(buf, n)
 end
+=#
 
 
+#=
 @db 2 function Base.readline(fd::FD{In}; timeout=fd.timeout, kw...)
     @with_timeout fd timeout begin
-        @db 2 return readline(fd, ReadFragmentation(fd); kw...)
+        @db 2 return IOTraits.readline(fd, ReadFragmentation(fd); kw...)
     end
 end
+=#
 
-Base.readline(fd::FD, ::ReadsBytes; kw...) = @invoke readline(fd::IO; kw...)
-
-
-"""
-### `readline(::UnixIO.FD{In,S_IFCHR})`
-
-Character or Terminal devices (`S_IFCHR`) are usually used in
-"canonical mode" (`ICANON`).
-
-> In canonical mode: Input is made available line by line.
-(termios(3))[https://man7.org/linux/man-pages/man3/termios.3.html].
-
-For these devices calling `read(2)` will usually return exactly one line.
-It will only ever return an incomplete line if length exceeded `MAX_CANON`.
-Note that in canonical mode a line can be terminated by `CEOF` rather than
-"\n", but `read(2)` does not return the `CEOF` character (e.g. when the
-shell sends a "bash\$ " prompt without a newline).
-
-This `readline` implementation is optimised for the case where `read(2)`
-returns exactly one line. However it does not assume that behaviour and
-will still work for devices not in canonical mode.
-
-Notes:
- - TIOCSTI could be used to Insert a byte into the input queue
-"""
-@db 1 function Base.readline(fd::FD, ::ReadsLines; keep::Bool=false)
-    @require !fd.isclosed
-    @assert bytesavailable(fd.buffer) == 0
-
-    linebuf = Vector{UInt8}(undef, C.MAX_CANON)
-    n = UnixIO.transfer(fd, linebuf)
-    if n == 0
-        @db 1 return "" "EOF or timeout!"
-    end
-
-    # Check for '\n'.
-    i = find_newline(linebuf, 1, n)
-    @assert i == 0 || i == n
-
-    # Trim end of line characters.
-    while !keep && n > 0 && (linebuf[n] == UInt8('\r') ||
-                             linebuf[n] == UInt8('\n'))
-        n -= 1
-    end
-    resize!(linebuf, n)
-    @db 1 return String(linebuf)
-end
+#Base.readline(fd::FD, ::ReadsBytes; kw...) = @invoke readline(fd::IO; kw...)
 
 #=
 @db 1 function Base.readline(fd::ReadFD{<:S_IFCHR};
@@ -297,7 +266,6 @@ end
         end
     end
 end
-=#
 
 
 @db 2 function find_newline(buf, i, j)
@@ -310,8 +278,10 @@ end
     end
     @db 2 return 0
 end
+=#
 
 
+#=
 @db 2 function Base.readuntil(fd::FD{In}, d::AbstractChar;
                               timeout=fd.timeout, kw...)
     @with_timeout(fd, timeout,
@@ -326,6 +296,7 @@ end
 @db 2 function Base.read(fd::FD{In}, x::Type{String}; kw...)
     String(Base.read(fd; kw...))
 end
+=#
 
 
 # End of file: ReadFD.jl

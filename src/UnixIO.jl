@@ -5,6 +5,29 @@ Unix IO Interface.
 
 For Julia programs that need to interact with Unix-specific IO interfaces.
 
+TODO:
+ - Remove buffer from `FD`, use wrapper for buffering.
+
+Features:
+
+ - Serial port / terminal configuration.
+ - Serial port flush/drain.
+ - Use canonical (line-by-line) mode for terminal devices
+   and serial ports.
+ - Use poxsix_spawn (not fork/exec) to start sub-processes.
+ - Run a sub-process in a pseudo terminal.
+ - Communicate with a subprocess via stdin/stdout sockets with option to merge stderr.
+ - Timeout option for all operations.
+ - Use `epoll` and `poll` for asynchronous IO.
+ - Optional fine grained debug tracing.
+ - Read and write unix device files.
+ - Wait for sub-process termination without signals `pid_fd`, `epoll`.
+ - raw println
+ - Unix Domain Sockets for IPC
+ - Run shell commands through `system`
+ - Better eof(), bytesavailable() etc for unix files
+ - Access to raw syscalls, fcntls, ioctls etc for special needs.
+
 e.g. Character devices, Terminals, Unix domain sockets, Block devices etc.
 
     using UnixIO
@@ -57,6 +80,7 @@ using Base: ImmutableDict,
             C_NULL
 
 using Preferences
+using Mmap
 using ReadmeDocs               # for README""" ... """ doc strings.
 using Preconditions            # for @require and @ensure contracts
 using AsyncLog                 # for @asynclog -- log errors in async tasks.
@@ -69,6 +93,7 @@ const typetree = TypeTree.tt
 
 using DuplexIOs
 using IOTraits
+using IOTraits: In, Out
 using UnixIOHeaders
 const C = UnixIOHeaders
 
@@ -108,12 +133,17 @@ end
 
 # Deadlines / Timeouts.
 
+#=
 macro with_timeout(fd, timeout, ex)
     quote
         fd = $(esc(fd))
         timeout = $(esc(timeout))
         old_deadline = fd.deadline
-        new_deadline = timeout + time()
+        if timeout == Inf
+            new_deadline = Inf
+        else
+            new_deadline = timeout + time()
+        end
         if new_deadline < old_deadline
             fd.deadline = new_deadline
             if fd.deadline != Inf
@@ -130,26 +160,23 @@ macro with_timeout(fd, timeout, ex)
         end
     end
 end
+=#
 
 
 # Unix File Descriptor wrapper.
 
 abstract type FDType end
 
-abstract type IODirection end
-struct In <: IODirection end
-struct Out <: IODirection end
-
-mutable struct FD{D<:IODirection,T<:FDType} <: IO
+mutable struct FD{D<:TransferDirection,T<:FDType} <: TraitsIO
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
     ready::Base.ThreadSynchronizer
     closed::Base.ThreadSynchronizer
-    timeout::Float64
-    deadline::Float64
+#    timeout::Float64
+#    deadline::Float64
     gothup::Bool
-    buffer::IOBuffer
+#    buffer::IOBuffer
     extra::ImmutableDict{Symbol,Any}
 
     FD{D}(fd) where D = FD{D,Union{}}(fd)
@@ -163,13 +190,15 @@ mutable struct FD{D<:IODirection,T<:FDType} <: IO
                   0,
                   Base.ThreadSynchronizer(),
                   Base.ThreadSynchronizer(),
-                  Inf,
-                  Inf,
+                  #Inf,
+                  #Inf,
                   false,
-                  PipeBuffer(),
+                  #PipeBuffer(),
                   ImmutableDict{Symbol,Any}())
     end
 end
+
+IOTraits.TransferDirection(::Type{<:FD{<:T}}) where T = T()
 
 const AnyFD = Union{FD, RawFD, Cint}
 
@@ -203,7 +232,6 @@ struct PidFD           <: FDType end
 struct Pseudoterminal  <: S_IFCHR end
 struct CanonicalMode   <: S_IFCHR end
 
-Base.wait(fd::FD) = wait(fd, WaitingMechanism(fd))
 Base.wait(fd::FD, ::WaitUsingEPoll) = wait_for_event(epoll_queue, fd)
 Base.wait(fd::FD, ::WaitUsingPosixPoll) = wait_for_event(poll_queue, fd)
 
@@ -225,8 +253,9 @@ isalive(p::Process) = p.exit_status == nothing &&
 didexit(p::Process) = p.exit_status != nothing
 waskilled(p::Process) = !isstopped(p) && p.signal != nothing
 
-IOTraits.WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
-                                                        WaitBySleeping())
+IOTraits.WaitingMechanism(::Type{Process}) =
+    IOTraits.firstvalid(WaitUsingPidFD(),
+                        WaitBySleeping())
 
 @db function Base.wait(p::Process; timeout=Inf,
                                    deadline=timeout+time())
@@ -306,6 +335,7 @@ Base.assert_havelock(fd::FD) = Base.assert_havelock(fd.ready)
 Base.convert(::Type{Cint}, fd::FD) = Base.cconvert(Cint, fd.fd)
 Base.convert(::Type{Cuint}, fd::FD) = Cuint(convert(Cint, fd))
 Base.convert(::Type{RawFD}, fd::FD) = RawFD(fd.fd)
+Mmap.gethandle(fd::FD) = RawFD(fd.fd)
 
 include("ReadFD.jl")
 include("WriteFD.jl")
@@ -314,7 +344,10 @@ IOTraits.ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
 
 IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:Stream}}) = SupportsFIONREAD()
 IOTraits.TotalSize(::Type{<:FD{In,<:File}}) = VariableTotalSize()
-IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:File}}) = SuppoutsStatSize()
+IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:File}}) = SupportsStatSize()
+IOTraits.TotalSizeMechanism(::Type{<:FD{In,<:File}}) = SupportsStatSize()
+
+IOTraits.CursorSupport(::Type{<:FD{In,<:File}}) = Seekable()
 
 DuplexIOs.DuplexIO(i::FD{In}, o::FD{Out}) = @invoke DuplexIO(i::IO, o::IO)
 DuplexIOs.DuplexIO(o::FD{Out}, i::FD{In}) = @invoke DuplexIO(i::IO, o::IO)
@@ -370,14 +403,10 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
         flags &= ~C.O_RDWR
         fout = FD{Out,T}(open_raw(pathname, flags | C.O_WRONLY, mode; tcattr))
         fin = FD{In,T}(open_raw(pathname, flags; tcattr))
-        io = DuplexIO(fin, fout)
+        io = DuplexIO(IOTraits.LazyBufferedIn(fin), fout)
     else
         D = (flags & C.O_WRONLY) != 0 ? Out : In
         io = FD{D,T}(open_raw(pathname, flags, mode; tcattr))
-    end
-
-    if timeout != nothing
-        set_timeout(io, timeout)
     end
 
     @ensure isopen(io)
@@ -396,17 +425,6 @@ function open_raw(a...; tcattr=nothing)
 end
 
 gc_safe_open(a...) = @gc_safe C.open(a...)
-
-
-@doc README"""
-### `UnixIO.set_timeout` -- Configure Timeouts.
-
-    UnixIO.set_timeout(fd::UnixIO.FD, timeout)
-
-Configure `fd` to limit IO operations to `timeout` seconds.
-"""
-set_timeout(fd::FD, t) = fd.timeout = t
-DuplexIOs.@wrap set_timeout
 
 
 """
@@ -606,7 +624,7 @@ end
 Base.isopen(fd::FD) = !fd.isclosed
 
 
-@db 1 function Base.wait_close(fd::FD; timeout=fd.timeout,
+@db 1 function Base.wait_close(fd::FD; timeout=Inf,
                                        deadline=timeout+time())
     wait_until(fd.closed, ()->!isopen(fd), deadline)
 end
@@ -631,6 +649,7 @@ end
 README"## Reading from Unix Files."
 
 
+#=
 @doc README"""
 ### `UnixIO.read` -- Read bytes into a buffer.
 
@@ -665,6 +684,7 @@ end
     buf = pointer(v, index)
     @db 2 return GC.@preserve v read(fd, buf, Csize_t(count); kw...)
 end
+=#
 
 
 """
@@ -674,18 +694,25 @@ Always attempt at least one call to `read(2)/write(2)`
 even if `fd.deadline` has passed.
 Return number of bytes transferred or `0` on timeout.
 """
-@db 2 function transfer(fd::FD, buf::Ptr{UInt8}, count::Csize_t)
+@inline @db 2 function IOTraits.transfer(fd::FD,
+                                         ::IOTraits.AnyDirection,
+                                         buf::Ptr{UInt8},
+                                         ::IOTraits.RawPtr,
+                                         count::Int,
+                                         start::Int,
+                                         deadline::Float64)
     @require !fd.isclosed
     @require count > 0
+    buf += (start-1)
 
-    n = nointr_transfer(fd, buf, count)
+    n = nointr_transfer(fd, buf, Csize_t(count))
     if n >= 0
         @db 2 return n
     end
 
-    @dblock fd while time() < fd.deadline
+    @dblock fd while time() < deadline
         wait(fd)
-        n = nointr_transfer(fd, buf, count);                           ;@db 2 n
+        n = nointr_transfer(fd, buf, Csize_t(count));                  ;@db 2 n
         if n >= 0
             @ensure n <= count
             @db 2 return n
@@ -695,20 +722,12 @@ Return number of bytes transferred or `0` on timeout.
     @db 2 return 0 "timeout!"
 end
 
-@db 2 function transfer(fd::FD, v::AbstractVector{UInt8},
-                        index=1, count=length(v)-(index-1))
-    checkbounds(v, index + count - 1)
-    buf = pointer(v, index)
-    @db 2 return GC.@preserve v transfer(fd, buf, Csize_t(count))
-end
-
-
 """
 Read or write (FD{In} or FD{Out}) up to `count` bytes to or from `buf`.
 Retry on `C.EINTR`.
 Return number of bytes transferred or `-1` on `C.EAGAIN`.
 """
-@db 2 function nointr_transfer(fd::FD, buf::Ptr{UInt8}, count::Csize_t)
+@inline @db 2 function nointr_transfer(fd::FD, buf::Ptr{UInt8}, count::Csize_t)
     @require count > 0
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR), raw_transfer(fd, buf, count))
@@ -1145,7 +1164,7 @@ end
     waitpid(p; deadline=0.0)
 
     while deadline >= time() && isrunning(p)
-        r = @cerr allow=C.ESRCH C.pifd_open(p.pid, 0)
+        r = @cerr allow=C.ESRCH C.pidfd_open(p.pid, 0)
         if r != -1
             fd = FD{In,PidFD}(r)
             fd.deadline = deadline
@@ -1413,13 +1432,8 @@ function Base.show(io::IO, fd::FD{D,T}) where {D,T}
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("👀", fd.nwaiting))
     islocked(fd) && print(io, "🔒")
-    fd.timeout == Inf || print(io, ", ⏱", fd.timeout)
     if D == In
         fd.gothup && print(io, "☠️ ")
-        n = bytesavailable(fd.buffer)
-        if n > 0
-            print(io, ", $(n)📥")
-        end
     end
     print(io, ")")
 end

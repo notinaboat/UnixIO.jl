@@ -12,7 +12,13 @@ JL := julia
 
 .PHONY: README.md
 README.md: src/IOTraits.jl.md
-	cp $< $@
+	cp $< $@.tmp
+	$(JL) -e "using IOTraits; IOTraits.dump_info()" >> $@.tmp
+	mv $@.tmp $@
+
+webmd:
+	grip -b &
+	while kqwait src ; do $(MAKE) README.md ; done
 
 #	julia --project -e "using $(PACKAGE); $(PACKAGE).readme_docs_generate()"
 
@@ -20,6 +26,7 @@ doc:
 	cd docs; \
 	$(JL) -e "using Documenter, $(PACKAGE); \
 	          makedocs(sitename=\"$(PACKAGE)\")"
+
 
 .PHONY: test
 test:

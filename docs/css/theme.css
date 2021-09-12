@@ -305,9 +305,9 @@ h3 + *, h3 + p                         { margin-top: 0; }
 /* }}} */
 /* ----- Prose --------------------------------------------------------- {{{ */
 
-p, main > ul, main > ol, div.sourceCode, main > pre, img, table {
+h3, p:not(li > p), main > ol, div.sourceCode, main > pre, img, table {
   margin-top: var(--line-height);
-  margin-bottom: var(--line-height)
+  margin-bottom: var(--line-height)/2;
 }
 
 ul:not(.task-list) {
@@ -1132,6 +1132,7 @@ nav#TOC > input:checked + ul {
 
 h1, h2, h3 {
   page-break-after: avoid;
+  border-bottom: 1px solid var(--color-border);
 }
 
 table, figure, pre {

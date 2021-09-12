@@ -89,8 +89,8 @@ cfsetspeed_m(p, speed) =
 
 # Not yet in glibc.
 const SYS_pidfd_open=434 # https://git.io/J4j1A
-pifd_open(pid, flags) = @ccall syscall(SYS_pidfd_open::Cint,
-                                       pid::pid_t, flags::Cint)::Cint
+pidfd_open(pid, flags) = @ccall syscall(SYS_pidfd_open::Cint,
+                                        pid::pid_t, flags::Cint)::Cint
 
 const P_PIDFD = 3
 waitid(idtype, id, infop, options) = 
