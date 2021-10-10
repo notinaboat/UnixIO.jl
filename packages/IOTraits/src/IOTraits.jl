@@ -147,15 +147,19 @@ or typing commands into a terminal.
 abstract type Stream end
 
 """
-`TraitsIO(::Stream) -> IO` creates a `Base.IO` compatible wrapper around a
+`BaseIO(::Stream) -> Base.IO` creates a Base compatible wrapper around a
 stream.
 Similarities and differences between the `Base.IO` model and the
 `IOTraits.Stream` model can be seen by reading the `TraitsIO`
 implementations of the `Base.IO` functions below.
 """
-struct TraitsIO{T<:Stream} <: Base.IO
+struct BaseIO{T<:Stream} <: Base.IO
     stream::T
 end
+
+StreamDelegation(::Type{BaseIO}) = DelegatedToSubstream()
+
+
 
 raw"""
 
@@ -276,7 +280,27 @@ Base.close(s::Stream) = is_proxy(s) ? close(unwrap(s)) : nothing
 Base.wait(s::Stream) = is_proxy(s) ? wait(unwrap(s)) :
                                      wait(s, WaitingMechanism(s))
 
+function Base.bytesavailable(s::Stream)
+    @require is_input(s)
+    _bytesavailable(unwrap(s))
+end
+
+_bytesavailable(s) = _bytesavailable(s, TransferSize(io))
+_bytesavailable(s, ::UnknownTransferSize) = 0
+_bytesavailable(s, ::KnownTransferSize) =
+    _bytesavailable(s, TransferSizeMechanism(s))
+
+
+function Base.length(s::Stream)
+    @require TotalSize(s) isa KnownTotalSize
+    _length(unwrap(s), TotalSizeMechanism(s))
+end
+
+_length(stream, ::SupportsStatSize) = stat(stream).size
+
+
 # FIXME wait timeout ? deadline ? args for wait ?
+
 
 
 ### Stream Delegation Wrappers
@@ -382,8 +406,8 @@ TransferDirection(s) = TransferDirection(typeof(s))
 TransferDirection(T::Type) = is_proxy(T) ? TransferDirection(unwrap(T)) :
                                            nothing
 
-_isreadable(s) = TransferDirection(s) != Out()
-_iswritable(s) = TransferDirection(s) != In()
+is_input(s) = TransferDirection(s) != Out()
+is_output(s) = TransferDirection(s) != In()
 
 
 
@@ -1126,17 +1150,6 @@ transfer(io::NullIn, buf::Ptr{UInt8}, n; kw...) = n
 
 
 
-
-"""
-`StreamProxy` wraps a stream and forwards all of the default stream methods.
-"""
-abstract type StreamProxy{T<:Stream} <: Stream where S end
-abstract type InDelegate{T} <: StreamProxy{T} end
-abstract type FullInDelegate{T} <: StreamProxy{T} end
-
-StreamDelegation(::Type{StreamProxy}) = DelegatedToSubstream()
-
-
 include("wrap.jl")
 
 """
@@ -1186,61 +1199,61 @@ Generic type for Buffered Input Wrappers.
 
 See `BufferedIn` and `LazyBufferedIn` below.
 """
-abstract type GenericBufferedIn{T} <: InDelegate{T} end
+abstract type GenericBufferedInput end
 
-TransferCost(::Type{GenericBufferedIn{T}}) where T = LowTransferCost()
+StreamDelegation(::Type{GenericBufferedInput}) = DelegatedToSubstream()
 
-ReadFragmentation(::Type{GenericBufferedIn{T}}) where T = ReadsBytes()
+TransferCost(::Type{GenericBufferedInput}) = LowTransferCost()
 
-function buffered_in_warning(io)
-    if ReadFragmentation(io) != ReadsBytes()
-        @warn "Wrapping $(typeof(io)) with `BufferedIn` causes " *
-              "the $(ReadFragmentation(io)) trait to be ignored!"
+ReadFragmentation(::Type{GenericBufferedInput}) = ReadsBytes()
+
+function buffered_in_warning(stream)
+    if ReadFragmentation(stream) != ReadsBytes()
+        @warn "Wrapping $(typeof(stream)) with `BufferedInput` causes " *
+              "the $(ReadFragmentation(stream)) trait to be ignored!"
     end
-    if TransferCost(io) == LowTransferCost()
-        @warn "$(typeof(io)) already has LowTransfterCost. " *
-              "Wrapping with `BufferedIn` may degrade performance."
+    if TransferCost(stream) == LowTransferCost()
+        @warn "$(typeof(stream)) already has LowTransfterCost. " *
+              "Wrapping with `BufferedInput` may degrade performance."
     end
 end
 
-
-Base.eof(ib::GenericBufferedIn) = ( bytesavailable(ib.buffer) == 0
-                                 && eof(ib.io) )
-
-Base.close(ib::GenericBufferedIn) = ( take!(ib.buffer);
-                                      Base.close(ib.io) )
+Base.close(s::GenericBufferesInput) = ( take!(s.buffer);
+                                        Base.close(s.io) )
 
 
 """
 Size of the internal buffer.
 """
-buffer_size(io::GenericBufferedIn) = io.buffer_size
+buffer_size(s::GenericBufferedInput) = s.buffer_size
 
 
 """
 Buffer ~1 second of data by default.
 """
-default_buffer_size(io) = DataRate(io)
+default_buffer_size(stream) = DataRate(stream)
 
 
 """
 Transfer bytes from the wrapped IO to the internal buffer.
 """
-function refill_internal_buffer(io::GenericBufferedIn, n=io.buffer_size; kw...)
+function refill_internal_buffer(s::GenericBufferedInput,
+                                n=io.buffer_size; kw...)
 
     # If needed, expand the buffer.
-    iob = io.buffer
+    iob = s.buffer
     @assert iob.append
     Base.ensureroom(iob, n)
     checkbounds(iob.data, iob.size+n)
 
     # Transfer from the IO to the buffer.
     p = pointer(iob.data, iob.size+1)
-    n = GC.@preserve iob transfer(io.io, p, n; kw...)
+    n = GC.@preserve iob transfer(s.stream, p, n; kw...)
     iob.size += n
 end
 
 
+#= FIXME
 idoc"""
 Shortcut to read one byte directly from buffer.
 Or, if the buffer is empty refill it.
@@ -1267,53 +1280,50 @@ function Base.peek(io::GenericBufferedIn, ::Type{T}; kw...) where T
     refill_internal_buffer(io; kw...)
     return Base.peek(io.buffer, T)
 end
+=#
 
 
-function transfer(io::GenericBufferedIn, ::In, ::Ptr{UInt8}, ::RawPtr,
-                  n, start, deadline)
-    transfer(io, buf, n; start, deadline)
-end
 
-
-## BufferedIn
+## Buffered Input
 
 """
-    BufferedIn(io; [buffer_size]) -> IO
+    BufferedInput(stream; [buffer_size]) -> Stream
 
-Create a wrapper around `io` to buffer input transfers.
+Create a wrapper around `stream` to buffer input transfers.
 
 The wrapper will try to read `buffer_size` bytes into its buffer
-every time it transfers data from `io`.
+every time it transfers data from `stream`.
 
-The default `buffer_size` depends on `IOTratis.DataRate(io)`.
+The default `buffer_size` depends on `IOTratis.DataRate(stream)`.
 
-`io` must not be used directly after the wrapper is created.
+`stream` must not be used directly after the wrapper is created.
 """
-struct BufferedIn{T} <: GenericBufferedIn{T}
-    io::T
+struct BufferedInput{T<:Stream} <: GenericBufferedInput
+    stream::T
     buffer::IOBuffer
     buffer_size::Int
-    function BufferedIn(io::T; buffer_size=default_buffer_size(io)) where T
-        @require TransferDirection(io) == In()
-        buffered_in_warning(io)
-        new{T}(io, PipeBuffer(), buffer_size)
+    function BufferedIn(stream::T; buffer_size=default_buffer_size(stream)) where T
+        @require TransferDirection(stream) == In()
+        buffered_in_warning(stream)
+        new{T}(stream, PipeBuffer(), buffer_size)
     end
 end
 
-TransferSize(::Type{BufferedIn{T}}) where T = LimitedTransferSize()
+TransferSize(::Type{BufferedInput{T}}) where T = LimitedTransferSize()
 
-max_transfer_size(io::BufferedIn) = io.buffer_size
+max_transfer_size(s::BufferedInput) = s.buffer_size
 
-Base.bytesavailable(io::BufferedIn) = bytesavailable(io.buffer) 
+Base.bytesavailable(s::BufferedInput) = bytesavailable(s.buffer) 
 
 
-function transfer(io::BufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadline)
+function transfer(s::BufferedInput,
+                  buf::Ptr{UInt8}, n, start::Integer, deadline)
     @info "transfer(t::BufferedIn, ...)"
 
-    iob = io.buffer
+    iob = s.buffer
     # If there are not enough bytes in `iob`, read more from the wrapped IO.
     if bytesavailable(iob) < n
-        refill_internal_buffer(io)
+        refill_internal_buffer(s)
     end
 
     # Read available bytes from `iob` into the caller's `buffer`.
@@ -1323,6 +1333,7 @@ function transfer(io::BufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadline)
 end
 
 
+#= FIXME
 idoc"""
 Shortcut to delegate `readavailable` to the internal buffer.
 """
@@ -1332,50 +1343,51 @@ function Base.readavailable(io::BufferedIn; kw...)
     end
     return readavailable(io.buffer)
 end
+=#
 
 
 
 ## LazyBufferedIn
 
 """
-    LazyBufferedIn(io; [buffer_size]) -> IO
+    LazyBufferedIn(stream; [buffer_size]) -> Stream
 
-Create a wrapper around `io` to buffer input transfers.
+Create a wrapper around `stream` to buffer input transfers.
 
 The internal buffer is only used when a small transfer is attempted
 or if `peek` is called.
-Most reads are fulfilled directly from the underling `io`.
+Most reads are fulfilled directly from the underling stream.
 This avoids the overhead of double buffering in situations where there is
 an occasional need to read one byte at a time (e.g. `readuntil()`) but most
 reads are already of a reasonable size.
 
 The default `buffer_size` depends on `IOTratis.DataRate(io)`.
 
-`io` must not be used directly after the wrapper is created.
+`stream` must not be used directly after the wrapper is created.
 """
-struct LazyBufferedIn{T} <: GenericBufferedIn{T}
-    io::T
+struct LazyBufferedIn{T<:Stream} <: GenericBufferedIn
+    stream::T
     buffer::IOBuffer
     buffer_size::Int
-    function LazyBufferedIn(io::T; buffer_size=default_buffer_size(io)) where T
-        @require TransferDirection(io) == In()
-        buffered_in_warning(io)
-        new{T}(io, PipeBuffer(), buffer_size)
+    function LazyBufferedIn(stream::T; buffer_size=default_buffer_size(stream)) where T
+        @require TransferDirection(stream) == In()
+        buffered_in_warning(stream)
+        new{T}(stream, PipeBuffer(), buffer_size)
     end
 end
 
 
-Base.bytesavailable(io::LazyBufferedIn) = bytesavailable(io.buffer) + 
-                                          bytesavailable(io.io);
+Base.bytesavailable(s::LazyBufferedIn) = bytesavailable(s.buffer) + 
+                                         bytesavailable(s.stream);
 
 
-function transfer(io::LazyBufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadline)
+function transfer(s::LazyBufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadline)
     @info "transfer(t::LazyBufferedIn, ...)"
 
     buf += (start-1)
 
     # First take bytes from the buffer.
-    iob = io.buffer
+    iob = s.buffer
     count = bytesavailable(iob)
     if count > 0
         count = min(count, n)
@@ -1384,7 +1396,7 @@ function transfer(io::LazyBufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadli
 
     # Then read from the wrapped IO.
     if n > count
-        count += transfer(io.io, buf + count, n - count; deadline)
+        count += transfer(s.stream, buf + count, n - count; deadline)
     end
 
     @ensure count <= n
@@ -1393,51 +1405,44 @@ end
 
 
 
-# Timeout IO
+# Timeout Stream
 
 """
-    TimeoutIO(io; timeout) -> IO
+    TimeoutStream(io; timeout) -> Stream
 
-The `TimeoutIO` wrapper adds a timeout deadline to an `io`.
+The `TimeoutStream` wrapper adds a default timeout deadline to a stream
 It is used to add timeout capability to Base.IO functions.
 """
-struct TimeoutIO{T} <: FullInDelegate{T}
-    io::T
+struct TimeoutStream{T<:Stream} <: Stream
+    stream::T
     deadline::Float64
-    function TimeoutIO(io::T, timeout) where T
+    function TimeoutIO(stream::T, timeout) where T
         @require timeout < Inf
-        new{T}(io, time() + timeout)
+        new{T}(stream, time() + timeout)
     end
 end
 
-timeout_io(io, t) = t == Inf ? io : TimeoutIO(io, t)
+StreamDelegation(::Type{TimeoutStream}) = DelegatedToSubstream()
 
-function transfer(t::TimeoutIO{T}, buffer, n; start, kw...) where T
-    @info "transfer(t::ITimeoutIO, ...)"
-    transfer(t.io, buffer, n; start, deadline = t.deadline)
+timeout_stream(s, t) = t == Inf ? s : TimeoutStream(s, t)
+
+function transfer(s::TimeoutStream{T}, buffer, n; start, kw...) where T
+    @info "transfer(t::TimeoutStream, ...)"
+    transfer(s.stream, buffer, n; start, deadline = s.deadline)
 end
 
 
 
 # Base.IO Interface
 
-Base.isreadable(io::TraitsIO) = is_input(io.stream)
-Base.iswritable(io::TraitsIO) = is_output(io.stream)
-
-
-## Function `bytesavailable`
-
-idoc"""
-`bytesavailable` is specialised on Transfer Size and Transfer Size Mechanism.
-"""
-function Base.bytesavailable(io::TraitsIO)
-    @require isreadable(io)
-    _bytesavailable(io, TransferSize(io))
+function transfer(s::BaseIO, buffer, n; kw...)
+    @info "transfer(t::BaseIO, ...)"
+    transfer(s.stream, buffer, n; kw...)
 end
 
-_bytesavailable(io, ::UnknownTransferSize) = 0
-_bytesavailable(io, ::KnownTransferSize) =
-    _bytesavailable(io, TransferSizeMechanism(io))
+
+Base.isreadable(stream::BaseIO) = is_input(stream.stream)
+Base.iswritable(stream::BaseIO) = is_output(stream.stream)
 
 
 ## Function `eof`
@@ -1445,31 +1450,31 @@ _bytesavailable(io, ::KnownTransferSize) =
 idoc"""
 `eof` is specialised on Total Size.
 """
-function Base.eof(io::TraitsIO; timeout=Inf)
-    @require isreadable(io)
-    eof(io, TotalSize(io); timeout)
+function Base.eof(stream::BaseIO; timeout=Inf)
+    @require is_input(stream)
+    eof(stream, TotalSize(stream); timeout)
 end
 
 idoc"""
 If Total Size is known then `eof` is reached when there are
 zero `bytesavailable`.
 """
-Base.eof(io, ::KnownTotalSize; kw...) = bytesavailable(io) == 0
+Base.eof(stream, ::KnownTotalSize; kw...) = bytesavailable(stream) == 0
 
 
 idoc"""
 If Total Size is not known then `eof` must "block to wait for more data".
 """
-function Base.eof(io, ::UnknownTotalSize; kw...)
-    n = bytesavailable(io)
+function Base.eof(stream, ::UnknownTotalSize; kw...)
+    n = bytesavailable(stream)
     if n == 0
-        wait(io; kw...)
-        n = bytesavailable(io)
+        wait(stream; kw...)
+        n = bytesavailable(stream)
     end
     return n == 0
 end
 
-Base.eof(io, ::InfiniteTotalSize; kw...) = (wait(io; kw...); false)
+Base.eof(stream, ::InfiniteTotalSize; kw...) = (wait(stream; kw...); false)
 
 
 
@@ -1480,9 +1485,9 @@ Single byte read is specialized based on the Transfer Cost.
 (Single byte read for High Transfer Cost falls through to the 
 "does not support byte I/O" error from Base).
 """
-function Base.read(io::TraitsIO, ::Type{UInt8}; timeout=Inf)
-    @require isreadable(io)
-    read(io, TransferCost(io), UInt8; timeout)
+function Base.read(stream::TraitsIO, ::Type{UInt8}; timeout=Inf)
+    @require is_input(io)
+    _read(io, TransferCost(io), UInt8; timeout)
 end
 
 
@@ -1490,15 +1495,15 @@ idoc"""
 Allow single byte read for interfaces with Low Transfter Cost,
 but warn if a special Read Fragmentation trait is available.
 """
-function read(io, ::LowTransferCost, ::Type{UInt8}; kw...)
-    if ReadFragmentation(io) == ReadsLines()
-        @warn "read(::$(typeof(io)), UInt8): " *
+function _read(stream, ::LowTransferCost, ::Type{UInt8}; kw...)
+    if ReadFragmentation(stream) == ReadsLines()
+        @warn "read(::$(typeof(stream)), UInt8): " *
               "$(typeof(io)) implements `IOTraits.ReadsLines`." *
               "Reading one byte at a time may not be efficient." *
               "Consider using `readline` instead."
     end
     x = Ref{UInt8}()
-    n = GC.@preserve x transfer(io => pointer(x), 1; kw...)
+    n = GC.@preserve x transfer(stream => pointer(x), 1; kw...)
     n == 1 || throw(EOFError())
     return x[]
 end
@@ -1508,31 +1513,21 @@ idoc"""
 Read as String. \
 Wrap with `TimeoutIO` if timeout is requested.
 """
-function Base.read(io::TraitsIO, ::Type{String}; timeout=Inf)
-    @require isreadable(io)
-    @invoke String(Base.read(timeout_io(io, timeout)::IO))
+function Base.read(stream::BaseIO, ::Type{String}; timeout=Inf)
+    @require is_input(stream)
+    @invoke String(Base.read(timeout_io(stream, timeout)::IO))
 end
 
-
-## Function `length(io)`
-
-function Base.length(io::TraitsIO)
-    @require TotalSize(io) isa KnownTotalSize
-
-    _length(io, TotalSizeMechanism(io))
-end
-
-_length(io, ::SupportsStatSize) = stat(io).size
 
 
 ## Function `readbytes!`
 
-Base.readbytes!(io::TraitsIO, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
-    readbytes!(io, buf, UInt(nbytes); kw...)
+Base.readbytes!(s::BaseIO, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
+    readbytes!(s, buf, UInt(nbytes); kw...)
 
-function Base.readbytes!(io::TraitsIO, buf::Vector{UInt8}, nbytes::UInt;
+function Base.readbytes!(s::BaseIO, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true, timeout=Inf)
-    @require isreadable(io)
+    @require is_input(s)
     deadline = timeout_deadline(timeout)
 
     lb::Int = length(buf)
@@ -1544,7 +1539,7 @@ function Base.readbytes!(io::TraitsIO, buf::Vector{UInt8}, nbytes::UInt;
             resize!(buf, lb)
         end
         @assert lb > nread
-        n = transfer(io, buf, lb - nread, nread + 1, deadline)
+        n = transfer(s, buf, lb - nread, nread + 1, deadline)
         if n == 0 || !all
             break
         end
@@ -1557,22 +1552,22 @@ end
 timeout_deadline(timeout) = timeout == Inf ? Inf : time() + timeout
 
 
-## Function `read(io)`
+## Function `read(stream)`
 
 idoc"""
 Read until end of file.
 Specialise on Total Size, Cursor Support and Mmap Support.
 """
-function Base.read(io; timeout=Inf)
-    @require isreadable(io)
-    read(io, TotalSize(io), CursorSupport(io); timeout)
+function Base.read(stream; timeout=Inf)
+    @require is_input(stream)
+    _read(stream, TotalSize(stream), CursorSupport(stream); timeout)
 end
 
 
-function read(io, ::UnknownTotalSize, ::NoCursors; timeout=Inf)
-    n = default_buffer_size(io)
+function _read(stream, ::UnknownTotalSize, ::NoCursors; timeout=Inf)
+    n = default_buffer_size(stream)
     buf = Vector{UInt8}(undef, n)
-    readbytes!(io, buf, n; timeout)
+    readbytes!(stream, buf, n; timeout)
     return buf
 end
 
@@ -1580,27 +1575,27 @@ end
 idoc"""
 
 """
-function read(io, ::KnownTotalSize, ::AbstractSeekable; kw...)
-    n = length(io) - position(io)
+function _read(stream, ::KnownTotalSize, ::AbstractSeekable; kw...)
+    n = length(stream) - position(stream)
     buf = Vector{UInt8}(undef, n)
-    transfer_n(io => buffer, n; kw...)
+    transfer_n(stream => buffer, n; kw...)
     return buf
 end
 
 
 """
-Transfer `n` items between `io` and `buf`.
+Transfer `n` items between `stream` and `buf`.
 
 Call `transfer` repeatedly until all `n` items have been Transferred, 
 stopping only if end of file is reached.
 
 Return the number of items transferred.
 """
-function transfer_n(io, buf::Vector{UInt8}, n, start, deadline)
+function transfer_n(stream, buf::Vector{UInt8}, n, start, deadline)
     @require length(buf) == (start-1) + n
     nread = 0
     while nread < n
-        n = transfer(io, buf, n - nread, start + nread, deadline)
+        n = transfer(stream, buf, n - nread, start + nread, deadline)
         if n == 0
             break
         end
@@ -1610,11 +1605,11 @@ function transfer_n(io, buf::Vector{UInt8}, n, start, deadline)
 end
 
 
-## Function `read(io, n)`
+## Function `read(stream, n)`
 
-function Base.read(io::TraitsIO, n::Integer; timeout=Inf)
-    @require isreadable(io)
-    @invoke Base.read(timeout_io(io, timeout)::IO, n::Integer)
+function Base.read(stream::BaseIO, n::Integer; timeout=Inf)
+    @require is_input(stream)
+    @invoke Base.read(timeout_io(stream, timeout)::IO, n::Integer)
 end
 
 
@@ -1623,13 +1618,13 @@ end
 idoc"""
 `unsafe_read` must keep trying until `nbytes` nave been transferred.
 """
-function Base.unsafe_read(io::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt;
+function Base.unsafe_read(stream::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt;
                           deadline=Inf)
-    @require isreadable(io)
+    @require is_input(stream)
     nread = 0
-    @debug "Base.unsafe_read(io::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt)"
+    @debug "Base.unsafe_read(stream::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)"
     while nread < nbytes
-        n = transfer(io => buf + nread, nbytes - nread; deadline)
+        n = transfer(stream => buf + nread, nbytes - nread; deadline)
         if n == 0
             throw(EOFError())
         end
@@ -1644,24 +1639,24 @@ end
 ## Function `readavailable`
 
 """
-    readavailable(io::TraitsIO; [timeout=0]) -> Vector{UInt8}
+    readavailable(stream::BaseIO; [timeout=0]) -> Vector{UInt8}
 
 Read immediately available data from a stream.
 
-If `TransferSize(io)` is `UnknownTransferSize()` the only way to know how much
-data is available is to attempt a transfer.
+If `TransferSize(stream)` is `UnknownTransferSize()` the only way to know how
+much data is available is to attempt a transfer.
 
 Otherwise, the amount of data immediately available can be queried using the
 `bytesavailable` function.
 """
-function Base.readavailable(io::TraitsIO; timeout=0)
-    @require isreadable(io)
-    n = bytesavailable(io)
+function Base.readavailable(stream::BaseIO; timeout=0)
+    @require is_input(stream)
+    n = bytesavailable(stream)
     if n == 0 
-        n = default_buffer_size(io)
+        n = default_buffer_size(stream)
     end
     buf = Vector{UInt8}(undef, n)
-    n = transfer(io, buf; timeout)
+    n = transfer(stream, buf; timeout)
     resize!(buf, n)
 end
 
@@ -1672,17 +1667,17 @@ end
 idoc"""
 `readline` is specialised based on the Read Fragmentation trait.
 """
-function Base.readline(io::TraitsIO; timeout=Inf, kw...)
-    @require isreadable(io)
-    readline(io, ReadFragmentation(io); timeout, kw...)
+function Base.readline(stream::BaseIO; timeout=Inf, kw...)
+    @require is_input(stream)
+    _readline(stream, ReadFragmentation(stream); timeout, kw...)
 end
 
 idoc"""
 If there is no special Read Fragmentation method,
-use `TimeoutIO` to support the timeout option.
+use `TimeoutStream` to support the timeout option.
 """
-readline(io::TraitsIO, ::AnyReadFragmentation; timeout, kw...) =
-    @invoke Base.readline(timeout_io(io, timeout)::IO; kw...)
+_readline(stream::BaseIO, ::AnyReadFragmentation; timeout, kw...) =
+    @invoke Base.readline(timeout_stream(stream, timeout)::IO; kw...)
 
 
 """
@@ -1700,12 +1695,13 @@ Note that in canonical mode a line can be terminated by `CEOF` rather than
 "\n", but `read(2)` does not return the `CEOF` character (e.g. when the
 shell sends a "bash\$ " prompt without a newline).
 
-If `io` has the `ReadsLines` trait calling `transfer` once will read one line.
+If `stream` has the `ReadsLines` trait calling `transfer` once will
+read one line.
 """
-function readline(io, ::ReadsLines; keep::Bool=false, kw...)
+function _readline(stream, ::ReadsLines; keep::Bool=false, kw...)
 
     v = Base.StringVector(max_line)
-    n = transfer(io => v; kw...)
+    n = transfer(stream => v; kw...)
     if n == 0
         return ""
     end
@@ -1724,8 +1720,8 @@ const max_line = 1024 # UnixIO.C.MAX_CANON
 
 ## Function `readuntil`
 
-Base.readuntil(io::TraitsIO, d::AbstractChar; timeout=Inf, kw...) =
-    @invoke Base.readuntil(timeout_io(io, timeout)::IO, d; kw...)
+Base.readuntil(stream::BaseIO, d::AbstractChar; timeout=Inf, kw...) =
+    @invoke Base.readuntil(timeout_stream(stream, timeout)::IO, d; kw...)
 
 
 
