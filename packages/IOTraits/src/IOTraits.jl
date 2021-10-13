@@ -104,7 +104,9 @@ How to wait for activity?
 module IOTraits
 
 using Preconditions
+@static if VERSION > v"1.6"
 using Preferences
+end
 
 
 # Transfer Direction Trait.
@@ -459,6 +461,7 @@ const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
 Base.wait(x, ::WaitBySleeping) = sleep(0.1)
 
 
+@static if VERSION > v"1.6"
 """
 ## Preferred Polling Mechanism
 
@@ -496,6 +499,9 @@ poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
 
 const preferred_poll_mechanism =
     poll_mechanism(@load_preference("waiting_mechanism"))
+else
+const preferred_poll_mechanism = nothing
+end
 
 
 # Exports.
