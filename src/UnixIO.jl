@@ -56,12 +56,12 @@ using Base: ImmutableDict,
             @lock,
             C_NULL
 
-using Preferences
+#using Preferences
 using ReadmeDocs               # for README""" ... """ doc strings.
 using Preconditions            # for @require and @ensure contracts
 using AsyncLog                 # for @asynclog -- log errors in async tasks.
-import TypeTree                # for pretty-printed type trees in doc strings.
-const typetree = TypeTree.tt
+#import TypeTree                # for pretty-printed type trees in doc strings.
+#const typetree = TypeTree.tt
 
 
 
@@ -345,7 +345,7 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 `open` returns `Unix.FD{FDType}`, where `FDType` is one of:
 
 ```
-$(join(typetree(FDType; mod=UnixIO)))
+(join(typetree(FDType; mod=UnixIO)))
 ```
 
 If the `FDType` argument is provided then `open` guarantees to return
