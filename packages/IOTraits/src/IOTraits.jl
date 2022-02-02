@@ -500,7 +500,7 @@ poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
 const preferred_poll_mechanism =
     poll_mechanism(@load_preference("waiting_mechanism"))
 else
-const preferred_poll_mechanism = nothing
+const preferred_poll_mechanism = default_poll_mechanism
 end
 
 
