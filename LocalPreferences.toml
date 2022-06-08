@@ -1,0 +1,6 @@
+[IOTraits]
+waiting_mechanism = "poll"
+
+[Preconditions]
+check_postconditions = true
+check_preconditions = true

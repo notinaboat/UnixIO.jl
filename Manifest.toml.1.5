@@ -92,7 +92,7 @@ version = "0.27.5"
 [[DuplexIOs]]
 path = "packages/DuplexIOs"
 uuid = "c20a4678-4bba-4df2-bd7d-5c4d76fa7d4b"
-version = "0.1.0"
+version = "0.1.1"
 
 [[IOCapture]]
 deps = ["Logging", "Random"]
@@ -101,10 +101,10 @@ uuid = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
 version = "0.2.2"
 
 [[IOTraits]]
-deps = ["Documenter", "ReadmeDocs"]
+deps = ["Documenter", "Preconditions", "Preferences", "ReadmeDocs"]
 path = "packages/IOTraits"
 uuid = "8782331d-1791-483a-a4c8-2712d2c95aed"
-version = "0.1.0"
+version = "0.1.1"
 
 [[InteractiveUtils]]
 deps = ["Markdown"]
@@ -176,6 +176,12 @@ git-tree-sha1 = "3b114354f3b0ee9c946c509276b5da7fe3abd8bc"
 uuid = "059f9e2d-edd5-4920-8ad6-95789b106d09"
 version = "0.2.0"
 
+[[Preferences]]
+deps = ["TOML"]
+git-tree-sha1 = "00cfd92944ca9c760982747e9a1d0d5d86ab1e5a"
+uuid = "21216c6a-2e73-6563-6e65-726566657250"
+version = "1.2.2"
+
 [[Printf]]
 deps = ["Unicode"]
 uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
@@ -214,6 +220,12 @@ uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 deps = ["LinearAlgebra", "SparseArrays"]
 uuid = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
+[[TOML]]
+deps = ["Dates"]
+git-tree-sha1 = "44aaac2d2aec4a850302f9aa69127c74f0c3787e"
+uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+version = "1.0.3"
+
 [[Test]]
 deps = ["Distributed", "InteractiveUtils", "Logging", "Random"]
 uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
@@ -222,14 +234,6 @@ uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 git-tree-sha1 = "9250ef9b01b66667380cf3275b3f7488d0e25faf"
 uuid = "b718987f-49a8-5099-9789-dcd902bef87d"
 version = "1.0.1"
-
-[[TypeTree]]
-deps = ["InteractiveUtils"]
-git-tree-sha1 = "9e82b46cdbb3fd7fd9942a66845fdc441cd19b30"
-repo-rev = "fb4effb"
-repo-url = "https://github.com/cnaak/TypeTree.jl.git"
-uuid = "04da0e3b-1cad-4b2c-a963-fc1602baf1af"
-version = "0.1.0"
 
 [[UUIDs]]
 deps = ["Random", "SHA"]
