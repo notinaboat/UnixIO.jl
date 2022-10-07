@@ -39,7 +39,7 @@ using CInclude
       | ru_first | ru_last 
       | NR_OPEN | ARG_MAX | LINK_MAX
       | MACH_MSG_TYPE_INTEGER_T | msgh_reserved | msgh_kind | mach_msg_kind_t
-      | ^SIOC | TC[SG]ETS[FW]?2
+      | ^SIOC | TC[SG]ETS[FW]?2 | TIOC[SG]ISO7816
     """x
     )
 
