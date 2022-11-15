@@ -144,8 +144,8 @@ mutable struct FD{D<:IODirection,T<:FDType} <: IO
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
-    ready::Base.ThreadSynchronizer
-    closed::Base.ThreadSynchronizer
+    ready::Base.GenericCondition{Base.ReentrantLock}
+    closed::Base.GenericCondition{Base.ReentrantLock}
     timeout::Float64
     deadline::Float64
     gothup::Bool
@@ -161,8 +161,8 @@ mutable struct FD{D<:IODirection,T<:FDType} <: IO
         new{D,_T}(RawFD(fd),
                   false,
                   0,
-                  Base.ThreadSynchronizer(),
-                  Base.ThreadSynchronizer(),
+                  Base.GenericCondition{Base.ReentrantLock}(),
+                  Base.GenericCondition{Base.ReentrantLock}(),
                   Inf,
                   Inf,
                   false,
