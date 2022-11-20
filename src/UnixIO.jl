@@ -70,7 +70,7 @@ using AsyncLog                 # for @asynclog -- log errors in async tasks.
 using DuplexIOs
 using IOTraits
 using UnixIOHeaders
-const C = UnixIOHeaders
+const C = UnixIOHeaders.C
 
 include("macroutils.jl")
 include("ccall.jl")
@@ -225,8 +225,8 @@ isalive(p::Process) = p.exit_status == nothing &&
 didexit(p::Process) = p.exit_status != nothing
 waskilled(p::Process) = !isstopped(p) && p.signal != nothing
 
-IOTraits.WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
-                                                        WaitBySleeping())
+IOTraits.WaitingMechanism(::Type{Process}) = IOTraits.firstvalid(WaitUsingPidFD(),
+                                                                 WaitBySleeping())
 
 @db function Base.wait(p::Process; timeout=Inf,
                                    deadline=timeout+time())

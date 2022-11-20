@@ -1,5 +1,5 @@
-PACKAGE := $(shell basename $(CURDIR))
-export JULIA_PKG_OFFLINE = true
+PACKAGE := UnixIO
+#export JULIA_PKG_OFFLINE = true
 export JULIA_PROJECT = $(CURDIR)
 export JULIA_DEPOT_PATH = $(CURDIR)/../jl_depot
 export JULIA_NUM_THREADS = 8
@@ -8,8 +8,7 @@ export JULIA_UNIX_IO_DEBUG_LEVEL=0
 
 all: README.md test
 
-JL := ln -sf Manifest.toml.1.6 Manifest.toml; julia
-JL15 := ln -sf Manifest.toml.1.5 Manifest.toml; julia15
+JL := julia18
 
 .PHONY: README.md
 README.md:
@@ -24,17 +23,11 @@ doc:
 test:
 	$(JL) test/runtests.jl
 
-test15:
-	$(JL15) test/runtests.jl
-
 testpt:
 	$(JL) test/pseudoterminal.jl
 
 jl:
 	$(JL) -i -e "using $(PACKAGE)"
-
-jl15:
-	$(JL15)
 
 jlenv:
 	$(JL)
