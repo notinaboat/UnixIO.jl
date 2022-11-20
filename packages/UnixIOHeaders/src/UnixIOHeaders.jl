@@ -168,6 +168,8 @@ function parse_headers()
         "-D_POSIX_C_SOURCE=200809L"
     ]
 
+    Generators.add_definition(:__builtin_va_list => Generators.JuliaUnsupported())
+
     ctx = Generators.create_context(headers, copy(cflags),
         Dict{String,Any}(
             "general" => Dict{String,Any}(
