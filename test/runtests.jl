@@ -19,23 +19,27 @@ cd(@__DIR__)
 
 @testset LoggingTestSet "Open Type" begin
 
-f() = UnixIO.open(UnixIO.FDType, "foobar")
-info, type = code_typed(f, ())[1]
-@test type == DuplexIO{UnixIO.FD{UnixIO.In,UnixIO.FDType},
-                       UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+let f() = UnixIO.open(UnixIO.FDType, "foobar")
+    info, type = code_typed(f, ())[1]
+    @test type == DuplexIO{UnixIO.FD{UnixIO.In,UnixIO.FDType},
+                           UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+end
 
-f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDWR)
-info, type = code_typed(f, ())[1]
-@test type == DuplexIO{UnixIO.FD{UnixIO.In,UnixIO.FDType},
-                       UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDWR)
+    info, type = code_typed(f, ())[1]
+    @test type == DuplexIO{UnixIO.FD{UnixIO.In,UnixIO.FDType},
+                           UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+end
 
-f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDONLY)
-info, type = code_typed(f, ())[1]
-@test type == UnixIO.FD{UnixIO.In,UnixIO.FDType}
+let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDONLY)
+    info, type = code_typed(f, ())[1]
+    @test type == UnixIO.FD{UnixIO.In,UnixIO.FDType}
+end
 
-f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_WRONLY)
-info, type = code_typed(f, ())[1]
-@test type == UnixIO.FD{UnixIO.Out,UnixIO.FDType}
+let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_WRONLY)
+    info, type = code_typed(f, ())[1]
+    @test type == UnixIO.FD{UnixIO.Out,UnixIO.FDType}
+end
 
 end # testset
 

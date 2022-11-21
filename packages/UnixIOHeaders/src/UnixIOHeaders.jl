@@ -248,15 +248,36 @@ end
 
 macro include_headers()
     quote
-        exprs = collect(parse_headers())
-        write("include_headers_dump.jl", join(string.(exprs), "\n"))
-        #for ex in exprs
-        #    @show ex
-        #    Base.eval(@__MODULE__, ex)
-        #end
-        Base.eval(@__MODULE__, Expr(:block, exprs...))
+        let exprs = collect(UnixIOHeaders.parse_headers())
+            write(joinpath(@__DIR__, "include_headers_dump.jl"),
+                  join(string.(exprs), "\n"))
+            #for ex in exprs
+            #    @show ex
+            #    Base.eval(@__MODULE__, ex)
+            #end
+            Base.eval(@__MODULE__, Expr(:block, exprs...))
+            x = UnixIOHeaders.find_constants(@__MODULE__)
+            Base.eval(@__MODULE__, :(const constants = $x))
+        end
     end
 end
+
+
+function find_constants(m)
+   result = Dict{Int,Vector{Symbol}}()
+   for n in names(m; all=true)
+       x = getfield(m, n)
+       if x isa Integer
+           names = get(result, x, Symbol[])
+           if isempty(names)
+               result[signed(x)] = names
+           end
+           push!(names, n)    
+       end
+   end
+   result
+end
+
     
 
 baremodule C
@@ -286,9 +307,8 @@ ioctl(fd, cmd, arg) = @ccall ioctl(fd::Cint, cmd::Cint, arg::Ptr{Cint})::Cint
 
 const __builtin_va_list = nothing
 
-import ..parse_headers
-import ..@include_headers
-@include_headers
+using ..UnixIOHeaders
+UnixIOHeaders.@include_headers
 
 const termios_m = termios
 const tcgetattr_m = tcgetattr

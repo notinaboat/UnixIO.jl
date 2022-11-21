@@ -12,8 +12,6 @@ Look up name for C-constant(s) with value `n`.
 function constant_name(n::Integer; prefix="", first=false)
     @nospecialize
 
-    #FIXME
-    return  string(n)
     v = get(C.constants, n, Symbol[])
     if prefix != ""
         v = filter(x -> startswith(String(x), prefix), v)
