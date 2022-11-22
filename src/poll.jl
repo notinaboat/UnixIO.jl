@@ -70,10 +70,10 @@ end
 """
 Wait for an event to occur on `fd`.
 """
-@db 2 function wait_for_event(queue, fd::FD)
+@db 2 function wait_for_event(queue, fd::FD; deadline=Inf)
     assert_havelock(fd)
 
-    timer = register_timer(fd.deadline) do
+    timer = register_timer(deadline) do
         @dblock fd notify(fd, :timeout)
     end
     fd.nwaiting += 1

@@ -5,9 +5,6 @@ Unix IO Interface.
 
 For Julia programs that need to interact with Unix-specific IO interfaces.
 
-TODO:
- - Remove buffer from `FD`, use wrapper for buffering.
-
 Features:
 
  - Serial port / terminal configuration.
@@ -82,6 +79,7 @@ using Base: ImmutableDict,
 using Preferences
 using Mmap
 using ReadmeDocs               # for README""" ... """ doc strings.
+using MarkdownTableMaps        # for md_table_map
 using Preconditions            # for @require and @ensure contracts
 using AsyncLog                 # for @asynclog -- log errors in async tasks.
 import TypeTree                # for pretty-printed type trees in doc strings.
@@ -131,52 +129,17 @@ end
 
 
 
-# Deadlines / Timeouts.
-
-#=
-macro with_timeout(fd, timeout, ex)
-    quote
-        fd = $(esc(fd))
-        timeout = $(esc(timeout))
-        old_deadline = fd.deadline
-        if timeout == Inf
-            new_deadline = Inf
-        else
-            new_deadline = timeout + time()
-        end
-        if new_deadline < old_deadline
-            fd.deadline = new_deadline
-            if fd.deadline != Inf
-                @db 1 "Set fd.deadline: $(db_t(fd.deadline)) ($timeout)"
-            end
-        end
-        try
-            $(esc(ex))
-        finally
-            fd.deadline = old_deadline
-            if fd.deadline != Inf && fd.deadline != old_deadline
-                @db 1 "Reset fd.deadline: $(db_t(fd.deadline))"
-            end
-        end
-    end
-end
-=#
-
-
 # Unix File Descriptor wrapper.
 
 abstract type FDType end
 
-mutable struct FD{D<:TransferDirection,T<:FDType} <: TraitsIO
+mutable struct FD{D<:TransferDirection,T<:FDType} <: IOTraits.Stream
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
     ready::Base.ThreadSynchronizer
     closed::Base.ThreadSynchronizer
-#    timeout::Float64
-#    deadline::Float64
     gothup::Bool
-#    buffer::IOBuffer
     extra::ImmutableDict{Symbol,Any}
 
     FD{D}(fd) where D = FD{D,Union{}}(fd)
@@ -190,10 +153,7 @@ mutable struct FD{D<:TransferDirection,T<:FDType} <: TraitsIO
                   0,
                   Base.ThreadSynchronizer(),
                   Base.ThreadSynchronizer(),
-                  #Inf,
-                  #Inf,
                   false,
-                  #PipeBuffer(),
                   ImmutableDict{Symbol,Any}())
     end
 end
@@ -232,48 +192,10 @@ struct PidFD           <: FDType end
 struct Pseudoterminal  <: S_IFCHR end
 struct CanonicalMode   <: S_IFCHR end
 
-Base.wait(fd::FD, ::WaitUsingEPoll) = wait_for_event(epoll_queue, fd)
-Base.wait(fd::FD, ::WaitUsingPosixPoll) = wait_for_event(poll_queue, fd)
+IOTraits._wait(fd::FD, ::WaitUsingEPoll; deadline=Inf) = wait_for_event(epoll_queue, fd; deadline)
+IOTraits._wait(fd::FD, ::WaitUsingPosixPoll; deadline=Inf) = wait_for_event(poll_queue, fd; deadline)
 
-
-mutable struct Process
-    pid::C.pid_t
-    in::FD
-    out::FD
-    stopped::Bool
-    code::Union{Nothing, Cint}
-    exit_status::Union{Nothing, Cint}
-    signal::Union{Nothing, Cint}
-end
-
-isstopped(p::Process) = p.stopped
-isrunning(p::Process) = isalive(p) && !isstopped(p)
-isalive(p::Process) = p.exit_status == nothing &&
-                      (p.signal == nothing || p.stopped)
-didexit(p::Process) = p.exit_status != nothing
-waskilled(p::Process) = !isstopped(p) && p.signal != nothing
-
-IOTraits.WaitingMechanism(::Type{Process}) =
-    IOTraits.firstvalid(WaitUsingPidFD(),
-                        WaitBySleeping())
-
-@db function Base.wait(p::Process; timeout=Inf,
-                                   deadline=timeout+time())
-    if !isrunning(p)
-        @db return p "Already stopped or terminated"
-    end
-    wait(p, WaitingMechanism(p); deadline)
-    @ensure time() >= deadline || !isrunning(p)
-    return p
-end
-
-check(p::Process) = wait(p; deadline=0.0)
-
-Base.wait(p::Process, ::WaitBySleeping; kw...) = waitpid(p; kw...)
-Base.wait(p::Process, ::WaitUsingPidFD; kw...)= waitpidfd(p; kw...)
-
-
-
+IOTraits.bytes_remaining(fd::FD, ::UnknownTotalSize, ::Any) = fd.gothup ? 0 : nothing
 
 function fdtype(fd)
 
@@ -317,11 +239,55 @@ IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
 @db 3 function FD(fd, flags = fcntl_getfl(fd); events=nothing)
     @nospecialize
 
-    r = flags & C.O_RDWR   != 0 ?  DuplexIO(FD{In}(fd), FD{Out}(C.dup(fd))) :
+    r = flags & C.O_RDWR   != 0 ?  (FD{In}(fd), FD{Out}(C.dup(fd))) :
         flags & C.O_WRONLY != 0 ?  FD{Out}(fd) :
                                    FD{In}(fd)
     @db 3 return r
 end
+
+
+
+# Unix Processes.
+
+mutable struct Process
+    pid::C.pid_t
+    in::FD
+    out::FD
+    stopped::Bool
+    code::Union{Nothing, Cint}
+    exit_status::Union{Nothing, Cint}
+    signal::Union{Nothing, Cint}
+end
+
+isstopped(p::Process) = p.stopped
+isrunning(p::Process) = isalive(p) && !isstopped(p)
+isalive(p::Process) = p.exit_status == nothing &&
+                      (p.signal == nothing || p.stopped)
+didexit(p::Process) = p.exit_status != nothing
+waskilled(p::Process) = !isstopped(p) && p.signal != nothing
+
+IOTraits.WaitingMechanism(::Type{Process}) =
+    IOTraits.firstvalid(WaitUsingPidFD(),
+                        WaitBySleeping())
+
+@db function Base.wait(p::Process; timeout=Inf,
+                                   deadline=timeout+time())
+    if !isrunning(p)
+        @db return p "Already stopped or terminated"
+    end
+    wait(p, WaitingMechanism(p); deadline)
+    @ensure time() >= deadline || !isrunning(p)
+    return p
+end
+
+check(p::Process) = wait(p; deadline=0.0)
+
+Base.wait(p::Process, ::WaitBySleeping; kw...) = waitpid(p; kw...)
+Base.wait(p::Process, ::WaitUsingPidFD; kw...)= waitpidfd(p; kw...)
+
+
+
+
 
 debug_tiny(x::FD) = string(x)
 
@@ -342,6 +308,41 @@ include("WriteFD.jl")
 
 IOTraits.ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
 
+
+trait_doc = """
+
+# IO Traits
+
+| Type            | Read Fragmentation | Transfer Size         | Transfer Size Mechanism | Total Size          | Total Size Mechanism  | Cursor Support |
+| --------------- | ------------------ | --------------------- | ----------------------- | ------------------- | --------------------- | -------------- |
+| S_IFBLK         |                    |                       | Supports Stat Size      | Fixed Total Size    | Supports Stat Size    | Seekable       |
+| S_IFREG         |                    |                       | Supports Stat Size      | Variable Total Size | Supports Stat Size    | Seekable       |
+| S_IFIFO         |                    | Limited Transfer Size | Supports FIONREAD       |                     |                       |                | 
+| S_IFCHR         |                    |                       | Supports FIONREAD       |                     |                       |                |
+| S_IFSOCK        |                    | Limited Transfer Size | Supports FIONREAD       |                     |                       |                |
+| S_IFLNK         |                    |                       |                         |                     |                       |                | 
+| S_IFDIR         |                    |                       |                         |                     |                       |                | 
+| PidFD           |                    |                       |                         |                     |                       |                | 
+| Pseudoterminal  |                    |                       |                         |                     |                       |                | 
+| CanonicalMode   | Reads Lines        |                       |                         |                     |                       |                | 
+"""
+
+#=
+for (i, n) in enumerate(md_table_columns(trait_doc))
+    i > 1 || continue
+    f = Symbol(replace(n, " " => ""))
+    for (k, v) in md_table_map(trait_doc, 1 => i)
+        if v != ""
+            v = Symbol(replace(v, " " => ""))
+            ex = :(IOTraits.$f(::Type{<:FD{In,<:$(Symbol(k))}}) = $v())
+            eval(ex)
+        end
+    end
+end
+=#
+
+
+
 IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:Stream}}) = SupportsFIONREAD()
 IOTraits.TotalSize(::Type{<:FD{In,<:File}}) = VariableTotalSize()
 IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:File}}) = SupportsStatSize()
@@ -349,8 +350,8 @@ IOTraits.TotalSizeMechanism(::Type{<:FD{In,<:File}}) = SupportsStatSize()
 
 IOTraits.CursorSupport(::Type{<:FD{In,<:File}}) = Seekable()
 
-DuplexIOs.DuplexIO(i::FD{In}, o::FD{Out}) = @invoke DuplexIO(i::IO, o::IO)
-DuplexIOs.DuplexIO(o::FD{Out}, i::FD{In}) = @invoke DuplexIO(i::IO, o::IO)
+IOTraits.Availability(::Type{<:FD{In,<:File}}) = AlwaysAvailable()
+IOTraits.Availability(::Type{<:FD{In,<:Stream}}) = PartiallyAvailable()
 
 
 
@@ -403,10 +404,15 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
         flags &= ~C.O_RDWR
         fout = FD{Out,T}(open_raw(pathname, flags | C.O_WRONLY, mode; tcattr))
         fin = FD{In,T}(open_raw(pathname, flags; tcattr))
-        io = DuplexIO(IOTraits.LazyBufferedIn(fin), fout)
+        io = DuplexIO(IOTraits.BaseIO(IOTraits.LazyBufferedInput(fin)),
+                      IOTraits.BaseIO(fout))
     else
         D = (flags & C.O_WRONLY) != 0 ? Out : In
         io = FD{D,T}(open_raw(pathname, flags, mode; tcattr))
+        if D == In
+            io = IOTraits.LazyBufferedInput(io)
+        end
+        io = IOTraits.BaseIO(io)
     end
 
     @ensure isopen(io)
@@ -688,56 +694,32 @@ end
 
 
 """
-Read or write (FD{In} or FD{Out}) up to `count` bytes to or from `buf`
-until `fd.deadline`.
-Always attempt at least one call to `read(2)/write(2)`
-even if `fd.deadline` has passed.
-Return number of bytes transferred or `0` on timeout.
-"""
-@inline @db 2 function IOTraits.transfer(fd::FD,
-                                         ::IOTraits.AnyDirection,
-                                         buf::Ptr{UInt8},
-                                         ::IOTraits.RawPtr,
-                                         count::Int,
-                                         start::Int,
-                                         deadline::Float64)
-    @require !fd.isclosed
-    @require count > 0
-    buf += (start-1)
-
-    n = nointr_transfer(fd, buf, Csize_t(count))
-    if n >= 0
-        @db 2 return n
-    end
-
-    @dblock fd while time() < deadline
-        wait(fd)
-        n = nointr_transfer(fd, buf, Csize_t(count));                  ;@db 2 n
-        if n >= 0
-            @ensure n <= count
-            @db 2 return n
-        end                                                    ;@db 2 "wait..."
-    end
-
-    @db 2 return 0 "timeout!"
-end
-
-"""
 Read or write (FD{In} or FD{Out}) up to `count` bytes to or from `buf`.
 Retry on `C.EINTR`.
-Return number of bytes transferred or `-1` on `C.EAGAIN`.
+Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
 """
-@inline @db 2 function nointr_transfer(fd::FD, buf::Ptr{UInt8}, count::Csize_t)
+@inline @db 2 function IOTraits.unsafe_transfer(fd::FD,
+                                                dir::IOTraits.AnyDirection,
+                                                buf::Ptr{UInt8},
+                                                count::UInt)
+    @require !fd.isclosed
     @require count > 0
     while true
-        n = @cerr(allow=(C.EAGAIN, C.EINTR), raw_transfer(fd, buf, count))
+        n = @cerr(allow=(C.EAGAIN, C.EINTR),
+                  raw_transfer(fd, dir, buf, Csize_t(count)))
         n != -1 || @db 2 n errno() errname(errno())
-        if n != -1 || errno() == C.EAGAIN
-            @ensure n <= count
-            @db 2 return n
+        if n == -1
+            @assert errno() == C.EAGAIN
+            n = 0
         end
+        @ensure n <= count
+        @db 2 return UInt(n)
     end
 end
+
+raw_transfer(fd, ::Out, buf, count) = C.write(fd, buf, count)
+raw_transfer(fd, ::In,  buf, count) =  C.read(fd, buf, count)
+
 
 
 include("timer.jl")
@@ -830,14 +812,14 @@ and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
     clientfd = @cerr C.open(path, C.O_RDONLY | C.O_NOCTTY)
     @assert !ispt(clientfd)
 
-    fd = FD(pt)
-    tcsetattr(fd.in) do attr
+    ptin, ptout = FD(pt)
+    tcsetattr(ptin) do attr
         setraw(attr)
         attr.c_lflag |= C.ICANON
     end
-    set_extra(fd.in, :pt_clientfd, clientfd)
+    set_extra(ptin, :pt_clientfd, clientfd)
 
-    @db return fd, path
+    @db return ptin, ptout, path
 end
 
 
@@ -1023,7 +1005,7 @@ end
 @db function read(cmd::Cmd; timeout=Inf, kw...)
     r = open(cmd; kw...) do cmdin, cmdout
         shutdown(cmdin)
-        Base.read(cmdout; timeout)
+        readall(cmdout; timeout)
     end
     @db return r
 end
@@ -1216,9 +1198,9 @@ end
 @db 3 function pseudoterminal_spawn(cmd; kw...)
 
     # Create a Pseudoterminal to communicate with Child Process STDIN/OUT.
-    parent_io, devpath = openpt()
-    cmdin = parent_io.out
-    cmdout = parent_io.in
+    parent_in, parent_out, devpath = openpt()
+    cmdin = parent_out
+    cmdout = parent_in
 
     pid = spawn_process(cmd, devpath; kw...)
 
@@ -1448,7 +1430,7 @@ const signame = [string(unsafe_string(C.strsignal(n)),
 function Base.show(io::IO, e::ProcessFailedException)
     p = e.p
     print(io,
-          "ProcessFailedException: ", cmd, ", ", "pid ", p.pid,
+          "ProcessFailedException: ", e.cmd, ", ", "pid ", p.pid,
           (waskilled(p) ? (" killed by ", signame[p.signal]) :
                           (" exit status ", p.exit_code))...)
 end

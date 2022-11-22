@@ -29,6 +29,7 @@ doc:
 
 
 .PHONY: test
+test: export JULIA_UNIX_IO_DEBUG_LEVEL=0
 test:
 	$(JL) test/runtests.jl
 

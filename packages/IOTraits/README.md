@@ -8,6 +8,22 @@ IO interfaces.
 ```{.julia .numberLines .lineAnchors startFrom="7"}
 module IOTraits
 
+using Preconditions
+using Markdown
+using Preferences
+using Mmap
+include("../../../src/macroutils.jl")
+
+    using UnixIOHeaders
+    const C = UnixIOHeaders
+    include("../../../src/debug.jl")
+
+    @db function __init__()
+        @ccall(jl_generating_output()::Cint) == 1 && return
+        debug_init()
+        @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
+    end
+
 include("idoc.jl")
 ```
 
@@ -15,14 +31,16 @@ include("idoc.jl")
 ## Background
 
 This collection of Trait types began as a tool for resolving method
-selection issues in the UnixIO.jl package. Everything in Unix is a
-file, but there are many types of file, many types of Unix, and
-many ways a file handled can be configured.
+selection issues in the UnixIO.jl package.
+
+Everything in Unix is a file, but there are many different types of file,
+a few different types of Unix, and many ways a file handle can be configured.
 
 Selection of correct (or most efficient) methods can often be
-achieved with a simple type hierarchy. However traits seemed to be
+achieved with a simple type hierarchy. However traits seem to be
 useful way to deal with variations in behaviour that depend
 file handle configuration and platform.
+
 In general `libc`'s `write(2)` and `read(2)` can be used to transfer
 data to or from any Unix file descriptor. However, the precise
 behaviour of these functions depends on many factors.
@@ -40,7 +58,7 @@ platform.
 
 IOTraits expands on the traits from UnixIO.jl in the hope of making
 them more broadly useful.
-According to the [law of the hammer][Hammer] some of this is probably 
+However, according to the [law of the hammer][Hammer] some of this is probably 
 overkill. The intention is to consider the application of Trait types
 to various aspects of IO and to see where it leads.
 
@@ -53,7 +71,7 @@ to various aspects of IO and to see where it leads.
 
 ## Overview
 
-The IOTraits interface is built around the `transfer(stream, buffer)` function.
+The IOTraits interface is built around the function `transfer(stream, buffer)`.
 This function transfers data between a stream and a buffer.
 
 Traits are used to specify the behaviour of the stream and the buffer.
@@ -64,24 +82,24 @@ Trait                      Description
 `TransferDirection`        Which way is the transfer? \
                            (`In`, `Out` or `Exchange`).
 
-`StreamIndexing`           Is indexing (e.g. `pread(2)`) supported? \
+`StreamIndexing`           Is indexed stream access supported? (e.g. `pread(2)`) \
                            (`NotIndexable`, `IndexableIO`)
 
 `FromBufferInterface`      How to get data from the buffer? \
-                           (`FromIO`, `FromPop`, `FromTake`, `UsingIndex`,
-                            `FromIteration` or `UsingPtr`)
+                           (`FromIO`, `FromStream`, `FromPop`, `FromTake`,
+                            `UsingIndex`, `FromIteration` or `UsingPtr`)
 
 `ToBufferInterface`        How to put data into the buffer? \
-                           (`ToIO`, `ToPush`, `ToPut`, `UsingIndex` or
-                            `UsingPtr`)
+                           (`ToIO`, `ToStream`, `ToPush`, `ToPut`,
+                            `UsingIndex` or `UsingPtr`)
 
 `TotalSize`                How much data is available? \
                            (`UnknownTotalSize`, `VariableTotalSize`,
                             `FixedTotalSize`, or `InfiniteTotalSize`)
 
 `TransferSize`              How much data can be moved in a single transfer? \
-                            (`UnknownTransferSize`, `KnownTransferSize`,
-                             `LimitedTransferSize` or `FixedTransferSize`)
+                            (`UnlimitedTransferSize`, `LimitedTransferSize`
+                            or `FixedTransferSize`)
 
 `ReadFragmentation`         What guarantees are made about fragmentation? \
                             (`ReadsBytes`, `ReadsLines`, `ReadsPackets` or
@@ -94,10 +112,12 @@ Trait                      Description
                             (`WaitBySleeping`, `WaitUsingPosixPoll`,
                              `WaitUsingEPoll`, `WaitUsingPidFD` or
                              `WaitUsingKQueue`)
+
+FIXME update summaries
 --------------------------------------------------------------------------------
 
 
-## IO Interface Model
+## The IO Interface Model
 
 ```julia
 julia>
@@ -105,7 +125,8 @@ help?> Base.IO
   No documentation found.
 ```
 
-As it stands Julia doesn't have a well defined generic interface for IO.
+As things stand Julia doesn't have a well defined generic interface for IO.
+
 It isn't possible to write a generic library that accepts `<: IO` objects
 because specification of the `IO` interface is not complete and the reference
 implementations are inconsistent. [^IF1] There are also instances where
@@ -125,19 +146,24 @@ actually blocks to wait for data.
 
 The Julia IO interface is built around the abstract type `Base.IO`. The `IO`
 interface specifications refer to `IO` objects as "stream" in some places
-and "io" in others.[^IF3] The IOTraits interface defines `IOTraits.Stream`
+and "io" in others[^IF3].
+
+The IOTraits interface defines `IOTraits.Stream`
 and uses the word "stream" to refer to instances of this type. To avoid
 ambiguity: instances of `IO` are referred to as "a `Base.IO` object".
-Also, for clarity `IOTraits.Stream` is not a subtype of `Base.IO`.
 
 [^IF3]: Examples from function signatures:
 `close(stream)`, `bytesavailable(io)`, `readavailable(stream)`,
 `isreadable(io)`, `read(io::IO, String)`, `eof(stream)`. \
 Examples from function descriptions: "The IO stream", "the specified IO object"
 "the given I/O stream", "the stream `io`", "the stream or file". \
-Note: `Base.IOStream` is a concrete subtype of `IO` that implements local
+(Also note: `Base.IOStream` is a concrete subtype of `IO` that implements local
 file system IO. References to "stream" and "IO stream" in existing `IO`
-interface specifications are not related to `Base.IOStream`.
+interface specifications are not related to `Base.IOStream`.)
+
+[^BaseIO]: Similarities and differences between the `Base.IO`
+model and the `IOTraits.Stream` model can be seen by reading the
+`IOTraits.BaseIO` implementations of the `Base.IO` functions below.
 
 
 
@@ -146,21 +172,20 @@ Many common operations involve transferring data to and from byte streams.
 e.g. writing data to a local file; receiving data from a network server;
 or typing commands into a terminal.
 
+Note that `IOTraits.Stream` is not a subtype of `Base.IO`.[^BaseIO]
 
-```{.julia .numberLines .lineAnchors startFrom="147"}
+
+```{.julia .numberLines .lineAnchors startFrom="175"}
 abstract type Stream end
 ```
 
 
-`TraitsIO(::Stream) -> IO` creates a `Base.IO` compatible wrapper around a
-stream.
-Similarities and differences between the `Base.IO` model and the
-`IOTraits.Stream` model can be seen by reading the `TraitsIO`
-implementations of the `Base.IO` functions below.
+The constructor `BaseIO(::Stream) -> Base.IO` creates a Base.IO compatible
+wrapper around a stream.
 
 
-```{.julia .numberLines .lineAnchors startFrom="156"}
-struct TraitsIO{T<:Stream} <: Base.IO
+```{.julia .numberLines .lineAnchors startFrom="181"}
+struct BaseIO{T<:Stream} <: Base.IO
     stream::T
 end
 ```
@@ -205,7 +230,7 @@ with a retry layer to support cases where all `n` items are required.
 
 **Blocking:** By default the `transfer` function waits indefinitely for
 data to be available. Control over this behaviour is provided by the optional
-`deadline=` argument. `transfer` stops waiting when `deadline > time()`.
+`deadline=` argument. The `transfer` function stops waiting when `deadline > time()`.
 This interface allows non-blocking transfers (`deadline=0`), blocking transfers
 (`deadline=Inf`) or anything in between.[^AS2]
 
@@ -265,6 +290,27 @@ the same behavior as direction `Out` except that incoming data appears in the
 output buffer after each output transfer.
 
 
+### Atomicity of Transfers
+
+FIXME
+ - byte transfers always atomic
+ - multi-byte items
+    - return zero if bytesavailable < ioelsize ?
+    - if Unknown Availability try a transfer and error if not enough bytes
+        - include the partial bytes in the exception object
+        - warning with suggestion to wrap with a buffer
+
+
+### Generic Code and Dependance on Traits
+
+FIXME
+ - Generic code may rely on e.g. Low Transfer Cost, or Known Transfer Size
+ - Generic code should have assertions for these traits.
+ - Generic code could promote streams to have required traits as needed
+   (i.e. wrap with buffered stream).
+
+
+
 ### Methods of Base Functions for Streams
 
 The IOTraits interface avoids defining methods of Base functions that have
@@ -278,20 +324,39 @@ to a wrapped delegate stream if the `StreamDelegation` trait is in effect).
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="272"}
+```{.julia .numberLines .lineAnchors startFrom="320"}
 Base.isopen(s::Stream) = is_proxy(s) ? isopen(unwrap(s)) : false
 
 Base.close(s::Stream) = is_proxy(s) ? close(unwrap(s)) : nothing
 
-Base.wait(s::Stream) = is_proxy(s) ? wait(unwrap(s)) :
-                                     wait(s, WaitingMechanism(s))
+Base.wait(s::Stream; deadline=Inf) = is_proxy(s) ?
+                                     wait(unwrap(s); deadline) :
+                                     _wait(s, WaitingMechanism(s); deadline)
+
+@db function Base.bytesavailable(s::Stream)
+    @require is_input(s)
+    s = unwrap(s)
+    _bytesavailable(s, Availability(s), TransferSize(s))
+end
+
+function Base.length(s::Stream)
+    @require TotalSize(s) isa KnownTotalSize
+    s = unwrap(s)
+    _length(s, TotalSizeMechanism(s))
+end
+
+function Base.readline(s::Stream; timeout=Inf, keep=false)
+    @require is_input(s)
+    s = unwrap(s)
+    _readline(s, ReadFragmentation(s); timeout, keep)
+end
+
+function Base.peek(s::Stream, ::Type{T}; timeout=Inf) where T
+    @require is_input(s)
+    s = unwrap(s)
+    _peek(s, PeekSupport(s), T; timeout)
+end
 ```
-
-
-FIXME[^FIXME279]
-
-[^FIXME279]: ⚠️  wait timeout ? deadline ? args for wait ?
-
 
 
 ### Stream Delegation Wrappers
@@ -300,7 +365,7 @@ FIXME[^FIXME279]
 The StreamDelegation trait allows a Stream subtype to delegate most method
 calls to a wrapped substream while redefining other methods as needed.
 
-Wrappers are used to augment low level IO drivers with features like buffering
+Wrappers are used to augment low level stream drivers with features like buffering
 or defragmentation. Wrappers are also used to make `Stream` objects compatible
 with `Base.IO`.
 
@@ -312,7 +377,7 @@ with `Base.IO`.
 | `DelegatedToSubStream()` | This stream is a proxy for a sub stream.          |
 
 
-```{.julia .numberLines .lineAnchors startFrom="299"}
+```{.julia .numberLines .lineAnchors startFrom="371"}
 abstract type StreamDelegation end
 struct NotDelegated <: StreamDelegation end
 struct DelegatedToSubStream <: StreamDelegation end
@@ -324,13 +389,14 @@ is_proxy(s) = StreamDelegation(s) != NotDelegated()
 
 
 `unwrap(stream)`
-Retrieves the underlying stream that is wrapped by a proxy stream.
+-- Retrieves the underlying stream that is wrapped by a proxy stream.
 
 
-```{.julia .numberLines .lineAnchors startFrom="312"}
+```{.julia .numberLines .lineAnchors startFrom="384"}
 unwrap(s) = unwrap(s, StreamDelegation(s))
 unwrap(s, ::NotDelegated) = s
 unwrap(s, ::DelegatedToSubStream) = s.stream
+unwrap(T::Type, ::DelegatedToSubStream) = fieldtype(T, :stream)
 ```
 
 
@@ -366,13 +432,7 @@ unwrap(s, ::DelegatedToSubStream) = s.stream
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="350"}
-using Preconditions
-using Markdown
-using Preferences
-using Mmap
-include("../../../src/macroutils.jl")
-```
+
 
 
 # Transfer Direction Trait
@@ -394,7 +454,7 @@ supported by a stream.
 | `Exchange()`   | data is exchanged between the `IO` and a buffer.[^SPI]      |
 
 
-```{.julia .numberLines .lineAnchors startFrom="376"}
+```{.julia .numberLines .lineAnchors startFrom="444"}
 abstract type TransferDirection end
 struct In <: TransferDirection end
 struct Out <: TransferDirection end
@@ -404,8 +464,26 @@ TransferDirection(s) = TransferDirection(typeof(s))
 TransferDirection(T::Type) = is_proxy(T) ? TransferDirection(unwrap(T)) :
                                            nothing
 
-_isreadable(s) = TransferDirection(s) != Out()
-_iswritable(s) = TransferDirection(s) != In()
+is_input(s) = TransferDirection(s) != Out()
+is_output(s) = TransferDirection(s) != In()
+
+verb(::In) = "from"
+verb(::Out) = "to"
+```
+
+
+The constructor `BaseIOStream(::Base.IO) -> IOTraits.Stream` creates a Stream
+compatible wrapper around a Base.IO.
+
+
+```{.julia .numberLines .lineAnchors startFrom="464"}
+struct BaseIOStream{T<:Base.IO,D<:TransferDirection} <: Stream
+    io::T
+end
+
+TransferDirection(::Type{BaseIOStream{T, D}}) where {T, D} = D()
+
+Base.isopen(s::BaseIOStream) = isopen(s.io)
 ```
 
 
@@ -415,7 +493,7 @@ _iswritable(s) = TransferDirection(s) != In()
 Is indexing (e.g. `pread(2)`) supported?
 
 
-```{.julia .numberLines .lineAnchors startFrom="396"}
+```{.julia .numberLines .lineAnchors startFrom="478"}
 abstract type StreamIndexing end
 struct NotIndexable <: StreamIndexing end
 struct IndexableIO <: StreamIndexing end
@@ -427,6 +505,7 @@ stream_is_indexable(s) = StreamIndexing(s) == IndexableIO()
 
 
 ioeltype(s) = isabstracttype(eltype(s)) ? UInt8 : eltype(s)
+@selfdoc ioelsize(s) = sizeof(ioeltype(s))
 ```
 
 
@@ -452,15 +531,16 @@ determines what polling mechamism is used.
 If `stream` is indexable then `start` can be a tuple of two indexes:
 `(stream_start_byte_index, buffer_start_index)`.
 
-The direction of transfer (`In`, `Out` or `Exchange`) depends on
-`TransferDirection(stream)`.
+The direction of transfer depends on
+`TransferDirection(stream) ->` (`In`, `Out` or `Exchange`).
 
 The type of items transferred depends on `ioeltype(buffer)`.[^ELTYPE]
 
 [^ELTYPE]: By default `ioeltype(x) = eltype(x)`.
 
-The `buffer` can be an `AbstractArray`, an `AbstractChannel`, a `URI`, an `IO`,
-or another `Stream`.  Or, the `buffer` can be any collection that implements
+The `buffer` can be an `AbstractArray`, an `AbstractChannel`, a `URI`,
+a `Base.IO`, or another `Stream`.
+Or, the `buffer` can be any collection that implements
 the Iteration Interface, the Indexing Interface, the AbstractChannel
 interface, or the `push!`/`pop!` interface.[^BUFIF]
 
@@ -477,19 +557,22 @@ A transfer to a `URI` creates a new resource or replaces the resource
 (i.e. HTTP PUT semantics).
 
 
-```{.julia .numberLines .lineAnchors startFrom="456"}
-function transfer(stream, buf, n=missing;
-                  start::Union{Integer, NTuple{2,Integer}}=1,
+```{.julia .numberLines .lineAnchors startFrom="540"}
+@db function transfer(stream, buf, n::Union{Integer,Missing}=missing;
+                  start::Union{Integer, NTuple{2,Integer}}=UInt(1),
                   timeout=Inf,
                   deadline=Inf)
 
     @require isopen(stream)
+    @require ismissing(n) || n > 0
+    @require all(start .> 0)
     if timeout != Inf
         deadline = time() + timeout
     end
-    n = transfer(stream, buf, n, start, deadline)
+    n = transfer(stream, buf, n, start, Float64(deadline))
     transfer_complete(stream, buf, n)
-    return n
+    @ensure n isa UInt
+    @db return n
 end
 ```
 
@@ -501,7 +584,7 @@ The `transfer_complete` hook can be used, for example, to flush an output
 buffer at end of a transfer.
 
 
-```{.julia .numberLines .lineAnchors startFrom="478"}
+```{.julia .numberLines .lineAnchors startFrom="565"}
 transfer_complete(stream, buf, n) = nothing
 ```
 
@@ -516,8 +599,8 @@ transfer_complete(stream, buf, n) = nothing
 `Out` streams must be on the right.
 
 
-```{.julia .numberLines .lineAnchors startFrom="491"}
-function transfer(t::Pair{<:Stream,<:Any}, a...; start=(1 => 1), kw...)
+```{.julia .numberLines .lineAnchors startFrom="578"}
+function transfer(t::Pair{<:Stream, <:Any}, a...; start=(1 => 1), kw...)
     @require TransferDirection(t[1]) == In()
     if start isa Pair
         start = (start[1], start[2])
@@ -535,19 +618,254 @@ end
 ```
 
 
+## Waiting for the Deadline
+
+
+The specification for `transfer` says: If no items are immediately available,
+wait until `time() > deadline` for at least one item to be transferred.
+
+The method below starts by simply attempting the transfer.
+This avoids the overhead of locking and measuring the current time.
+If the initial transfer attempt yields no data, the `wait_for_transfer`
+method is selected based on Waiting Mechanism trait.
+
+If the buffer elements are larger than one byte and the stream has
+Unknown Availability then `transfer_available` can end up with a
+partial item in the buffer. In this situation a second attempt is needed
+to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
+that the second transfer adheres to the specified deadline.
+
+
+
+```{.julia .numberLines .lineAnchors startFrom="614"}
+function transfer(stream, buffer, n, start, deadline::Float64)
+
+    if Availability(stream) == UnknownAvailability() &&
+    ioelsize(buffer) != 1 &&
+    deadline != Inf
+        stream = timeout_stream(stream; deadline)
+    end
+
+    r = transfer_available(stream, buffer, n, start)
+    if r > 0 || iszero(deadline)
+        return r
+    end
+    wait_for_transfer(stream, WaitingMechanism(stream),
+                      buffer, n, start, deadline)
+end
+```
+
+
+# Waiting Mechanism Trait
+
+
+```{.julia .numberLines .lineAnchors startFrom="634"}
+abstract type WaitingMechanism end
+struct WaitBySleeping     <: WaitingMechanism end
+struct WaitUsingPosixPoll <: WaitingMechanism end
+struct WaitUsingEPoll     <: WaitingMechanism end
+struct WaitUsingPidFD     <: WaitingMechanism end
+struct WaitUsingKQueue    <: WaitingMechanism end
+```
+
+
+The `WaitingMechanism` trait describes ways of waiting for OS resources
+that are not immediately available. e.g. when `read(2)` returns
+`EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
+
+Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
+define a method of `Base.wait(::T, r::R)`.
+`WaitBySleeping` is the default.[^SLEEP]
+
+If a `WaitingMechanism`, `T`, is not available on a particular OS
+then `Base.isvalid(::T)` should be defined to return `false`.[^AIO]
+
+[^AIO]: ⚠️ Consider Linux AIO `io_getevents` for disk io?
+
+`WaitingMechanism(stream)` returns one of:
+
+--------------------------------------------------------------------------------
+Waiting Mechanism     Description 
+--------------------- ----------------------------------------------------------
+`WaitBySleeping`      Wait using a dumb retry/sleep loop.
+
+`WaitUsingPosixPoll`  Wait using the POSIX `poll` mechanism.
+                      Wait for activity on a set of file descriptors.
+                      Applicable to FIFO pipes, sockets and character devices
+                      (but not local files).  See [`poll(2)`][poll]
+
+`WaitUsingEPoll`      Wait using the Linux `epoll` mechanism.
+                      Like `poll` but scales better for workloads with a large
+                      number of waiting streams.
+                      See [`epoll(7)`][epoll]
+
+`WaitUsingKQueue`     Wait using the BSD `kqueue` mechanism.
+                      Like `epoll` but can also wait for files, processes,
+                      signals etc. See [`kqueue(2)`][kqueue]
+
+`WaitUsingPidFD()`    Wait for process termination using the Linux `pidfd`
+                      mechanism. A `pidfd` is a special process monitoring
+                      file descriptor that can in turn be monitored by `poll` or
+                      `epoll`. See [`pidfd_open(2)`][pidfd]
+--------------------------------------------------------------------------------
+
+[poll]: https://man7.org/linux/man-pages/man2/poll.2.html
+[epoll]: https://man7.org/linux/man-pages/man7/epoll.7.html
+[kqueue]: https://www.freebsd.org/cgi/man.cgi?kqueue
+[pidfd]: http://man7.org/linux/man-pages/man2/pidfd_open.2.html
+
+[^SLEEP]: Sleeping may be the most efficient mechanism for small systems with
+simple IO requirements, for large systems where throughput is more important
+than latency, or for systems that simply do not spend a lot of time
+waiting for IO. Sleeping allows other Julia tasks to run immediately, whereas
+the other polling mechanisms all have some amount of book-keeping and system
+call overhead.
+
+
+```{.julia .numberLines .lineAnchors startFrom="695"}
+WaitingMechanism(x) = WaitingMechanism(typeof(x))
+WaitingMechanism(T::Type) = is_proxy(T) ? WaitingMechanism(unwrap(T)) :
+                                          WaitBySleeping()
+
+Base.isvalid(::WaitingMechanism) = true
+Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
+Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
+Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
+
+firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
+
+const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
+                                          WaitUsingEPoll(),
+                                          WaitUsingPosixPoll(),
+                                          WaitBySleeping())
+
+_wait(x, ::WaitBySleeping; deadline=Inf) = sleep(0.1)
+```
+
+
+## Preferred Polling Mechanism
+
+    set_poll_mechanism(name)
+
+Configure the preferred event polling mechanism:
+"kqueue", "epoll", "poll", or "sleep".[^POLL]
+This setting is persistently stored through [Preferences.jl][Prefs].
+
+[^POLL]: This setting applies only to `poll(2)`-compatible file descriptors
+(i.e. it does not apply to local disk files).
+
+By default, IOTraits will try to choose the best available mechanism
+(see `default_poll_mechanism`).
+
+
+To find out what mechanism is used for a particular `FD` call:
+`WaitingMechanism(fd)`
+
+[Prefs]: https://github.com/JuliaPackaging/Preferences.jl
+
+
+```{.julia .numberLines .lineAnchors startFrom="735"}
+function set_poll_mechanism(x)
+    @require poll_mechanism(x) != nothing
+    @require isvalid(poll_mechanism(x))
+    @set_preferences!("waiting_mechanism" => x)
+    @warn "Preferred IOTraits.WaitingMechanism set to $(poll_mechanism(x))." *
+          "UnixIO must be recompiled for this setting to take effect."
+end
+
+poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
+                       name == "epoll"  ? WaitUsingEPoll() :
+                       name == "poll"   ? WaitUsingPosixPoll() :
+                       name == "sleep"  ? WaitBySleeping() :
+                                          default_poll_mechanism
+
+const preferred_poll_mechanism =
+    poll_mechanism(@load_preference("waiting_mechanism"))
+```
+
+
+## Wait By Sleeping Method
+
+
+The Wait By Sleeping method for `wait_for_transfer` calls `transfer_available`
+in a loop until data is available or the deadline is reached.
+
+An exponentially increasing sleep delay minimises latency for short waits and
+limits CPU use for longer waits.
+
+
+```{.julia .numberLines .lineAnchors startFrom="763"}
+const delay_sequence =
+    ExponentialBackOff(;n = typemax(Int),
+                        first_delay = 0.01, factor = 1.2, max_delay = 0.25)
+
+@db function wait_for_transfer(stream, ::WaitBySleeping,
+                               buf, n, start, deadline::Float64)
+    for delay in delay_sequence
+        r = transfer_available(stream, buf, n, start);
+        if r >= 0
+            @db return r
+        end
+        if time() >= deadline
+            @db return 0
+        end
+        sleep(delay)
+    end
+end
+```
+
+
+## Specialised Waiting Methods
+
+
+In the default waiting method, `wait` is called in a loop until data is
+available or the deadline is reached. The appropriate `wait` method will
+be selected according to Waiting Mechanism.
+
+`Base.lock` and `Base.unlock` must be implemented for each stream type.[^LOCK]
+
+[^LOCK]: These methods should do whatever is necessary to avoid race conditions
+between `Base.wait` and `transfer_available`.
+In UnixIO.jl `Base.wait` waits for a `ThreadSynchronizer` and the underlying
+polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
+
+
+```{.julia .numberLines .lineAnchors startFrom="797"}
+@db function wait_for_transfer(stream, buf, n, start, deadline::Float64,
+                               ::WaitingMechanism)
+    try 
+        lock(stream)
+        while time() < deadline
+            wait(stream; deadline)
+            r = transfer_available(stream, buf, n, start);
+            if r > 0
+                @db return r
+            end
+        end
+        @db return 0
+    finally
+        unlock(stream)
+    end
+end
+```
+
+
 # Buffer Interface Traits
 
 
-```{.julia .numberLines .lineAnchors startFrom="511"}
+```{.julia .numberLines .lineAnchors startFrom="818"}
 abstract type BufferInterface end
 struct UsingIndex <: BufferInterface end
 struct UsingPtr <: BufferInterface end
-struct RawPtr <: BufferInterface end
+struct IsItemPtr <: BufferInterface end
+struct IsBytePtr <: BufferInterface end
 struct FromIO <: BufferInterface end
+struct FromStream <: BufferInterface end
 struct FromPop <: BufferInterface end
 struct FromTake <: BufferInterface end
 struct FromIteration <: BufferInterface end
 struct ToIO <: BufferInterface end
+struct ToStream <: BufferInterface end
 struct ToPush <: BufferInterface end
 struct ToPut <: BufferInterface end
 ```
@@ -562,31 +880,37 @@ data from a particular buffer type
 | Interface         | Description                                              |
 |:----------------- |:-------------------------------------------------------- |
 | `FromIO()`        | Take data from the buffer using the `Base.IO` interface. |
+| `FromStream()`    | Take data from the `IOTraits.Stream` interface.          |
 | `FromPop()`       | Use `pop!(buffer)` to read from the buffer.              |
 | `FromTake()`      | Use `take!(buffer)`.                                     |
 | `FromIteration()` | Use `for x in buffer...`.                                |
 | `UsingIndex()`    | Use `buffer[i]` (the default).                           |
-| `UsingPtr()`      | Use `unsafe_copyto!(pointer(buffer), x, n)`.             | 
-| `RawPtr()`        | Use `unsafe_copyto!(buffer, x, n)`.                      | 
+| `UsingPtr()`      | Use `unsafe_copyto!(x, pointer(buffer), n)`.             | 
+| `IsItemPtr()`     | Use `unsafe_copyto!(x, buffer, n)`.                      | 
+| `IsBytePtr()`     | Special case of `IsItemPtr` for `ioelsize(buffer) == 1`. |
 
-Default `FromBufferInterface` methods are built in for common buffer types:
+Default `FromBufferInterface` methods are built-in for common buffer types:
 
 
-```{.julia .numberLines .lineAnchors startFrom="543"}
+```{.julia .numberLines .lineAnchors startFrom="855"}
 FromBufferInterface(x) = FromBufferInterface(typeof(x))
 FromBufferInterface(::Type) = FromIteration()
 FromBufferInterface(::Type{<:IO}) = FromIO()
+FromBufferInterface(::Type{<:Stream}) = FromStream()
 FromBufferInterface(::Type{<:AbstractChannel}) = FromTake()
-FromBufferInterface(::Type{<:Ptr}) = RawPtr()
 FromBufferInterface(::Type{<:Ref}) = UsingPtr()
+FromBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
+                                                                 IsItemPtr()
 ```
 
 
 Pointers can be used for `AbstractArray` buffers of Bits types.
 
 
-```{.julia .numberLines .lineAnchors startFrom="554"}
+```{.julia .numberLines .lineAnchors startFrom="868"}
 FromBufferInterface(T::Type{<:AbstractArray}) = ArrayIOInterface(T)
+
+ArrayIOInterface(::Type) where T = UsingIndex()
 
 ArrayIOInterface(::Type{<:Array{T}}) where T =
     isbitstype(T) ? UsingPtr() : UsingIndex()
@@ -605,229 +929,46 @@ in a particular type of buffer
 | Interface      | Description                                                 |
 |:-------------- |:----------------------------------------------------------- |
 | `ToIO`         | Write data to the buffer using the `Base.IO` interface.     |
+| `ToStream`     | Write data using the `IOTraits.Stream` interface.           |
 | `ToPush`       | Use `push!(buffer, data)`.                                  |
 | `ToPut`        | Use `put!(buffer, data)`.                                   |
 | `UsingIndex`   | Use `buffer[i] = data (the default)`.                       |
-| `UsingPtr`     | Use `unsafe_copyto!(x, pointer(buffer), n)`.                |
-| `RawPtr`       | Use `unsafe_copyto!(x, buffer, n)`.                         |
+| `UsingPtr`     | Use `unsafe_copyto!(pointer(buffer), x, n)`.                |
+| `IsItemPtr`    | Use `unsafe_copyto!(buffer, x, n)`.                         |
+| `IsBytePtr`    | Special case of `IsItemPtr` for `ioelsize(buffer) == 1`.    |
 
-Default `ToBufferInterface` methods are built in for common buffer types.
+Default `ToBufferInterface` methods are built-in for common buffer types.
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="583"}
+```{.julia .numberLines .lineAnchors startFrom="901"}
 ToBufferInterface(x) = ToBufferInterface(typeof(x))
 ToBufferInterface(::Type) = ToPush()
 ToBufferInterface(::Type{<:IO}) = ToIO()
+ToBufferInterface(::Type{<:Stream}) = ToStream()
 ToBufferInterface(::Type{<:AbstractChannel}) = ToPut()
 ToBufferInterface(::Type{<:Ref}) = UsingPtr()
-ToBufferInterface(::Type{<:Ptr}) = RawPtr()
 ToBufferInterface(T::Type{<:AbstractArray}) = ArrayIOInterface(T)
-```
-
-
-# Transfer Function Dispatch
-
-
-The top level `transfer` method promotes the keyword arguments
-(`start` and `deadline`) to positional arguments so we can dispatch
-on their types.
-
-## `start` Index Normalisation
-
-If `start` is a Tuple of indexes it is normalised by the method below.
-The `StreamIndexing` trait is used to check that `stream` supports indexing.
-Indexable streams are replaced by a `Tuple` containing `stream` and the
-stream index.
-
-
-```{.julia .numberLines .lineAnchors startFrom="607"}
-function transfer(stream, buf, n, start::Tuple, deadline)
-    @require StreamIndexing(stream) == IndexableIO() || start[1] == 1
-    if start[1] != 1
-        stream = (stream, start[1])
-    end
-    transfer(stream, buf, n, start[2], deadline)
-end
-```
-
-
-From here on, `start` is always a simple `Integer` index into `buf`.
-
-
-## Applicaiton of Direction and Buffer Interface Traits
-
-Next, the `IODriection` and `BufferInterface` traits are inserted into the
-argument list.[^InOut]
-
-[^InOut]: Note that although the `IODirection` is part of the argument list
-and it is best to avoid premature specialisation on direction. Eventually
-most transfers will end up calling an OS `read` or `write` function.
-However, much of the transfer logic is the same irrespective of direction.
-For example, the methods for `UsingPtr` and `UsingIndex` below work for
-both input and output. (Another consideration is supporting interfaces with
-`IODirection` `Exchange`).
-
-
-```{.julia .numberLines .lineAnchors startFrom="632"}
-transfer(stream, buf, n, start::Integer, deadline) = 
-    transfer(stream, TransferDirection(stream), buf, n, start, deadline)
-
-transfer(stream, ::In, buf, n, start, deadline) =
-    transfer(stream, In(), buf, ToBufferInterface(buf), n, start, deadline)
-
-transfer(stream, ::Out, buf, n, start, deadline) =
-    transfer(stream, Out(), buf, FromBufferInterface(buf), n, start, deadline)
-```
-
-
-## Transfer Specialisations for Indexable Buffers
-
-
-Try to use the whole length of the buffer if `n` is missing.
-
-
-```{.julia .numberLines .lineAnchors startFrom="648"}
-function transfer(stream, ::AnyDirection,
-                  buf, ::Union{RawPtr, UsingPtr, UsingIndex},
-                  n::Missing, start, deadline)
-    n = length(buffer) - (start - 1)
-    transfer(stream, buffer, n, start, deadline)
-end
-```
-
-
-Convert pointer-compatible buffers to pointers.
-
-
-```{.julia .numberLines .lineAnchors startFrom="659"}
-function transfer(stream, ::AnyDirection, buf, ::UsingPtr, n, start, deadline)
-    checkbounds(buf, (start-1) + n)
-    GC.@preserve buf transfer(stream, pointer(buf), n, start, deadline)
-end
-```
-
-
-Transfer one item at a time for indexable buffers that are not
-accessible through pointers.
-
-
-```{.julia .numberLines .lineAnchors startFrom="669"}
-function transfer(stream, d::AnyDirection, buf, ::UsingIndex, n, start, deadline)
-    T = ioeltype(buf)
-    x = Ref{T}()
-    count = 0
-    for i in eachindex(view(buf, start:(start-1)+n))
-        d == In() || (x[] = buf[i])
-        n = transfer(stream, x, 1, 1, deadline)
-        if n == 0
-            break
-        end
-        d == Out() || (buf[i] = x[])
-        count += n
-        stream = next_stream_index(stream, T)
-    end
-    return count
-end
-
-next_stream_index((stream, i), T) = (stream, i + sizeof(T))
-next_stream_index(stream::Stream, T) = stream
-```
-
-
-## Transfer Specialisations for Iterable Buffers
-
-
-Iterate over `buf` (skip items until `start` index is reached).
-Transfer each item one at a time.
-
-
-```{.julia .numberLines .lineAnchors startFrom="696"}
-function transfer(stream, ::In, buf, ::FromIteration, n, start, deadline)
-    count = 0
-    for x in buf
-        if start > 1
-            start -= 1
-            continue
-        end
-        n = transfer(stream, Ref(x), 1, 1, deadline)
-        if n == 0
-            break
-        end
-        count += n
-        stream = next_stream_index(stream, ioeltype(buf))
-    end
-    return count
-end
-```
-
-
-## Transfer Specialisations for Collection Buffers
-
-
-```{.julia .numberLines .lineAnchors startFrom="716"}
-transfer(s, dir, buf, ::ToPut, a...) = transfer(s, dir, buf, put!, a...)
-transfer(s, dir, buf, ::ToPush, a...) = transfer(s, dir, buf, push!, a...)
-transfer(s, dir, buf, ::FromPop, a...) = transfer(s, dir, buf, pop!, a...)
-transfer(s, dir, buf, ::FromTake, a...) = transfer(s, dir, buf, take!, a...)
-
-function transfer(s, d::TransferDirection, buf, f::Function, n, start, deadline)
-    @require start == 1
-    T = ioeltype(buf)
-    x = Ref{T}()
-    count = 0
-    while count < n
-        d == In() || (x[] = f(buf))
-        n = transfer(s, x, 1, 1, deadline)
-        if n == 0
-            break
-        end
-        d == Out() || f(buf, x[])
-        count += n
-        s = next_stream_index(s, T)
-    end
-    return count
-end
-```
-
-
-## Transfer Specialisations for IO Buffers
-
-
-```{.julia .numberLines .lineAnchors startFrom="742"}
-function transfer(s1, ::In, s2, ::ToIO, n, start, deadline)
-    n = min(n, max(default_buffer_size(s1),
-                   default_buffer_size(s2)))
-    buf = Vector{UInt8}(undef, n)
-    while true
-        n = transfer(s1 => buf)
-        if n == 0
-            break
-        end
-        transfer(buf => s2, n)
-    end
-    @assert false
-    #FIXME should this return as soon as something has been transferred?
-    #FIXME should it read byteavailable from io1, transfer all of that, then return?
-end
+ToBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
+                                                               IsItemPtr()
 ```
 
 
 # Total Data Size Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="762"}
+```{.julia .numberLines .lineAnchors startFrom="915"}
 abstract type TotalSize end
 struct UnknownTotalSize <: TotalSize end
 struct InfiniteTotalSize <: TotalSize end
 abstract type KnownTotalSize end
 struct VariableTotalSize <: KnownTotalSize end
 struct FixedTotalSize <: KnownTotalSize end
+const AnyTotalSize = TotalSize
 ```
 
 
-The `TotalSize` trait describes how much data is available from an
-IO interface.
+The `TotalSize` trait describes how much data is available from a stream.
 
 `TotalSize(stream)` returns one of:
 
@@ -846,21 +987,15 @@ Total Size              Description
 `InfiniteTotalSize()`   End of file will never be reached. Applicable
                         to some device files.
 
-`UnknownTotalSize()`    No known data size limit.
+`UnknownTotalSize()`    No known data size limit. But end of file may be
+                        reached. e.g. if the other end is closed.
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="793"}
+```{.julia .numberLines .lineAnchors startFrom="947"}
 TotalSize(x) = TotalSize(typeof(x))
 TotalSize(T::Type) = is_proxy(T) ? TotalSize(unwrap(T)) :
                                    UnknownTotalSize()
-
-abstract type MmapSupport end
-struct Mappable <: MmapSupport end
-struct NotMappable <: MmapSupport end
-MmapSupport(x) = MmapSupport(typeof(x))
-MmapSupport(T::Type) = is_proxy(T) ? MmapSupport(unwrap(T)) :
-                                     NotMappable()
 
 abstract type SizeMechanism end
 struct NoSizeMechanism <: SizeMechanism end
@@ -869,16 +1004,17 @@ struct SupportsFIONREAD <: SizeMechanism end
 TotalSizeMechanism(x) = TotalSizeMechanism(typeof(x))
 TotalSizeMechanism(T::Type) = is_proxy(T) ? TotalSizeMechanism(unwrap(T)) :
                                             NoSizeMechanism()
+
+_length(stream, ::SupportsStatSize) = stat(stream).size
 ```
 
 
 # Transfer Size Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="815"}
+```{.julia .numberLines .lineAnchors startFrom="965"}
 abstract type TransferSize end
-struct UnknownTransferSize <: TransferSize end
-struct KnownTransferSize <: TransferSize end
+struct UnlimitedTransferSize <: TransferSize end
 struct LimitedTransferSize <: TransferSize end
 struct FixedTransferSize <: TransferSize end
 const AnyTransferSize = TransferSize
@@ -891,49 +1027,43 @@ transfer.
 `TransferSize(stream)` returns one of:
 
 --------------------------------------------------------------------------------
-Transfer Size           Description
------------------------ --------------------------------------------------------
-`UnknownTransferSize()` Transfer size is not known in advance.
-                        The only way to know how much data is available is to
-                        attempt a transfer.
+Transfer Size             Description
+------------------------- ------------------------------------------------------
+`UnlimitedTransferSize()` No known transfer size limit.
 
-`KnownTransferSize()`   The amount of data immediately available for transfer
-                        can be queried using the `bytesavailable` function.
+`LimitedTransferSize()`   The amount of data that can be moved in a single
+                          transfer is limited. e.g. by a device block size or
+                          buffer size. The maximum transfer size can queried
+                          using the `max_transfer_size` function.
 
-`LimitedTransferSize()` The amount of data that can be moved in a single
-                        transfer is limited. e.g. by a device block size or
-                        buffer size. The maximum transfer size can queried
-                        using the `max_transfer_size` function.
-                        The amount of data immediately available for transfer
-                        can be queried using the `bytesavailable` function.
-
-`FixedTransferSize()`   The amount of data moved by a single transfer is fixed.
-                        e.g. `/dev/input/event0` device always transfers
-                        `sizeof(input_event)` bytes.
+`FixedTransferSize()`     The amount of data moved by a single transfer is
+                          fixed. e.g. `/dev/input/event0` device always
+                          transfers `sizeof(input_event)` bytes.
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="850"}
+```{.julia .numberLines .lineAnchors startFrom="992"}
 TransferSize(s) = TransferSize(typeof(s))
-TransferSize(T::Type) = is_proxy(T) ?
-                        TransferSize(unwrap(T)) :
-                            TransferSizeMechanism(T) == NoSizeMechanism() ?
-                            UnknownTransferSize() :
-                            KnownTransferSize()
+TransferSize(T::Type) = is_proxy(T) ?  TransferSize(unwrap(T)) :
+                                       UnlimitedTransferSize()
 
-max_transfer_size(stream) = max_transfer_size(stream, TransferSize(stream))
-max_transfer_size(stream, ::Union{UnknownTransferSize,
-                                  KnownTransferSize}) = typemax(Int)
+max_transfer_size(s) = max_transfer_size(s, TransferSize(s), TotalSize(s))
+max_transfer_size(s, ::AnyTransferSize, ::AnyTotalSize) = typemax(UInt)
+max_transfer_size(s, ::UnlimitedTransferSize, ::KnownTotalSize) = length(s)
+max_transfer_size(s, ::LimitedTransferSize, ::AnyTotalSize) = 
+    max_transfer_size(s, TransferSizeMechanism(s))
 ```
 
 
 `TransferSizeMechanism(stream)` returns one of:
 
+FIXME look at `F_GETPIPE_SZ` and `SO_SNDBUF`
+
  * `SupportsFIONREAD()` -- The underlying device supports `ioctl(2), FIONREAD`.
  * `SupportsStatSize()` -- The underlying device supports  `fstat(2), st_size`.
 
 
-```{.julia .numberLines .lineAnchors startFrom="868"}
+```{.julia .numberLines .lineAnchors startFrom="1012"}
 TransferSizeMechanism(s) = TransferSizeMechanism(typeof(s))
 TransferSizeMechanism(T::Type) = is_proxy(T) ?
                                  TransferSizeMechanism(unwrap(T)) :
@@ -941,10 +1071,386 @@ TransferSizeMechanism(T::Type) = is_proxy(T) ?
 ```
 
 
+# Data Availability Trait
+
+
+```{.julia .numberLines .lineAnchors startFrom="1021"}
+abstract type Availability end
+struct AlwaysAvailable <: Availability end
+struct PartiallyAvailable <: Availability end
+struct UnknownAvailability <: Availability end
+```
+
+
+The `Availability` trait describes when data is available from a stream.
+
+`Availability(stream)` returns one of:
+
+--------------------------------------------------------------------------------
+Availability            Description
+----------------------- --------------------------------------------------------
+`AlwaysAvailable()`     Data is always immediately available.
+                        i.e. `bytesavailable` === `bytes_remaining`.
+                        Applicable to some device files (dev/event, /dev/zero).
+                        Applicable to local disk files.
+
+`PartiallyAvailable()`  Some data may be immediately available from a buffer,
+                        but `bytesavailable` can be less than `bytes_remaining`.
+
+`UnknownAvailability()` There is no mechanism for determining data availability.
+                        The only way to know how much data is available is to
+                        attempt a transfer.
+                        i.e. `bytesavailable` is always 0.
+--------------------------------------------------------------------------------
+
+
+```{.julia .numberLines .lineAnchors startFrom="1049"}
+Availability(x) = Availability(typeof(x))
+Availability(T::Type) = is_proxy(T) ? Availability(unwrap(T)) :
+                                      UnknownAvailability()
+
+_bytesavailable(s, ::UnknownAvailability,
+                   ::AnyTransferSize) = 0
+
+_bytesavailable(s, ::AlwaysAvailable,
+                   ::UnlimitedTransferSize) = bytes_remaining(s)
+
+_bytesavailable(s, ::AlwaysAvailable,
+                   ::FixedTransferSize) = max_transfer_size(s)
+
+
+_bytesavailable(s, ::PartiallyAvailable,
+                   ::AnyTransferSize) =
+    _bytesavailable(s, TransferSizeMechanism(s))
+```
+
+
+# Transfer Function Dispatch
+
+
+    transfer_available(stream, buf, n, start)
+
+Transfer at most `n` items between `stream` and `buffer`.
+Return the number of items transferred.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1077"}
+function transfer_available end
+```
+
+
+## `start` Index Normalisation
+
+If `start` is a Tuple of indexes it is normalised by the method below.
+The `StreamIndexing` trait is used to check that `stream` supports indexing.
+Indexable streams are replaced by a `Tuple` containing `stream` and the
+stream index.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1087"}
+@db function transfer_available(stream, buf, n, start::Tuple)
+    @require StreamIndexing(stream) == IndexableIO() || start[1] == 1
+    @require start >= (1,1)
+    if start[1] != 1
+        stream = (stream, UInt(start[1]))
+    end
+    transfer_available(stream, buf, n, UInt(start[2]))
+end
+```
+
+
+From here on, `start` is always a simple `UInt` index into `buf`.
+
+
+## Application of the Direction and Buffer Interface Traits
+
+Next, the `IODriection` and `BufferInterface` traits are inserted into the
+argument list.[^InOut]
+
+[^InOut]: Note that although the `IODirection` is now part of the argument
+list, premature specialisation on direction is avoided. Eventually
+most transfers will end up calling an OS `read` or `write` function.
+However, much of the transfer logic is the same irrespective of direction.
+For example, the methods for `UsingPtr` and `UsingIndex` below work for
+both input and output. (Another consideration is supporting interfaces with
+`IODirection` `Exchange`).
+
+
+```{.julia .numberLines .lineAnchors startFrom="1113"}
+transfer_available(stream, buf, n, start) = 
+    transfer_available(stream, TransferDirection(stream), buf, n, start)
+
+transfer_available(stream, ::In, buf, n, start) =
+    transfer_available(stream, In(), buf, ToBufferInterface(buf), n, start)
+
+transfer_available(stream, ::Out, buf, n, start) =
+    transfer_available(stream, Out(), buf, FromBufferInterface(buf), n, start)
+```
+
+
+## Low Level Byte-Stream Methods
+
+
+The specialised methods for various Buffer Interfaces eventually
+call this this IsBytePtr method, which in turn calls the low level
+`unsafe_transfer` implementation methods.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1131"}
+@db function transfer_available(stream, direction, buf::Ptr{UInt8}, ::IsBytePtr,
+                                n::UInt, start::UInt)
+    r = unsafe_transfer(stream, direction, buf + (start-1), n)
+    @ensure r isa UInt
+    @db return r
+end
+```
+
+
+This method handles items larger than one byte.
+It returns zero if there are not enough bytes available for a whole item.
+For streams with Unknown Transfer Size the requested transfer is attempted 
+but an error is thrown if a partial item is transferred.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1145"}
+@db function transfer_available(stream, direction, buf, ::IsItemPtr,
+                                n::UInt, start::UInt)
+    sz = ioelsize(buf)
+    @assert sz > 1
+    if Availability(stream) != UnknownAvailability()
+        n::UInt = min(n, bytesavailable(stream) ÷ sz)
+        n > 0 || @db return UInt(0)
+    end
+
+    buf = Ptr{UInt8}(buf)
+    start = 1 + ((start-1) * sz)
+
+    r = transfer_available(stream, direction, buf, IsBytePtr(), n * sz, start)
+    @ensure r isa UInt
+
+    if r % sz != 0
+        @assert Availability(stream) == UnknownAvailability()
+        r += transferall(stream, buf + (start-1) + r, r % sz)
+    end
+    if r % sz != 0
+        throw(IOTraitsError(stream,
+              "Partial Transfer Error: " *
+              "Transfer $(verb(direction)) $stream returned $r bytes " *
+              "but $(typeof(buf)) has $sz-byte elements " *
+              "($r % $sz = $(r % sz)).\n" *
+              "Consider using BufferedInput(stream) to ensure that " *
+              "`Availability(stream) != UnknownAvailability`."))
+    end
+    r ÷= sz
+    @ensure r <= n
+    @db return r
+end
+```
+
+
+At least one of the following `unsafe_transfer` methods must be implemented
+for each type `T <: IOTraits.Stream`:
+
+    unsafe_transfer(s::T, ::IOTraits.In,           buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer(s::T, ::IOTraits.Out,          buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer(s::T, ::IOTraits.Exchange,     buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer(s::T, ::IOTraits.AnyDirection, buffer::Ptr{UInt8}, n::UInt)
+
+`unsafe_transfer` should transfer at most `n` items between `stream` and
+`buffer` and return the number of items transferred (or zero if no items are
+immediately available)[^BLOCKING].
+
+[^BLOCKING]: ⚠️ Note that the `BaseIOStream` methods defined here do
+not properly implement the specification because `unsafe_read` and
+`unsafe_write` may block to wait for data. These methods are intended
+for testing purposes only.  The transfer timeout feature will not
+work properly for `BaseIOStream`.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1198"}
+function unsafe_transfer end
+
+
+unsafe_transfer(T::Type) = is_proxy(T) ? ReadFragmentation(unwrap(T)) :
+                                           ReadsBytes()
+
+unsafe_transfer(s::BaseIOStream, ::In, buf::Ptr{UInt8}, n::UInt) =
+    UInt(unsafe_read(s.io, buf, n))
+
+unsafe_transfer(s::BaseIOStream, ::Out, buf::Ptr{UInt8}, n::UInt) =
+    UInt(unsafe_write(s.io, buf, n))
+```
+
+
+## Transfer Specialisations for Indexable Buffers
+
+
+If `n` is missing, use the whole length of the buffer.
+
+After this both `n` and `start` are always `UInt`s.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1220"}
+@db function transfer_available(stream, direction::AnyDirection,
+                                buf, interface::Union{UsingPtr, UsingIndex},
+                                n::Missing, start::UInt)
+    @require length(buf) > 0
+    n = length(buf) - (start - 1)
+    transfer_available(stream, direction, buf, interface, UInt(n), start)
+end
+
+transfer_available(stream, direction, buf, interface, n::Missing, start::UInt) =
+    transfer_available(stream, direction, buf, interface, typemax(UInt), start)
+
+transfer_available(stream, direction, buf, interface, n::Integer, start::Integer) = 
+    transfer_available(stream, direction, buf, interface, UInt(n), UInt(start))
+```
+
+
+If the buffer is pointer-compatible convert it to a pointer.
+`unsafe_transfer` function.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1239"}
+@db function transfer_available(stream, ::AnyDirection, buf, ::UsingPtr,
+                                n::UInt, start::UInt)
+    checkbounds(buf, (start-1) + n)
+    GC.@preserve buf transfer_available(stream, pointer(buf, start), n, 1)
+end
+
+@db function transfer_available(stream, ::AnyDirection, buf::Ref, ::UsingPtr,
+                                n::UInt, start::UInt)
+    p = Base.unsafe_convert(Ptr{eltype(buf)}, buf)
+    GC.@preserve buf transfer_available(stream, p, n, 1)
+end
+```
+
+
+If the buffer is not pointer-compatible, transfer one item at a time.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1255"}
+@db function transfer_available(stream, d::AnyDirection, buf, ::UsingIndex,
+                                n::UInt, start::UInt)
+    T = ioeltype(buf)
+    x = Vector{T}(undef, 1)
+    count::UInt = 0
+    for i in eachindex(view(buf, start:(start-1)+n))
+        d == In() || (x[1] = buf[i])
+        n = transfer(stream, x; deadline=0)
+        if n == 0
+            break
+        end
+        d == Out() || (buf[i] = x[1])
+        count += n
+        stream = next_stream_index(stream, T)
+    end
+    @db return count
+end
+
+next_stream_index((stream, i), T) = (stream, i + sizeof(T))
+next_stream_index(stream::Stream, T) = stream
+```
+
+
+## Transfer Specialisations for Iterable Buffers
+
+
+Iterate over `buf` (skip items until `start` index is reached).
+Transfer each item one at a time.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1283"}
+@db function transfer_available(stream, ::In, buf, ::FromIteration,
+                                n::UInt, start::UInt)
+    count::UInt = 0
+    for x in buf
+        if start > 1
+            start -= 1
+            continue
+        end
+        n = transfer(stream, [x]; deadline=0)
+        if n == 0
+            break
+        end
+        count += n
+        stream = next_stream_index(stream, ioeltype(buf))
+    end
+    return count
+end
+```
+
+
+## Transfer Specialisations for Collection Buffers
+
+
+```{.julia .numberLines .lineAnchors startFrom="1305"}
+for (T, f) in [ToPut => put!,
+              ToPush => push!,
+              FromPop => pop!,
+              FromTake => take!]
+    eval(:(transfer_available(s, dir, buf, ::$T, n::UInt, start::UInt) =
+           transfer_available(s, dir, buf,   $f, n, start)))
+end
+
+@db function transfer_available(stream, d::TransferDirection, buf, f::Function,
+                                n::UInt, start::UInt)
+    @require start == 1
+    T = ioeltype(buf)
+    x = Vector{T}(undef, 1)
+    count::UInt = 0
+    while count < n
+        d == In() || (x[1] = f(buf))
+        r = transfer(stream, x; deadline=0)
+        if r == 0
+            break
+        end
+        d == Out() || f(buf, x[1])
+        count += r
+        stream = next_stream_index(stream, T)
+    end
+    @db return count
+end
+```
+
+
+## Transfer Specialisations for IO Buffers
+
+
+```{.julia .numberLines .lineAnchors startFrom="1336"}
+@db function transfer_available(s1, ::In, s2, ::ToStream,
+                                n::UInt, start::UInt)
+    buf = Vector{UInt8}(undef, min(n, max(default_buffer_size(s1),
+                                          default_buffer_size(s2))))
+    count::UInt = 0
+    while count < n
+        r = transfer(s1 => buf; deadline=0)
+        if r == 0
+            break
+        end
+        r2 = transfer(buf => s2, r)
+        @assert r2 == r
+        # FIXME should query available capacity and not read more than that?
+        count += r
+    end
+    return count
+end
+
+transfer_available(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt) =
+    transfer_available(s2, In(), s1, ToStream(), n, start)
+
+function transfer_available(s, direction, io, ::Union{ToIO,FromIO},
+                            n::UInt, start::UInt)
+    s2 = BaseIOStream{typeof(io), direction == In() ? Out : In}(io)
+    transfer_available(s, direction, s2, n, start)
+end
+```
+
+
 # Data Fragmentation Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="877"}
+```{.julia .numberLines .lineAnchors startFrom="1368"}
 abstract type ReadFragmentation end
 struct ReadsBytes         <: ReadFragmentation end
 struct ReadsLines         <: ReadFragmentation end
@@ -984,7 +1490,7 @@ Data Fragmentation      Description
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="914"}
+```{.julia .numberLines .lineAnchors startFrom="1405"}
 ReadFragmentation(s) = ReadFragmentation(typeof(s))
 ReadFragmentation(T::Type) = is_proxy(T) ? ReadFragmentation(unwrap(T)) :
                                            ReadsBytes()
@@ -994,13 +1500,14 @@ ReadFragmentation(T::Type) = is_proxy(T) ? ReadFragmentation(unwrap(T)) :
 # Performance Traits
 
 
-```{.julia .numberLines .lineAnchors startFrom="921"}
+```{.julia .numberLines .lineAnchors startFrom="1412"}
 abstract type TransferCost end
 struct HighTransferCost <: TransferCost end
 struct LowTransferCost <: TransferCost end
 TransferCost(s) = TransferCost(typeof(s))
 TransferCost(T::Type) = is_proxy(T) ? TransferCost(T) :
                                       HighTransferCost()
+
 
 const kBytesPerSecond = Int(1e3)
 const MBytesPerSecond = Int(1e6)
@@ -1014,12 +1521,13 @@ DataRate(T::Type) = is_proxy(T) ? DataRate(unwrap(T)) :
 # Cursor Traits (Mark & Seek)
 
 
-```{.julia .numberLines .lineAnchors startFrom="938"}
+```{.julia .numberLines .lineAnchors startFrom="1430"}
 abstract type CursorSupport end
-abstract type AbstractSeekable <: CursorSupport end
+abstract type AbstractHasPosition <: CursorSupport end
 struct NoCursors <: CursorSupport end
-struct Seekable  <: AbstractSeekable end
-struct Markable  <: AbstractSeekable end
+struct HasPosition <: AbstractHasPosition end
+struct Seekable  <: AbstractHasPosition end
+struct Markable  <: AbstractHasPosition end
 ```
 
 
@@ -1039,7 +1547,7 @@ Cursor Support   Description
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="960"}
+```{.julia .numberLines .lineAnchors startFrom="1453"}
 CursorSupport(s) = CursorSupport(typeof(s))
 CursorSupport(T::Type) = is_proxy(T) ? CursorSupport(unwrap(T)) :
                                        NoCursors()
@@ -1048,157 +1556,214 @@ const NotMarkable = Union{NoCursors,Seekable}
 trait_error(s, trait) =
     throw(ArgumentError("$(typeof(s)) does not implement $trait"))
 
-Base.seek(io::TraitsIO, pos) = seek(io.stream, CursorSupport(io.stream), pos)
+Base.seek(io::BaseIO, pos) = seek(io.stream, CursorSupport(io.stream), pos)
 _seek(s, ::NoCursors, pos) = trait_error(s, Seekable)
 
-Base.skip(io::TraitsIO, offset) = _skip(io.stream, CursorSupport(io.stream), offset)
+Base.skip(io::BaseIO, offset) = _skip(io.stream, CursorSupport(io.stream), offset)
 _skip(s, ::NoCursors, offset) = trait_error(s, Seekable)
 
-Base.position(io::TraitsIO) = _position(io.stream, CursorSupport(io.stream))
+Base.position(io::BaseIO) = _position(io.stream, CursorSupport(io.stream))
 _position(s, ::NoCursors) = nothing
 
-Base.seekend(io::TraitsIO) = _seekend(io.stream, CursorSupport(io.stream))
+Base.seekend(io::BaseIO) = _seekend(io.stream, CursorSupport(io.stream))
 _seekend(s, ::NoCursors) = nothing
 
-Base.mark(io::TraitsIO) = _mark(io.stream, CursorSupport(io.stream))
+Base.mark(io::BaseIO) = _mark(io.stream, CursorSupport(io.stream))
 _mark(s, ::NotMarkable) = trait_error(s, Markable)
 
-Base.unmark(io::TraitsIO) = _unmark(io.stream, CursorSupport(io.stream))
+Base.unmark(io::BaseIO) = _unmark(io.stream, CursorSupport(io.stream))
 _unmark(s, ::NotMarkable) = trait_error(s, Markable)
 
-Base.reset(io::TraitsIO) = _reset(io.stream, CursorSupport(io.stream))
+Base.reset(io::BaseIO) = _reset(io.stream, CursorSupport(io.stream))
 _reset(s, ::NotMarkable) = trait_error(s, Markable)
 
-Base.ismarked(io::TraitsIO) = _ismarked(io.stream, CursorSupport(io.stream))
+Base.ismarked(io::BaseIO) = _ismarked(io.stream, CursorSupport(io.stream))
 _ismarked(s, ::NotMarkable) = trait_error(s, Markable)
 ```
 
 
-# Event Notification Mechanism Trait
+# Peekable Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="996"}
-abstract type WaitingMechanism end
-struct WaitBySleeping     <: WaitingMechanism end
-struct WaitUsingPosixPoll <: WaitingMechanism end
-struct WaitUsingEPoll     <: WaitingMechanism end
-struct WaitUsingPidFD     <: WaitingMechanism end
-struct WaitUsingKQueue    <: WaitingMechanism end
+```{.julia .numberLines .lineAnchors startFrom="1489"}
+abstract type PeekSupport end
+struct Peekable <: PeekSupport end
+struct NotPeekable <: PeekSupport end
+PeekSupport(s) = PeekSupport(typeof(s))
+PeekSupport(T::Type) = is_proxy(T) ? PeekSupport(unwrap(T)) :
+                                     NotPeekable()
+
+_peek(s, ::NotPeekable, T) = trait_error(s, Peekable)
 ```
 
 
-The `WaitingMechanism` trait describes ways of waiting for OS resources
-that are not immediately available. e.g. when `read(2)` returns
-`EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
-
-Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
-define a method of `Base.wait(::T, r::R)`.
-`WaitBySleeping` is the default.[^SLEEP]
-
-If a `WaitingMechanism`, `T`, is not available on a particular OS
-then `Base.isvalid(::T)` should be defined to return `false`.[^AIO]
-
-[^AIO]: ⚠️ Consider Linux AIO `io_getevents` for disk io?
-
-`WaitingMechanism(stream)` returns one of:
-
---------------------------------------------------------------------------------
-Waiting Mechanism     Description 
---------------------- ----------------------------------------------------------
-`WaitBySleeping`      Wait using a dumb retry/sleep loop.
-
-`WaitUsingPosixPoll`  Wait using the POXSX `poll` mechanism.
-                      Wait for activity on a set of file descriptors.
-                      Applicable to FIFO pipes, sockets and character devices
-                      (but not local files).  See [`poll(2)`][poll]
-
-`WaitUsingEPoll`      Wait using the Linux `epoll` mechanism.
-                      Like `poll` but scales better for workloads with a large
-                      number of waiting streams.
-                      See [`epoll(7)`][epoll]
-
-`WaitUsingKQueue`     Wait using the BSD `kqueue` mechanism.
-                      Like `epoll` but can also wait for files, processes,
-                      signals etc. See [`kqueue(2)`][kqueue]
-
-`WaitUsingPidFD()`    Wait for process termination using the Linux `pidfd`
-                      mechanism. A `pidfd` is a special process monitoring
-                      file descriptor that can in turn be monitored by `poll` or
-                      `epoll`. See [`pidfd_open(2)`][pidfd]
---------------------------------------------------------------------------------
-
-[poll]: https://man7.org/linux/man-pages/man2/poll.2.html
-[epoll]: https://man7.org/linux/man-pages/man7/epoll.7.html
-[kqueue]: https://www.freebsd.org/cgi/man.cgi?kqueue
-[pidfd]: http://man7.org/linux/man-pages/man2/pidfd_open.2.html
-
-[^SLEEP]: This may be the most efficient mechanism for small systems with
-simple IO requirements, for large systems where throughput is more important
-than latency, or for systems that simply do not spend a lot of time
-waiting for IO. Sleeping allows other Julia tasks to run immediately, whereas
-the other polling mechanisms all have some amount of book-keeping and system
-call overhead.
+# Timeout Stream
 
 
-```{.julia .numberLines .lineAnchors startFrom="1057"}
-WaitingMechanism(x) = WaitingMechanism(typeof(x))
-WaitingMechanism(T::Type) = is_proxy(T) ? WaitingMechanism(unwrap(T)) :
-                                          WaitBySleeping()
+    TimeoutStream(stream; timeout, deadline) -> TimeoutStream
+    timeout_stream(stream; timeout=Inf, deadline=Inf) -> Stream
 
-Base.isvalid(::WaitingMechanism) = true
-Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
-Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
-Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
+The temporary `TimeoutStream` wrapper adds an immutable transfer deadline to a
+stream. It is used in cases where a stream interface function needs to
+make multiple calls to `transfer` (e.g. `readall`).
 
-firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
-
-const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
-                                          WaitUsingEPoll(),
-                                          WaitUsingPosixPoll(),
-                                          WaitBySleeping())
-
-Base.wait(x, ::WaitBySleeping) = sleep(0.1)
-```
+Note that the `timeout_stream` function simply returns `stream` if
+`timeout` and `deadline` are both `Inf`.
 
 
-## Preferred Polling Mechanism
-
-    set_poll_mechanism(name)
-
-Configure the preferred event polling mechanism:
-"kqueue", "epoll", "poll", or "sleep".[^POLL]
-This setting is persistently stored through [Preferences.jl][Prefs].
-
-[^POLL]: This setting applies only to `poll(2)`-compatible file descriptors
-(i.e. it does not apply to local disk files).
-
-By default, IOTraits will try to choose the best available mechanism
-(see `default_poll_mechanism`).
-
-
-To find out what mechanism is used for a particular `FD` call:
-`WaitingMechanism(fd)`
-
-[Prefs]: https://github.com/JuliaPackaging/Preferences.jl
-
-
-```{.julia .numberLines .lineAnchors startFrom="1097"}
-function set_poll_mechanism(x)
-    @require poll_mechanism(x) != nothing
-    @require isvalid(poll_mechanism(x))
-    @set_preferences!("waiting_mechanism" => x)
-    @warn "Preferred IOTraits.WaitingMechanism set to $(poll_mechanism(x))." *
-          "UnixIO must be recompiled for this setting to take effect."
+```{.julia .numberLines .lineAnchors startFrom="1513"}
+struct TimeoutStream{T<:Stream} <: Stream
+    stream::T
+    deadline::Float64
+    function TimeoutStream(stream::T; timeout, deadline) where T
+        @require timeout < Inf || deadline < Inf
+        if timeout < Inf
+            deadline = time() + timeout
+        end
+        new{T}(stream, deadline)
+    end
 end
 
-poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
-                       name == "epoll"  ? WaitUsingEPoll() :
-                       name == "poll"   ? WaitUsingPosixPoll() :
-                       name == "sleep"  ? WaitBySleeping() :
-                                          default_poll_mechanism
+timeout_stream(s::TimeoutStream; kw...) = timeout_stream(s.stream; kw...)
 
-const preferred_poll_mechanism =
-    poll_mechanism(@load_preference("waiting_mechanism"))
+timeout_stream(s; timeout=Inf, deadline=Inf) =
+    timeout == Inf && deadline == Inf ? s : TimeoutStream(s; timeout, deadline)
+
+StreamDelegation(::Type{<:TimeoutStream}) = DelegatedToSubStream()
+
+@db function transfer(s::TimeoutStream{T}, buffer,
+                      n::Union{Missing, Integer}; kw...) where T
+    @info "transfer(t::TimeoutStream, ...)"
+    transfer(s.stream, buffer, n; deadline = s.deadline, kw...)
+end
+
+unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
+    unsafe_transfer(s.stream, direction, buffer, n)
+```
+
+
+# Interface Functions
+
+
+How many bytes remain before the end of `stream`?
+
+
+```{.julia .numberLines .lineAnchors startFrom="1548"}
+function bytes_remaning(stream::Stream)
+    @require is_input(s)
+    bytes_remaining(s, TotalSize(io), CursorSupport(io))
+end
+
+bytes_remaining(s, ::UnknownTotalSize, ::Any) = nothing
+bytes_reamaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
+bytes_remaining(s, ::KnownTotalSize, ::AbstractHasPosition) =
+    length(s) - position(s)
+```
+
+
+`readbyte` returns one byte
+(or `nothing` at end of stream or if `timeout` expires).
+
+Specialized based on Transfer Cost.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1566"}
+function readbyte(s::Stream; timeout=Inf)
+    @require is_input(s)
+    readbyte(s, TransferCost(s); timeout)
+end
+
+readbyte(s, ::HighTransferCost; kw...) =
+    error(typeof(s), " does not support byte I/O. ",
+          "Consider using the `LazyBufferedInput` wrapper.")
+```
+
+
+Allow single byte read for interfaces with Low Transfer Cost,
+but warn if a special Read Fragmentation trait is available.[^WARNINGS]
+
+[^WARNINGS]: ⚠️ FIXME: Warnings should be configurable via Preferences.jl
+
+
+```{.julia .numberLines .lineAnchors startFrom="1582"}
+function readbyte(stream, ::LowTransferCost; timeout)
+    if ReadFragmentation(stream) == ReadsLines()
+        @warn "read(::$(typeof(stream)), UInt8): " *
+              "$(typeof(stream)) implements `IOTraits.ReadsLines`." *
+              "Reading one byte at a time may not be efficient." *
+              "Consider using `readline` instead."
+    end
+    x = Ref{UInt8}()
+    n = GC.@preserve x transfer(stream => pointer(x), 1)
+    n == 1 || return nothing
+    return x[]
+end
+```
+
+
+`readall` reads until the end of `stream` (or until `timeout` expires)
+and returns `Vector{UInt8}`.
+
+Specialise on Total Size and Cursor Support.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1603"}
+function readall(s::Stream; timeout=Inf)
+    @require is_input(s)
+    readall(s, TotalSize(s), CursorSupport(s); timeout)
+end
+
+
+function readall(stream, ::UnknownTotalSize, ::NoCursors)
+    n = default_buffer_size(stream)
+    buf = Vector{UInt8}(undef, n)
+    _readbytes!(stream, buf, typemax(UInt))
+    return buf
+end
+
+
+function readall(stream, ::KnownTotalSize, ::AbstractHasPosition)
+    n = length(stream) - position(stream)
+    buf = Vector{UInt8}(undef, n)
+    transferall(stream, buf, n)
+    return buf
+end
+```
+
+
+Transfer `n` items between `stream` and `buf`.
+
+Call `transfer` repeatedly until all `n` items have been Transferred, 
+stopping only if end of file is reached.
+
+Return the number of items transferred.
+
+
+```{.julia .numberLines .lineAnchors startFrom="1633"}
+@db function transferall(stream, buf, n=length(buf); deadline=Inf, timeout=Inf)
+    stream = timeout_stream(stream; timeout, deadline)
+    ntransferred::UInt = 0
+    while ntransferred < n
+        r = transfer(stream, buf, n - ntransferred; start = ntransferred + 1)
+                                            # FIXME ^^^^^ passing start is not allowed for ToPut etc
+        if r == 0
+            break
+        end
+        ntransferred += r
+    end
+    @ensure ntransferred isa UInt
+    @db return ntransferred
+end
+
+@db function transferall(t::Pair{<:Stream,<:Any}, a...; kw...)
+    @require TransferDirection(t[1]) == In()
+    transferall(t[1], t[2], a...; kw...)
+end
+
+@db function transferall(t::Pair{<:Any,<:Stream}, a...; kw...)
+    @require TransferDirection(t[1]) == Out()
+    transferall(t[2], t[1], a...; kw...)
+end
 ```
 
 
@@ -1209,26 +1774,16 @@ const preferred_poll_mechanism =
 It is intended to be used for testing Delegate Streams.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1121"}
+```{.julia .numberLines .lineAnchors startFrom="1668"}
 struct NullIn <: Stream end
 
 TransferDirection(::Type{NullIn}) = In()
 
 transfer(io::NullIn, buf::Ptr{UInt8}, n; kw...) = n
-```
 
 
-`StreamProxy` wraps a stream and forwards all of the default stream methods.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1133"}
-abstract type StreamProxy{T<:Stream} <: Stream where S end
-abstract type InDelegate{T} <: StreamProxy{T} end
-abstract type FullInDelegate{T} <: StreamProxy{T} end
-
-StreamDelegation(::Type{StreamProxy}) = DelegatedToSubstream()
-
-
+#=
+FIXME
 include("wrap.jl")
 ```
 
@@ -1242,8 +1797,8 @@ each 2nd argument type used in pre-existing methods of `f`
     f(io::IODelegate, a2::T, a...; kw...) = f(unwrap(io), a2, a...; kw...)
 
 
-```{.julia .numberLines .lineAnchors startFrom="1151"}
-macro delegate_io(f, D=FullInDelegate, u=unwrap)
+```{.julia .numberLines .lineAnchors startFrom="1688"}
+macro delegate_io(f, #= FIXME ---> =# D=FullInDelegate, u=unwrap)
     methods = [
       esc(:(( $f(io::$D              ; k...) = $f($u(io)          ; k...)   ))),
     ( esc(:(( $f(io::$D, a::$T, aa...; k...) = $f($u(io), a, aa...; k...)   )))
@@ -1271,266 +1826,241 @@ end
 @delegate_io Base.position
 @delegate_io Base.seekend
 @delegate_io Base.seekstart
+=#
 ```
 
 
-# BufferedIO
+# Buffered Streams
 
 
 Generic type for Buffered Input Wrappers.
 
-See `BufferedIn` and `LazyBufferedIn` below.
+See concrete types `BufferedInput` and `LazyBufferedInput` below.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1189"}
-abstract type GenericBufferedIn{T} <: InDelegate{T} end
+```{.julia .numberLines .lineAnchors startFrom="1727"}
+abstract type GenericBufferedInput{T} <: Stream end
 
-TransferCost(::Type{GenericBufferedIn{T}}) where T = LowTransferCost()
+function Base.show(io::IO, s::GenericBufferedInput{T}) where T
+    print(io, "GenericBufferedInput{", T, "}(", bytesavailable(s.buffer), ")")
+end
 
-ReadFragmentation(::Type{GenericBufferedIn{T}}) where T = ReadsBytes()
+StreamDelegation(::Type{<:GenericBufferedInput}) = DelegatedToSubStream()
 
-function buffered_in_warning(io)
-    if ReadFragmentation(io) != ReadsBytes()
-        @warn "Wrapping $(typeof(io)) with `BufferedIn` causes " *
-              "the $(ReadFragmentation(io)) trait to be ignored!"
+TransferCost(::Type{<:GenericBufferedInput}) = LowTransferCost()
+
+ReadFragmentation(::Type{<:GenericBufferedInput}) = ReadsBytes()
+
+PeekSupport(::Type{<:GenericBufferedInput}) = Peekable()
+
+function buffered_in_warning(stream)
+    if ReadFragmentation(stream) != ReadsBytes()
+        @warn "Wrapping $(typeof(stream)) with `BufferedInput` causes " *
+              "the $(ReadFragmentation(stream)) trait to be ignored!"
     end
-    if TransferCost(io) == LowTransferCost()
-        @warn "$(typeof(io)) already has LowTransfterCost. " *
-              "Wrapping with `BufferedIn` may degrade performance."
+    if TransferCost(stream) == LowTransferCost()
+        @warn "$(typeof(stream)) already has LowTransfterCost. " *
+              "Wrapping with `BufferedInput` may degrade performance."
     end
 end
 
-
-Base.eof(ib::GenericBufferedIn) = ( bytesavailable(ib.buffer) == 0
-                                 && eof(ib.io) )
-
-Base.close(ib::GenericBufferedIn) = ( take!(ib.buffer);
-                                      Base.close(ib.io) )
+Base.close(s::GenericBufferedInput) = ( take!(s.buffer);
+                                        Base.close(s.io) )
 ```
 
 
 Size of the internal buffer.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1217"}
-buffer_size(io::GenericBufferedIn) = io.buffer_size
+```{.julia .numberLines .lineAnchors startFrom="1759"}
+buffer_size(s::GenericBufferedInput) = s.buffer_size
 ```
 
 
 Buffer ~1 second of data by default.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1223"}
-default_buffer_size(io) = DataRate(io)
+```{.julia .numberLines .lineAnchors startFrom="1765"}
+default_buffer_size(stream) = DataRate(stream)
 ```
 
 
 Transfer bytes from the wrapped IO to the internal buffer.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1229"}
-function refill_internal_buffer(io::GenericBufferedIn, n=io.buffer_size; kw...)
-
+```{.julia .numberLines .lineAnchors startFrom="1771"}
+@db function refill_internal_buffer(s::GenericBufferedInput,
+                                    n=s.buffer_size; kw...)
     # If needed, expand the buffer.
-    iob = io.buffer
-    @assert iob.append
-    Base.ensureroom(iob, n)
-    checkbounds(iob.data, iob.size+n)
+    sbuf = s.buffer
+    @assert sbuf.append
+    Base.ensureroom(sbuf, n)
+    checkbounds(sbuf.data, sbuf.size+n)
 
-    # Transfer from the IO to the buffer.
-    p = pointer(iob.data, iob.size+1)
-    n = GC.@preserve iob transfer(io.io, p, n; kw...)
-    iob.size += n
+    # Transfer from the stream to the buffer.
+    p = pointer(sbuf.data, sbuf.size+1)
+    n = GC.@preserve sbuf transfer(s.stream, p, n; kw...)
+    sbuf.size += n
+    nothing
 end
-```
 
-
-Shortcut to read one byte directly from buffer.
-Or, if the buffer is empty refill it.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1248"}
-function Base.read(io::GenericBufferedIn, ::Type{UInt8}; kw...)
-    if bytesavailable(io.buffer) != 0
-        return Base.read(io.buffer, UInt8)
+function readbyte(s::GenericBufferedInput; timeout)
+    sbuf = s.buffer
+    if bytesavailable(sbuf) == 0
+        refill_internal_buffer(s; timeout)
     end
-    eof(io.io; kw...) && throw(EOFError())
-    refill_internal_buffer(io; kw...)
-    return Base.read(io.buffer, UInt8)
-end
-```
-
-
-Shortcut to peek into the buffer.
-Or, if the buffer is empty refill it.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1262"}
-function Base.peek(io::GenericBufferedIn, ::Type{T}; kw...) where T
-    if bytesavailable(io.buffer) >= sizeof(T)
-        return Base.peek(io.buffer, T)
+    if bytesavailable(sbuf) != 0
+        return read(sbuf, UInt8)
     end
-    eof(io.io; kw...) && throw(EOFError())
-    refill_internal_buffer(io; kw...)
-    return Base.peek(io.buffer, T)
+    @invoke readbyte(s::Stream; timeout)
 end
 
-
-function transfer(io::GenericBufferedIn, ::In, ::Ptr{UInt8}, ::RawPtr,
-                  n, start, deadline)
-    transfer(io, buf, n; start, deadline)
+function _peek(s::GenericBufferedInput, ::Type{T}; kw...) where T
+    while bytesavailable(s.buffer) < sizeof(T)
+        refill_internal_buffer(s; kw...)
+    end
+    peek(s.buffer, T)
 end
 ```
 
 
-## BufferedIn
+## Buffered Input
 
 
-    BufferedIn(io; [buffer_size]) -> IO
+    BufferedInput(stream; [buffer_size]) -> Stream
 
-Create a wrapper around `io` to buffer input transfers.
+Create a wrapper around `stream` to buffer input transfers.
 
 The wrapper will try to read `buffer_size` bytes into its buffer
-every time it transfers data from `io`.
+every time it transfers data from `stream`.
 
-The default `buffer_size` depends on `IOTratis.DataRate(io)`.
+The default `buffer_size` depends on `IOTratis.DataRate(stream)`.
 
-`io` must not be used directly after the wrapper is created.
+`stream` must not be used directly after the wrapper is created.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1292"}
-struct BufferedIn{T} <: GenericBufferedIn{T}
-    io::T
+```{.julia .numberLines .lineAnchors startFrom="1820"}
+struct BufferedInput{T<:Stream} <: GenericBufferedInput{T}
+    stream::T
     buffer::IOBuffer
     buffer_size::Int
-    function BufferedIn(io::T; buffer_size=default_buffer_size(io)) where T
-        @require TransferDirection(io) == In()
-        buffered_in_warning(io)
-        new{T}(io, PipeBuffer(), buffer_size)
+    function BufferedInput(stream::T; buffer_size=default_buffer_size(stream)) where T
+        @require TransferDirection(stream) == In()
+        buffered_in_warning(stream)
+        new{T}(stream, PipeBuffer(), buffer_size)
     end
 end
 
-TransferSize(::Type{BufferedIn{T}}) where T = LimitedTransferSize()
+TransferSize(::Type{BufferedInput{T}}) where T = LimitedTransferSize()
 
-max_transfer_size(io::BufferedIn) = io.buffer_size
+max_transfer_size(s::BufferedInput) = s.buffer_size
+```
 
-Base.bytesavailable(io::BufferedIn) = bytesavailable(io.buffer) 
+
+The non-buffered method returns zero if there are not enough bytes
+available to transfer a whole item (`ioelsize`).
+This method refills the internal buffer if there are less than `ioelsize`
+bytes available. Note that `refill_internal_buffer` may still not yield
+enough bytes. However, calling it here ensures that the enclosing retry
+loop will eventually get the data it needs.
 
 
-function transfer(io::BufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadline)
-    @info "transfer(t::BufferedIn, ...)"
+```{.julia .numberLines .lineAnchors startFrom="1844"}
+@db function transfer_available(s::BufferedInput, direction,
+                                buf, interface::IsItemPtr,
+                                n::UInt, start::UInt)
+    @assert ioelsize(buf) > 1
+    @assert ioelsize(buf) < s.buffer_size
 
-    iob = io.buffer
-    # If there are not enough bytes in `iob`, read more from the wrapped IO.
-    if bytesavailable(iob) < n
-        refill_internal_buffer(io)
+    if bytesavailable(s) < ioelsize(buf)
+        refill_internal_buffer(s)
     end
 
-    # Read available bytes from `iob` into the caller's `buffer`.
-    n = min(n, bytesavailable(iob))
-    unsafe_read(iob, buf + (start-1), n)
-    return n
+    @invoke transfer_available(s::Stream, direction,
+                               buf, interface::IsItemPtr,
+                               n::UInt, start::UInt)
+end
+
+
+
+@db function Base.bytesavailable(s::BufferedInput) 
+    n = bytesavailable(s.buffer) 
+    if n == 0
+        n = bytesavailable(s.stream) 
+    end
+    @db return n
+end
+
+
+
+@db function unsafe_transfer(s::BufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
+
+    sbuf = s.buffer
+    # If there are not enough bytes in `sbuf`, read more from the wrapped stream.
+    if bytesavailable(sbuf) < n
+        refill_internal_buffer(s)
+    end
+
+    # Read available bytes from `sbuf` into the caller's `buffer`.
+    n = min(n, bytesavailable(sbuf))
+    unsafe_read(sbuf, buf, n)
+    @db return n
 end
 ```
 
 
-Shortcut to delegate `readavailable` to the internal buffer.
+## Lazy Buffered Input
 
 
-```{.julia .numberLines .lineAnchors startFrom="1329"}
-function Base.readavailable(io::BufferedIn; kw...)
-    if bytesavailable(io.buffer) == 0
-        refill_internal_buffer(io; kw...)
-    end
-    return readavailable(io.buffer)
-end
-```
+    LazyBufferedInput(stream; [buffer_size]) -> Stream
 
-
-## LazyBufferedIn
-
-
-    LazyBufferedIn(io; [buffer_size]) -> IO
-
-Create a wrapper around `io` to buffer input transfers.
+Create a wrapper around `stream` to buffer input transfers.
 
 The internal buffer is only used when a small transfer is attempted
 or if `peek` is called.
-Most reads are fulfilled directly from the underling `io`.
+Most reads are fulfilled directly from the underling stream.
 This avoids the overhead of double buffering in situations where there is
 an occasional need to read one byte at a time (e.g. `readuntil()`) but most
 reads are already of a reasonable size.
 
 The default `buffer_size` depends on `IOTratis.DataRate(io)`.
 
-`io` must not be used directly after the wrapper is created.
+`stream` must not be used directly after the wrapper is created.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1356"}
-struct LazyBufferedIn{T} <: GenericBufferedIn{T}
-    io::T
+```{.julia .numberLines .lineAnchors startFrom="1905"}
+struct LazyBufferedInput{T<:Stream} <: GenericBufferedInput{T}
+    stream::T
     buffer::IOBuffer
     buffer_size::Int
-    function LazyBufferedIn(io::T; buffer_size=default_buffer_size(io)) where T
-        @require TransferDirection(io) == In()
-        buffered_in_warning(io)
-        new{T}(io, PipeBuffer(), buffer_size)
+    function LazyBufferedInput(s::T; buffer_size=default_buffer_size(s)) where T
+        @require TransferDirection(s) == In()
+        buffered_in_warning(s)
+        new{T}(s, PipeBuffer(), buffer_size)
     end
 end
 
 
-Base.bytesavailable(io::LazyBufferedIn) = bytesavailable(io.buffer) + 
-                                          bytesavailable(io.io);
+Base.bytesavailable(s::LazyBufferedInput) = bytesavailable(s.buffer) + 
+                                            bytesavailable(s.stream);
 
-
-function transfer(io::LazyBufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadline)
-    @info "transfer(t::LazyBufferedIn, ...)"
-
-    buf += (start-1)
+@db function unsafe_transfer(s::LazyBufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
 
     # First take bytes from the buffer.
-    iob = io.buffer
-    count = bytesavailable(iob)
+    sbuf = s.buffer
+    count = bytesavailable(sbuf)
     if count > 0
         count = min(count, n)
-        unsafe_read(iob, buf, count)
+        unsafe_read(sbuf, buf, count)
     end
 
     # Then read from the wrapped IO.
     if n > count
-        count += transfer(io.io, buf + count, n - count; deadline)
+        count += unsafe_transfer(s.stream, In(), buf + count, n - count)
     end
 
     @ensure count <= n
-    return count
-end
-```
-
-
-# Timeout IO
-
-
-    TimeoutIO(io; timeout) -> IO
-
-The `TimeoutIO` wrapper adds a timeout deadline to an `io`.
-It is used to add timeout capability to Base.IO functions.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1404"}
-struct TimeoutIO{T} <: FullInDelegate{T}
-    io::T
-    deadline::Float64
-    function TimeoutIO(io::T, timeout) where T
-        @require timeout < Inf
-        new{T}(io, time() + timeout)
-    end
-end
-
-timeout_io(io, t) = t == Inf ? io : TimeoutIO(io, t)
-
-function transfer(t::TimeoutIO{T}, buffer, n; start, kw...) where T
-    @info "transfer(t::ITimeoutIO, ...)"
-    transfer(t.io, buffer, n; start, deadline = t.deadline)
+    @db return count
 end
 ```
 
@@ -1538,27 +2068,9 @@ end
 # Base.IO Interface
 
 
-```{.julia .numberLines .lineAnchors startFrom="1424"}
-Base.isreadable(io::TraitsIO) = is_input(io.stream)
-Base.iswritable(io::TraitsIO) = is_output(io.stream)
-```
-
-
-## Function `bytesavailable`
-
-
-`bytesavailable` is specialised on Transfer Size and Transfer Size Mechanism.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1433"}
-function Base.bytesavailable(io::TraitsIO)
-    @require isreadable(io)
-    _bytesavailable(io, TransferSize(io))
-end
-
-_bytesavailable(io, ::UnknownTransferSize) = 0
-_bytesavailable(io, ::KnownTransferSize) =
-    _bytesavailable(io, TransferSizeMechanism(io))
+```{.julia .numberLines .lineAnchors startFrom="1943"}
+Base.isreadable(io::BaseIO) = is_input(io.stream)
+Base.iswritable(io::BaseIO) = is_output(io.stream)
 ```
 
 
@@ -1568,114 +2080,61 @@ _bytesavailable(io, ::KnownTransferSize) =
 `eof` is specialised on Total Size.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1448"}
-function Base.eof(io::TraitsIO; timeout=Inf)
-    @require isreadable(io)
-    eof(io, TotalSize(io); timeout)
-end
-```
-
-
-If Total Size is known then `eof` is reached when there are
-zero `bytesavailable`.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1457"}
-Base.eof(io, ::KnownTotalSize; kw...) = bytesavailable(io) == 0
-```
-
-
-If Total Size is not known then `eof` must "block to wait for more data".
-
-
-```{.julia .numberLines .lineAnchors startFrom="1463"}
-function Base.eof(io, ::UnknownTotalSize; kw...)
-    n = bytesavailable(io)
-    if n == 0
-        wait(io; kw...)
-        n = bytesavailable(io)
+```{.julia .numberLines .lineAnchors startFrom="1952"}
+function Base.eof(io::BaseIO; timeout=Inf)
+    @require is_input(io.stream)
+    if bytesavailable(io) > 0
+        return false
     end
-    return n == 0
+    if bytes_remaining(io) == 0
+        return true
+    end
+    wait(io.stream; kw...)
+    return bytesavailable(io) == 0
 end
-
-Base.eof(io, ::InfiniteTotalSize; kw...) = (wait(io; kw...); false)
 ```
 
 
 ## Function `read(io, T)`
 
 
-Single byte read is specialized based on the Transfer Cost.
-(Single byte read for High Transfer Cost falls through to the 
-"does not support byte I/O" error from Base).
-
-
-```{.julia .numberLines .lineAnchors startFrom="1483"}
-function Base.read(io::TraitsIO, ::Type{UInt8}; timeout=Inf)
-    @require isreadable(io)
-    read(io, TransferCost(io), UInt8; timeout)
-end
-```
-
-
-Allow single byte read for interfaces with Low Transfter Cost,
-but warn if a special Read Fragmentation trait is available.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1493"}
-function read(io, ::LowTransferCost, ::Type{UInt8}; kw...)
-    if ReadFragmentation(io) == ReadsLines()
-        @warn "read(::$(typeof(io)), UInt8): " *
-              "$(typeof(io)) implements `IOTraits.ReadsLines`." *
-              "Reading one byte at a time may not be efficient." *
-              "Consider using `readline` instead."
-    end
-    x = Ref{UInt8}()
-    n = GC.@preserve x transfer(io => pointer(x), 1; kw...)
-    n == 1 || throw(EOFError())
-    return x[]
+```{.julia .numberLines .lineAnchors startFrom="1967"}
+function Base.read(io::BaseIO, ::Type{UInt8}; timeout=Inf)
+    x = readbyte(io.stream, timeout)
+    x != nothing || throw(EOFError())
+    return x
 end
 ```
 
 
 Read as String. \
-Wrap with `TimeoutIO` if timeout is requested.
+Wrap with `TimeoutStream` if timeout is requested.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1511"}
-function Base.read(io::TraitsIO, ::Type{String}; timeout=Inf)
-    @require isreadable(io)
-    @invoke String(Base.read(timeout_io(io, timeout)::IO))
+```{.julia .numberLines .lineAnchors startFrom="1978"}
+function Base.read(io::BaseIO, ::Type{String}; timeout=Inf)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    String(_read(stream, TotalSize(stream), CursorSupport(stream)))
 end
-```
-
-
-## Function `length(io)`
-
-
-```{.julia .numberLines .lineAnchors startFrom="1519"}
-function Base.length(io::TraitsIO)
-    @require TotalSize(io) isa KnownTotalSize
-
-    _length(io, TotalSizeMechanism(io))
-end
-
-_length(io, ::SupportsStatSize) = stat(io).size
 ```
 
 
 ## Function `readbytes!`
 
 
-```{.julia .numberLines .lineAnchors startFrom="1530"}
-Base.readbytes!(io::TraitsIO, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
+```{.julia .numberLines .lineAnchors startFrom="1988"}
+Base.readbytes!(io::BaseIO, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
     readbytes!(io, buf, UInt(nbytes); kw...)
 
-function Base.readbytes!(io::TraitsIO, buf::Vector{UInt8}, nbytes::UInt;
+function Base.readbytes!(io::BaseIO, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true, timeout=Inf)
-    @require isreadable(io)
-    deadline = timeout_deadline(timeout)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    _readbytes!(stream, buf, nbytes; all)
+end
 
+function _readbytes!(stream, buf, nbytes; all=true)
     lb::Int = length(buf)
     nread = 0
     while nread < nbytes
@@ -1685,7 +2144,7 @@ function Base.readbytes!(io::TraitsIO, buf::Vector{UInt8}, nbytes::UInt;
             resize!(buf, lb)
         end
         @assert lb > nread
-        n = transfer(io, buf, lb - nread, nread + 1, deadline)
+        n = transfer(stream => buf, lb - nread; start = nread + 1)
         if n == 0 || !all
             break
         end
@@ -1694,78 +2153,27 @@ function Base.readbytes!(io::TraitsIO, buf::Vector{UInt8}, nbytes::UInt;
     @ensure nread <= nbytes
     return nread
 end
-
-timeout_deadline(timeout) = timeout == Inf ? Inf : time() + timeout
 ```
 
 
-## Function `read(io)`
+## Function `read(stream)`
 
 
-Read until end of file.
-Specialise on Total Size, Cursor Support and Mmap Support.
+```{.julia .numberLines .lineAnchors startFrom="2022"}
+Base.read(io; timeout=Inf) = readall(io.stream; timeout)
+```
 
 
-```{.julia .numberLines .lineAnchors startFrom="1566"}
-function Base.read(io; timeout=Inf)
-    @require isreadable(io)
-    read(io, TotalSize(io), CursorSupport(io); timeout)
-end
+## Function `read(stream, n)`
 
 
-function read(io, ::UnknownTotalSize, ::NoCursors; timeout=Inf)
-    n = default_buffer_size(io)
+```{.julia .numberLines .lineAnchors startFrom="2029"}
+function Base.read(stream::BaseIO, n::Integer; timeout=Inf)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
     buf = Vector{UInt8}(undef, n)
-    readbytes!(io, buf, n; timeout)
+    transfer_n(stream, buf, n)
     return buf
-end
-```
-
-
-
-
-
-```{.julia .numberLines .lineAnchors startFrom="1583"}
-function read(io, ::KnownTotalSize, ::AbstractSeekable; kw...)
-    n = length(io) - position(io)
-    buf = Vector{UInt8}(undef, n)
-    transfer_n(io => buffer, n; kw...)
-    return buf
-end
-```
-
-
-Transfer `n` items between `io` and `buf`.
-
-Call `transfer` repeatedly until all `n` items have been Transferred, 
-stopping only if end of file is reached.
-
-Return the number of items transferred.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1599"}
-function transfer_n(io, buf::Vector{UInt8}, n, start, deadline)
-    @require length(buf) == (start-1) + n
-    nread = 0
-    while nread < n
-        n = transfer(io, buf, n - nread, start + nread, deadline)
-        if n == 0
-            break
-        end
-        nread += n
-    end
-    return n
-end
-```
-
-
-## Function `read(io, n)`
-
-
-```{.julia .numberLines .lineAnchors startFrom="1615"}
-function Base.read(io::TraitsIO, n::Integer; timeout=Inf)
-    @require isreadable(io)
-    @invoke Base.read(timeout_io(io, timeout)::IO, n::Integer)
 end
 ```
 
@@ -1776,14 +2184,15 @@ end
 `unsafe_read` must keep trying until `nbytes` nave been transferred.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1626"}
-function Base.unsafe_read(io::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt;
-                          deadline=Inf)
-    @require isreadable(io)
+```{.julia .numberLines .lineAnchors startFrom="2043"}
+function Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt;
+                          timeout=Inf)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
     nread = 0
-    @debug "Base.unsafe_read(io::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt)"
+    @debug "Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)"
     while nread < nbytes
-        n = transfer(io => buf + nread, nbytes - nread; deadline)
+        n = transfer(stream => (buf + nread), nbytes - nread)
         if n == 0
             throw(EOFError())
         end
@@ -1798,26 +2207,27 @@ end
 ## Function `readavailable`
 
 
-    readavailable(io::TraitsIO; [timeout=0]) -> Vector{UInt8}
+    readavailable(stream::BaseIO; [timeout=0]) -> Vector{UInt8}
 
 Read immediately available data from a stream.
 
-If `TransferSize(io)` is `UnknownTransferSize()` the only way to know how much
-data is available is to attempt a transfer.
+If `Availability(stream)` is `UnknownAvailability()` the only way to know how
+much data is available is to attempt a transfer.
 
 Otherwise, the amount of data immediately available can be queried using the
 `bytesavailable` function.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1657"}
-function Base.readavailable(io::TraitsIO; timeout=0)
-    @require isreadable(io)
-    n = bytesavailable(io)
-    if n == 0 
-        n = default_buffer_size(io)
+```{.julia .numberLines .lineAnchors startFrom="2075"}
+@db function Base.readavailable(io::BaseIO; timeout=0)
+    @require is_input(io.stream)
+    if Availability(io.stream) == UnknownAvailability()
+        n = default_buffer_size(io.stream)
+    else
+        n = bytesavailable(io.stream)
     end
     buf = Vector{UInt8}(undef, n)
-    n = transfer(io, buf; timeout)
+    n = transfer(stream, buf, n; timeout)
     resize!(buf, n)
 end
 ```
@@ -1829,27 +2239,29 @@ end
 `readline` is specialised based on the Read Fragmentation trait.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1675"}
-function Base.readline(io::TraitsIO; timeout=Inf, kw...)
-    @require isreadable(io)
-    readline(io, ReadFragmentation(io); timeout, kw...)
+```{.julia .numberLines .lineAnchors startFrom="2094"}
+function Base.readline(io::BaseIO; timeout=Inf, kw...)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    _readline(stream, ReadFragmentation(stream); kw...)
 end
 ```
 
 
 If there is no special Read Fragmentation method,
-use `TimeoutIO` to support the timeout option.
+invoke the default `Base.IO` method.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1684"}
-readline(io::TraitsIO, ::AnyReadFragmentation; timeout, kw...) =
-    @invoke Base.readline(timeout_io(io, timeout)::IO; kw...)
+```{.julia .numberLines .lineAnchors startFrom="2104"}
+_readline(stream, ::AnyReadFragmentation; kw...) =
+    @invoke Base.readline(BaseIO(stream)::IO; kw...)
 ```
 
 
-### `readline(io, ::ReadsLines)`
+If Reads Lines is supported then simply calling `transfer` once will
+read one line.
 
-Character or Terminal devices (`S_IFCHR`) are usually used in
+Character or Terminal devices (`S_IFCHR`) are often used in
 "canonical mode" (`ICANON`).
 
 > "In canonical mode: Input is made available line by line."
@@ -1861,14 +2273,12 @@ Note that in canonical mode a line can be terminated by `CEOF` rather than
 "\n", but `read(2)` does not return the `CEOF` character (e.g. when the
 shell sends a "bash\$ " prompt without a newline).
 
-If `io` has the `ReadsLines` trait calling `transfer` once will read one line.
 
-
-```{.julia .numberLines .lineAnchors startFrom="1705"}
-function readline(io, ::ReadsLines; keep::Bool=false, kw...)
+```{.julia .numberLines .lineAnchors startFrom="2125"}
+function _readline(stream, ::ReadsLines; keep::Bool=false, kw...)
 
     v = Base.StringVector(max_line)
-    n = transfer(io => v; kw...)
+    n = transfer(stream => v; kw...)
     if n == 0
         return ""
     end
@@ -1889,24 +2299,32 @@ const max_line = 1024 # UnixIO.C.MAX_CANON
 ## Function `readuntil`
 
 
-```{.julia .numberLines .lineAnchors startFrom="1727"}
-Base.readuntil(io::TraitsIO, d::AbstractChar; timeout=Inf, kw...) =
-    @invoke Base.readuntil(timeout_io(io, timeout)::IO, d; kw...)
+```{.julia .numberLines .lineAnchors startFrom="2147"}
+function Base.readuntil(io::BaseIO, d::AbstractChar; timeout=Inf, kw...)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    @invoke Base.readuntil(BaseIO(stream)::IO, d; kw...)
+end
 ```
 
 
 # Exports
 
 
-```{.julia .numberLines .lineAnchors startFrom="1734"}
-export TraitsIO, TransferDirection, transfer
+```{.julia .numberLines .lineAnchors startFrom="2157"}
+export TraitsIO, TransferDirection, transfer, transferall, readall
+
+export BufferedInput, LazyBufferedInput
 
 export TotalSize,
        UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
        FixedTotalSize
 
+export Availability,
+       AlwaysAvailable, PartiallyAvailable, UnknownAvailability
+
 export TransferSize,
-       UnknownTransferSize, KnownTransferSize, LimitedTransferSize,
+       UnlimitedTransferSize, LimitedTransferSize,
        FixedTransferSize
 
 export TransferSizeMechanism,
@@ -1919,8 +2337,9 @@ export WaitingMechanism,
        WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
        WaitUsingKQueue
 
-export CursorSupport, AbstractSeekable,
+export CursorSupport, AbstractHasPosition,
        NoCursors,
+       HasPosition,
        Seekable,
        Markable
 ```
@@ -1993,534 +2412,24 @@ Issue
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="1827"}
+## Errors
+
+
+```{.julia .numberLines .lineAnchors startFrom="2258"}
+struct IOTraitsError <: Exception
+    stream::Stream
+    message::String
+end
+
+function Base.show(io::IO, e::IOTraitsError)
+    print(io, "IOTraitsError: ", e.message)
+end
+
+
+
 using ReadmeDocs
 
 include("ioinfo.jl") # Generate Method Resolution Info
 
 end # module IOTraits
 ```
-# Method Resolution Info
-
-## BufferedIn
-
-## IO Traits
-
-| Trait             | Value                 |
-|:----------------- |:--------------------- |
-| TransferDirection | nothing               |
-| TotalSize         | UnknownTotalSize()    |
-| TransferSize      | LimitedTransferSize() |
-| ReadFragmentation | ReadsBytes()          |
-| WaitingMechanism  | WaitBySleeping()      |
-
-## Core Read Methods
-
-|    Function | Args               | File             | Method                                                                                                                                                     |
-| -----------:|:------------------ |:---------------- |:---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|  isreadable |                    | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                         |
-|             |                    |                  | MethodError: no method matching isreadable(::IOTraits.BufferedIn{IOTraits.NullIn})                                                                         |
-|             |                    |                  | Closest candidates are:                                                                                                                                    |
-|             |                    |                  |   isreadable(!Matched::Base.DevNull) at coreio.jl:12                                                                                                       |
-|             |                    |                  |   isreadable(!Matched::Base.AbstractPipe) at io.jl:380                                                                                                     |
-|             |                    |                  |   isreadable(!Matched::Base.GenericIOBuffer) at iobuffer.jl:234                                                                                            |
-|             |                    |                  |   ...                                                                                                                                                      |
-|        read | Type{UInt8}        | IOTraits.jl:1248 | read(io::IOTraits.GenericBufferedIn, ::Type{UInt8}; kw...)                                                                                                 |
-| unsafe_read | Ptr{UInt8}, UInt64 | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                         |
-|             |                    |                  | MethodError: no method matching unsafe_read(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Ptr{UInt8}, ::Int64)                                                 |
-|             |                    |                  | Closest candidates are:                                                                                                                                    |
-|             |                    |                  |   unsafe_read(!Matched::IOTraits.FullInDelegate, ::Ptr{UInt8}, ::Any...; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1154 |
-|             |                    |                  |   unsafe_read(!Matched::IOTraits.FullInDelegate, ::Ptr, ::Any...; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1154        |
-|             |                    |                  |   unsafe_read(!Matched::IO, ::Ptr, ::Integer) at io.jl:722                                                                                                 |
-|             |                    |                  |   ...                                                                                                                                                      |
-|         eof |                    | IOTraits.jl:1207 | eof(ib::IOTraits.GenericBufferedIn)                                                                                                                        |
-|    reseteof |                    | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                         |
-|             |                    |                  | MethodError: no method matching reseteof(::IOTraits.BufferedIn{IOTraits.NullIn})                                                                           |
-|             |                    |                  | Closest candidates are:                                                                                                                                    |
-|             |                    |                  |   reseteof(!Matched::Base.AbstractPipe) at io.jl:415                                                                                                       |
-|             |                    |                  |   reseteof(!Matched::Base.TTY) at stream.jl:656                                                                                                            |
-|             |                    |                  |   reseteof(!Matched::IO) at io.jl:28                                                                                                                       |
-|        peek |                    | io.jl:267        | peek(s)                                                                                                                                                    |
-|        peek | Type{UInt8}        | IOTraits.jl:1262 | peek(io::IOTraits.GenericBufferedIn, ::Type{T}; kw...) where T                                                                                             |
-|        peek | Type{Int64}        | IOTraits.jl:1262 | peek(io::IOTraits.GenericBufferedIn, ::Type{T}; kw...) where T                                                                                             |
-
-## Core Write Methods
-
-|     Function | Args               | File | Method                                                                                                                               |
-| ------------:|:------------------ |:---- |:------------------------------------------------------------------------------------------------------------------------------------ |
-|   iswritable |                    | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching iswritable(::IOTraits.BufferedIn{IOTraits.NullIn})                                                   |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   iswritable(!Matched::Base.DevNull) at coreio.jl:13                                                                                 |
-|              |                    |      |   iswritable(!Matched::Base.AbstractPipe) at io.jl:384                                                                               |
-|              |                    |      |   iswritable(!Matched::Base.GenericIOBuffer) at iobuffer.jl:235                                                                      |
-|              |                    |      |   ...                                                                                                                                |
-|        write | UInt8              | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching write(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Int64)                                               |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   write(!Matched::AbstractString, ::Any, !Matched::Any...) at io.jl:420                                                              |
-|              |                    |      |   write(!Matched::IO, ::Union{Float16, Float32, Float64, Int128, Int16, Int32, Int64, UInt128, UInt16, UInt32, UInt64}) at io.jl:649 |
-|              |                    |      |   write(!Matched::IO, ::Any) at io.jl:635                                                                                            |
-|              |                    |      |   ...                                                                                                                                |
-| unsafe_write | Ptr{UInt8}, UInt64 | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching unsafe_write(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Ptr{UInt8}, ::Int64)                          |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   unsafe_write(!Matched::IO, ::Ptr, ::Integer) at io.jl:646                                                                          |
-|              |                    |      |   unsafe_write(!Matched::IO, ::Ref{T}, ::Integer) where T at io.jl:644                                                               |
-|              |                    |      |   unsafe_write(!Matched::Base.DevNull, ::Ptr{UInt8}, !Matched::UInt64) at coreio.jl:17                                               |
-|              |                    |      |   ...                                                                                                                                |
-|        flush |                    | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching flush(::IOTraits.BufferedIn{IOTraits.NullIn})                                                        |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   flush(!Matched::Base.DevNull) at coreio.jl:19                                                                                      |
-|              |                    |      |   flush(!Matched::TextDisplay) at multimedia.jl:253                                                                                  |
-|              |                    |      |   flush(!Matched::IOStream) at iostream.jl:66                                                                                        |
-|              |                    |      |   ...                                                                                                                                |
-
-## State Methods
-
-| Function | Args | File             | Method                                                                             |
-| --------:|:---- |:---------------- |:---------------------------------------------------------------------------------- |
-|    close |      | IOTraits.jl:1210 | close(ib::IOTraits.GenericBufferedIn)                                              |
-|   isopen |      | IOTraits.jl:272  | isopen(s::IOTraits.Stream)                                                         |
-|     lock |      | ⚠️               | ErrorException("no unique matching method found for the specified argument types") |
-|          |      |                  | MethodError: no method matching lock(::IOTraits.BufferedIn{IOTraits.NullIn})       |
-|          |      |                  | Closest candidates are:                                                            |
-|          |      |                  |   lock(::Any, !Matched::Base.GenericCondition) at condition.jl:78                  |
-|          |      |                  |   lock(::Any, !Matched::Base.AbstractLock) at lock.jl:184                          |
-|          |      |                  |   lock(::Any, !Matched::WeakKeyDict) at weakkeydict.jl:87                          |
-|          |      |                  |   ...                                                                              |
-|   unlock |      | ⚠️               | ErrorException("no unique matching method found for the specified argument types") |
-|          |      |                  | MethodError: no method matching unlock(::IOTraits.BufferedIn{IOTraits.NullIn})     |
-|          |      |                  | Closest candidates are:                                                            |
-|          |      |                  |   unlock(::Any, !Matched::Base.GenericCondition) at condition.jl:79                |
-|          |      |                  |   unlock(!Matched::IOContext) at show.jl:334                                       |
-|          |      |                  |   unlock(!Matched::Base.AlwaysLockedST) at condition.jl:50                         |
-|          |      |                  |   ...                                                                              |
-
-## Cursor Methods
-
-|  Function | Args    | File | Method                                                                                                                           |
-| ---------:|:------- |:---- |:-------------------------------------------------------------------------------------------------------------------------------- |
-|      skip | Integer | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching skip(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Int64)                                            |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   skip(!Matched::Base.GenericIOBuffer, ::Integer) at iobuffer.jl:243                                                             |
-|           |         |      |   skip(!Matched::IOStream, ::Integer) at iostream.jl:184                                                                         |
-|           |         |      |   skip(!Matched::Base.Filesystem.File, ::Integer) at filesystem.jl:232                                                           |
-|           |         |      |   ...                                                                                                                            |
-|      seek | Integer | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching seek(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Int64)                                            |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   seek(!Matched::Base.GenericIOBuffer, ::Integer) at iobuffer.jl:250                                                             |
-|           |         |      |   seek(!Matched::Base.Libc.FILE, ::Integer) at libc.jl:97                                                                        |
-|           |         |      |   seek(!Matched::IOStream, ::Integer) at iostream.jl:127                                                                         |
-|           |         |      |   ...                                                                                                                            |
-|  position |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching position(::IOTraits.BufferedIn{IOTraits.NullIn})                                                 |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   position(!Matched::Base.GenericIOBuffer) at iobuffer.jl:241                                                                    |
-|           |         |      |   position(!Matched::Base.Libc.FILE) at libc.jl:103                                                                              |
-|           |         |      |   position(!Matched::IOStream) at iostream.jl:216                                                                                |
-|           |         |      |   ...                                                                                                                            |
-| seekstart |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching seekstart(::IOTraits.BufferedIn{IOTraits.NullIn})                                                |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   seekstart(!Matched::IO) at iostream.jl:154                                                                                     |
-|           |         |      |   seekstart(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153 |
-|   seekend |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching seekend(::IOTraits.BufferedIn{IOTraits.NullIn})                                                  |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   seekend(!Matched::Base.GenericIOBuffer) at iobuffer.jl:263                                                                     |
-|           |         |      |   seekend(!Matched::IOStream) at iostream.jl:161                                                                                 |
-|           |         |      |   seekend(!Matched::Base.Filesystem.File) at filesystem.jl:226                                                                   |
-|           |         |      |   ...                                                                                                                            |
-|      mark |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching mark(::IOTraits.BufferedIn{IOTraits.NullIn})                                                     |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   mark(!Matched::Base.AbstractPipe) at io.jl:380                                                                                 |
-|           |         |      |   mark(!Matched::Base.LibuvStream) at stream.jl:1265                                                                             |
-|           |         |      |   mark(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153      |
-|           |         |      |   ...                                                                                                                            |
-|    unmark |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching unmark(::IOTraits.BufferedIn{IOTraits.NullIn})                                                   |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   unmark(!Matched::Base.AbstractPipe) at io.jl:380                                                                               |
-|           |         |      |   unmark(!Matched::Base.LibuvStream) at stream.jl:1266                                                                           |
-|           |         |      |   unmark(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153    |
-|           |         |      |   ...                                                                                                                            |
-|     reset |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching reset(::IOTraits.BufferedIn{IOTraits.NullIn})                                                    |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   reset(!Matched::Base.AbstractPipe) at io.jl:380                                                                                |
-|           |         |      |   reset(!Matched::Base.LibuvStream) at stream.jl:1267                                                                            |
-|           |         |      |   reset(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153     |
-|           |         |      |   ...                                                                                                                            |
-|  ismarked |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching ismarked(::IOTraits.BufferedIn{IOTraits.NullIn})                                                 |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   ismarked(!Matched::Base.AbstractPipe) at io.jl:380                                                                             |
-|           |         |      |   ismarked(!Matched::Base.LibuvStream) at stream.jl:1268                                                                         |
-|           |         |      |   ismarked(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153  |
-|           |         |      |   ...                                                                                                                            |
-
-## Extra Read Methods
-
-|          Function | Args                          | File             | Method                                                                                                                                                                                                                        |
-| -----------------:|:----------------------------- |:---------------- |:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|    bytesavailable |                               | IOTraits.jl:1307 | bytesavailable(io::IOTraits.BufferedIn)                                                                                                                                                                                       |
-| max_transfer_size |                               | IOTraits.jl:1305 | max_transfer_size(io::IOTraits.BufferedIn)                                                                                                                                                                                    |
-|     readavailable |                               | IOTraits.jl:1329 | readavailable(io::IOTraits.BufferedIn; kw...)                                                                                                                                                                                 |
-|          readline |                               | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching readline(::IOTraits.BufferedIn{IOTraits.NullIn})                                                                                                                                              |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   readline() at io.jl:506                                                                                                                                                                                                     |
-|                   |                               |                  |   readline(!Matched::AbstractString; keep) at io.jl:500                                                                                                                                                                       |
-|                   |                               |                  |   readline(!Matched::IOStream; keep) at iostream.jl:444                                                                                                                                                                       |
-|                   |                               |                  |   ...                                                                                                                                                                                                                         |
-|              read | Type{Int64}                   | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching read(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Type{Int64})                                                                                                                                   |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   read(!Matched::Base.GenericIOBuffer, ::Union{Type{Float16}, Type{Float32}, Type{Float64}, Type{Int128}, Type{Int16}, Type{Int32}, Type{Int64}, Type{UInt128}, Type{UInt16}, Type{UInt32}, Type{UInt64}}) at iobuffer.jl:189 |
-|                   |                               |                  |   read(::IOTraits.GenericBufferedIn, !Matched::Type{UInt8}; kw...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1248                                                                                |
-|                   |                               |                  |   read(!Matched::AbstractString, ::Type{T}) where T at io.jl:434                                                                                                                                                              |
-|                   |                               |                  |   ...                                                                                                                                                                                                                         |
-|              read | Type{String}                  | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching read(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Type{String})                                                                                                                                  |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   read(!Matched::Base.AbstractCmd, ::Type{String}) at process.jl:421                                                                                                                                                          |
-|                   |                               |                  |   read(!Matched::TraitsIO, ::Type{String}; timeout) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1511                                                                                               |
-|                   |                               |                  |   read(::IOTraits.GenericBufferedIn, !Matched::Type{UInt8}; kw...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1248                                                                                |
-|                   |                               |                  |   ...                                                                                                                                                                                                                         |
-|              read | Integer                       | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching read(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Int64)                                                                                                                                         |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   read(!Matched::Base.GenericIOBuffer, ::Integer) at iobuffer.jl:471                                                                                                                                                          |
-|                   |                               |                  |   read(!Matched::TraitsIO, ::Integer; timeout) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1615                                                                                                    |
-|                   |                               |                  |   read(::IOTraits.GenericBufferedIn, !Matched::Type{UInt8}; kw...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1248                                                                                |
-|                   |                               |                  |   ...                                                                                                                                                                                                                         |
-|        readbytes! | Vector{UInt8}                 | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching readbytes!(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Vector{UInt8})                                                                                                                           |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   readbytes!(!Matched::Base.GenericIOBuffer, ::Array{UInt8, N} where N) at iobuffer.jl:460                                                                                                                                    |
-|                   |                               |                  |   readbytes!(!Matched::Base.GenericIOBuffer, ::Array{UInt8, N} where N, !Matched::Int64) at iobuffer.jl:461                                                                                                                   |
-|                   |                               |                  |   readbytes!(!Matched::Base.GenericIOBuffer, ::Array{UInt8, N} where N, !Matched::Any) at iobuffer.jl:460                                                                                                                     |
-|                   |                               |                  |   ...                                                                                                                                                                                                                         |
-|        readbytes! | AbstractVector{UInt8}, Number | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching AbstractVector{UInt8}()                                                                                                                                                                       |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   AbstractArray{T, N}(!Matched::AbstractArray{S, N}) where {T, N, S} at array.jl:541                                                                                                                                          |
-|             read! | AbstractArray                 | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching AbstractArray()                                                                                                                                                                               |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   AbstractArray(!Matched::Union{LinearAlgebra.QR, LinearAlgebra.QRCompactWY}) at /Users/julia/buildbot/worker/package_macos64/build/usr/share/julia/stdlib/v1.6/LinearAlgebra/src/qr.jl:433                                   |
-|                   |                               |                  |   AbstractArray(!Matched::LinearAlgebra.CholeskyPivoted) at /Users/julia/buildbot/worker/package_macos64/build/usr/share/julia/stdlib/v1.6/LinearAlgebra/src/cholesky.jl:435                                                  |
-|                   |                               |                  |   AbstractArray(!Matched::LinearAlgebra.LQ) at /Users/julia/buildbot/worker/package_macos64/build/usr/share/julia/stdlib/v1.6/LinearAlgebra/src/lq.jl:119                                                                     |
-|                   |                               |                  |   ...                                                                                                                                                                                                                         |
-|         readuntil | Any                           | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no constructors have been defined for Any                                                                                                                                                                        |
-|        countlines |                               | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching countlines(::IOTraits.BufferedIn{IOTraits.NullIn})                                                                                                                                            |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   countlines(!Matched::IO; eol) at io.jl:1175                                                                                                                                                                                 |
-|                   |                               |                  |   countlines(!Matched::AbstractString; eol) at io.jl:1192                                                                                                                                                                     |
-|                   |                               |                  |   countlines(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153                                                                                             |
-|          eachline |                               | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching eachline(::IOTraits.BufferedIn{IOTraits.NullIn})                                                                                                                                              |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   eachline() at io.jl:1004                                                                                                                                                                                                    |
-|                   |                               |                  |   eachline(!Matched::IO; keep) at io.jl:1004                                                                                                                                                                                  |
-|                   |                               |                  |   eachline(!Matched::AbstractString; keep) at io.jl:1008                                                                                                                                                                      |
-|                   |                               |                  |   ...                                                                                                                                                                                                                         |
-|          readeach | Type{Char}                    | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching readeach(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Type{Char})                                                                                                                                |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   readeach(!Matched::IOT, ::Type) where IOT<:IO at io.jl:1047                                                                                                                                                                 |
-|          readeach | Type{Int64}                   | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching readeach(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Type{Int64})                                                                                                                               |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   readeach(!Matched::IOT, ::Type) where IOT<:IO at io.jl:1047                                                                                                                                                                 |
-|          readeach | Type{UInt8}                   | ⚠️               | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                  | MethodError: no method matching readeach(::IOTraits.BufferedIn{IOTraits.NullIn}, ::Type{UInt8})                                                                                                                               |
-|                   |                               |                  | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                  |   readeach(!Matched::IOT, ::Type) where IOT<:IO at io.jl:1047                                                                                                                                                                 |
-
-## NullIn
-
-## IO Traits
-
-| Trait             | Value                 |
-|:----------------- |:--------------------- |
-| TransferDirection | IOTraits.In()         |
-| TotalSize         | UnknownTotalSize()    |
-| TransferSize      | UnknownTransferSize() |
-| ReadFragmentation | ReadsBytes()          |
-| WaitingMechanism  | WaitBySleeping()      |
-
-## Core Read Methods
-
-|    Function | Args               | File      | Method                                                                                                                                                                                                                                                                                                            |
-| -----------:|:------------------ |:--------- |:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|  isreadable |                    | ⚠️        | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                                                                                                                |
-|             |                    |           | MethodError: no method matching isreadable(::IOTraits.NullIn)                                                                                                                                                                                                                                                     |
-|             |                    |           | Closest candidates are:                                                                                                                                                                                                                                                                                           |
-|             |                    |           |   isreadable(!Matched::Base.DevNull) at coreio.jl:12                                                                                                                                                                                                                                                              |
-|             |                    |           |   isreadable(!Matched::Base.AbstractPipe) at io.jl:380                                                                                                                                                                                                                                                            |
-|             |                    |           |   isreadable(!Matched::Base.GenericIOBuffer) at iobuffer.jl:234                                                                                                                                                                                                                                                   |
-|             |                    |           |   ...                                                                                                                                                                                                                                                                                                             |
-|        read | Type{UInt8}        | ⚠️        | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                                                                                                                |
-|             |                    |           | MethodError: no method matching read(::IOTraits.NullIn, ::Type{UInt8})                                                                                                                                                                                                                                            |
-|             |                    |           | Closest candidates are:                                                                                                                                                                                                                                                                                           |
-|             |                    |           |   read(!Matched::Base.GenericIOBuffer, ::Type{UInt8}) at iobuffer.jl:212                                                                                                                                                                                                                                          |
-|             |                    |           |   read(!Matched::TraitsIO, ::Type{UInt8}; timeout) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1483                                                                                                                                                                                    |
-|             |                    |           |   read(!Matched::IOTraits.GenericBufferedIn, ::Type{UInt8}; kw...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1248                                                                                                                                                                    |
-|             |                    |           |   ...                                                                                                                                                                                                                                                                                                             |
-| unsafe_read | Ptr{UInt8}, UInt64 | ⚠️        | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                                                                                                                |
-|             |                    |           | MethodError: no method matching unsafe_read(::IOTraits.NullIn, ::Ptr{UInt8}, ::Int64)                                                                                                                                                                                                                             |
-|             |                    |           | Closest candidates are:                                                                                                                                                                                                                                                                                           |
-|             |                    |           |   unsafe_read(!Matched::IOTraits.FullInDelegate, ::Ptr{UInt8}, ::Any...; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1154                                                                                                                                                        |
-|             |                    |           |   unsafe_read(!Matched::IOTraits.FullInDelegate, ::Ptr, ::Any...; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1154                                                                                                                                                               |
-|             |                    |           |   unsafe_read(!Matched::IO, ::Ptr, ::Integer) at io.jl:722                                                                                                                                                                                                                                                        |
-|             |                    |           |   ...                                                                                                                                                                                                                                                                                                             |
-|         eof |                    | ⚠️        | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                                                                                                                |
-|             |                    |           | MethodError: no method matching eof(::IOTraits.NullIn)                                                                                                                                                                                                                                                            |
-|             |                    |           | Closest candidates are:                                                                                                                                                                                                                                                                                           |
-|             |                    |           |   eof(::Any, !Matched::InfiniteTotalSize; kw...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1472                                                                                                                                                                                      |
-|             |                    |           |   eof(::Any, !Matched::UnknownTotalSize; kw...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1463                                                                                                                                                                                       |
-|             |                    |           |   eof(::Any, !Matched::KnownTotalSize; kw...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1457                                                                                                                                                                                         |
-|             |                    |           |   ...                                                                                                                                                                                                                                                                                                             |
-|    reseteof |                    | ⚠️        | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                                                                                                                |
-|             |                    |           | MethodError: no method matching reseteof(::IOTraits.NullIn)                                                                                                                                                                                                                                                       |
-|             |                    |           | Closest candidates are:                                                                                                                                                                                                                                                                                           |
-|             |                    |           |   reseteof(!Matched::Base.AbstractPipe) at io.jl:415                                                                                                                                                                                                                                                              |
-|             |                    |           |   reseteof(!Matched::Base.TTY) at stream.jl:656                                                                                                                                                                                                                                                                   |
-|             |                    |           |   reseteof(!Matched::IO) at io.jl:28                                                                                                                                                                                                                                                                              |
-|        peek |                    | io.jl:267 | peek(s)                                                                                                                                                                                                                                                                                                           |
-|        peek | Type{UInt8}        | ⚠️        | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                                                                                                                |
-|             |                    |           | MethodError: no method matching peek(::IOTraits.NullIn, ::Type{UInt8})                                                                                                                                                                                                                                            |
-|             |                    |           | Closest candidates are:                                                                                                                                                                                                                                                                                           |
-|             |                    |           |   peek(!Matched::Base.Iterators.Stateful, ::Any) at iterators.jl:1299                                                                                                                                                                                                                                             |
-|             |                    |           |   peek(!Matched::IOTraits.GenericBufferedIn, ::Type{T}; kw...) where T at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1262                                                                                                                                                                |
-|             |                    |           |   peek(!Matched::IOTraits.FullInDelegate, ::Type{UInt8}, !Matched::Any...; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1154                                                                                                                                                      |
-|             |                    |           |   ...                                                                                                                                                                                                                                                                                                             |
-|        peek | Type{Int64}        | ⚠️        | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                                                                                                                |
-|             |                    |           | MethodError: no method matching peek(::IOTraits.NullIn, ::Type{Int64})                                                                                                                                                                                                                                            |
-|             |                    |           | Closest candidates are:                                                                                                                                                                                                                                                                                           |
-|             |                    |           |   peek(!Matched::Base.Iterators.Stateful, ::Any) at iterators.jl:1299                                                                                                                                                                                                                                             |
-|             |                    |           |   peek(!Matched::IOTraits.GenericBufferedIn, ::Type{T}; kw...) where T at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1262                                                                                                                                                                |
-|             |                    |           |   peek(!Matched::IOTraits.FullInDelegate, ::Union{Type{Float16}, Type{Float32}, Type{Float64}, Type{Int128}, Type{Int16}, Type{Int32}, Type{Int64}, Type{UInt128}, Type{UInt16}, Type{UInt32}, Type{UInt64}}, !Matched::Any...; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1154 |
-|             |                    |           |   ...                                                                                                                                                                                                                                                                                                             |
-
-## Core Write Methods
-
-|     Function | Args               | File | Method                                                                                                                               |
-| ------------:|:------------------ |:---- |:------------------------------------------------------------------------------------------------------------------------------------ |
-|   iswritable |                    | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching iswritable(::IOTraits.NullIn)                                                                        |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   iswritable(!Matched::Base.DevNull) at coreio.jl:13                                                                                 |
-|              |                    |      |   iswritable(!Matched::Base.AbstractPipe) at io.jl:384                                                                               |
-|              |                    |      |   iswritable(!Matched::Base.GenericIOBuffer) at iobuffer.jl:235                                                                      |
-|              |                    |      |   ...                                                                                                                                |
-|        write | UInt8              | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching write(::IOTraits.NullIn, ::Int64)                                                                    |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   write(!Matched::AbstractString, ::Any, !Matched::Any...) at io.jl:420                                                              |
-|              |                    |      |   write(!Matched::IO, ::Union{Float16, Float32, Float64, Int128, Int16, Int32, Int64, UInt128, UInt16, UInt32, UInt64}) at io.jl:649 |
-|              |                    |      |   write(!Matched::IO, ::Any) at io.jl:635                                                                                            |
-|              |                    |      |   ...                                                                                                                                |
-| unsafe_write | Ptr{UInt8}, UInt64 | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching unsafe_write(::IOTraits.NullIn, ::Ptr{UInt8}, ::Int64)                                               |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   unsafe_write(!Matched::IO, ::Ptr, ::Integer) at io.jl:646                                                                          |
-|              |                    |      |   unsafe_write(!Matched::IO, ::Ref{T}, ::Integer) where T at io.jl:644                                                               |
-|              |                    |      |   unsafe_write(!Matched::Base.DevNull, ::Ptr{UInt8}, !Matched::UInt64) at coreio.jl:17                                               |
-|              |                    |      |   ...                                                                                                                                |
-|        flush |                    | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                                   |
-|              |                    |      | MethodError: no method matching flush(::IOTraits.NullIn)                                                                             |
-|              |                    |      | Closest candidates are:                                                                                                              |
-|              |                    |      |   flush(!Matched::Base.DevNull) at coreio.jl:19                                                                                      |
-|              |                    |      |   flush(!Matched::TextDisplay) at multimedia.jl:253                                                                                  |
-|              |                    |      |   flush(!Matched::IOStream) at iostream.jl:66                                                                                        |
-|              |                    |      |   ...                                                                                                                                |
-
-## State Methods
-
-| Function | Args | File            | Method                                                                             |
-| --------:|:---- |:--------------- |:---------------------------------------------------------------------------------- |
-|    close |      | IOTraits.jl:274 | close(s::IOTraits.Stream)                                                          |
-|   isopen |      | IOTraits.jl:272 | isopen(s::IOTraits.Stream)                                                         |
-|     lock |      | ⚠️              | ErrorException("no unique matching method found for the specified argument types") |
-|          |      |                 | MethodError: no method matching lock(::IOTraits.NullIn)                            |
-|          |      |                 | Closest candidates are:                                                            |
-|          |      |                 |   lock(::Any, !Matched::Base.GenericCondition) at condition.jl:78                  |
-|          |      |                 |   lock(::Any, !Matched::Base.AbstractLock) at lock.jl:184                          |
-|          |      |                 |   lock(::Any, !Matched::WeakKeyDict) at weakkeydict.jl:87                          |
-|          |      |                 |   ...                                                                              |
-|   unlock |      | ⚠️              | ErrorException("no unique matching method found for the specified argument types") |
-|          |      |                 | MethodError: no method matching unlock(::IOTraits.NullIn)                          |
-|          |      |                 | Closest candidates are:                                                            |
-|          |      |                 |   unlock(::Any, !Matched::Base.GenericCondition) at condition.jl:79                |
-|          |      |                 |   unlock(!Matched::IOContext) at show.jl:334                                       |
-|          |      |                 |   unlock(!Matched::Base.AlwaysLockedST) at condition.jl:50                         |
-|          |      |                 |   ...                                                                              |
-
-## Cursor Methods
-
-|  Function | Args    | File | Method                                                                                                                           |
-| ---------:|:------- |:---- |:-------------------------------------------------------------------------------------------------------------------------------- |
-|      skip | Integer | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching skip(::IOTraits.NullIn, ::Int64)                                                                 |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   skip(!Matched::Base.GenericIOBuffer, ::Integer) at iobuffer.jl:243                                                             |
-|           |         |      |   skip(!Matched::IOStream, ::Integer) at iostream.jl:184                                                                         |
-|           |         |      |   skip(!Matched::Base.Filesystem.File, ::Integer) at filesystem.jl:232                                                           |
-|           |         |      |   ...                                                                                                                            |
-|      seek | Integer | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching seek(::IOTraits.NullIn, ::Int64)                                                                 |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   seek(!Matched::Base.GenericIOBuffer, ::Integer) at iobuffer.jl:250                                                             |
-|           |         |      |   seek(!Matched::Base.Libc.FILE, ::Integer) at libc.jl:97                                                                        |
-|           |         |      |   seek(!Matched::IOStream, ::Integer) at iostream.jl:127                                                                         |
-|           |         |      |   ...                                                                                                                            |
-|  position |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching position(::IOTraits.NullIn)                                                                      |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   position(!Matched::Base.GenericIOBuffer) at iobuffer.jl:241                                                                    |
-|           |         |      |   position(!Matched::Base.Libc.FILE) at libc.jl:103                                                                              |
-|           |         |      |   position(!Matched::IOStream) at iostream.jl:216                                                                                |
-|           |         |      |   ...                                                                                                                            |
-| seekstart |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching seekstart(::IOTraits.NullIn)                                                                     |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   seekstart(!Matched::IO) at iostream.jl:154                                                                                     |
-|           |         |      |   seekstart(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153 |
-|   seekend |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching seekend(::IOTraits.NullIn)                                                                       |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   seekend(!Matched::Base.GenericIOBuffer) at iobuffer.jl:263                                                                     |
-|           |         |      |   seekend(!Matched::IOStream) at iostream.jl:161                                                                                 |
-|           |         |      |   seekend(!Matched::Base.Filesystem.File) at filesystem.jl:226                                                                   |
-|           |         |      |   ...                                                                                                                            |
-|      mark |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching mark(::IOTraits.NullIn)                                                                          |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   mark(!Matched::Base.AbstractPipe) at io.jl:380                                                                                 |
-|           |         |      |   mark(!Matched::Base.LibuvStream) at stream.jl:1265                                                                             |
-|           |         |      |   mark(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153      |
-|           |         |      |   ...                                                                                                                            |
-|    unmark |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching unmark(::IOTraits.NullIn)                                                                        |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   unmark(!Matched::Base.AbstractPipe) at io.jl:380                                                                               |
-|           |         |      |   unmark(!Matched::Base.LibuvStream) at stream.jl:1266                                                                           |
-|           |         |      |   unmark(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153    |
-|           |         |      |   ...                                                                                                                            |
-|     reset |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching reset(::IOTraits.NullIn)                                                                         |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   reset(!Matched::Base.AbstractPipe) at io.jl:380                                                                                |
-|           |         |      |   reset(!Matched::Base.LibuvStream) at stream.jl:1267                                                                            |
-|           |         |      |   reset(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153     |
-|           |         |      |   ...                                                                                                                            |
-|  ismarked |         | ⚠️   | ErrorException("no unique matching method found for the specified argument types")                                               |
-|           |         |      | MethodError: no method matching ismarked(::IOTraits.NullIn)                                                                      |
-|           |         |      | Closest candidates are:                                                                                                          |
-|           |         |      |   ismarked(!Matched::Base.AbstractPipe) at io.jl:380                                                                             |
-|           |         |      |   ismarked(!Matched::Base.LibuvStream) at stream.jl:1268                                                                         |
-|           |         |      |   ismarked(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153  |
-|           |         |      |   ...                                                                                                                            |
-
-## Extra Read Methods
-
-|          Function | Args                          | File            | Method                                                                                                                                                                                                                        |
-| -----------------:|:----------------------------- |:--------------- |:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|    bytesavailable |                               | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching bytesavailable(::IOTraits.NullIn)                                                                                                                                                             |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   bytesavailable(!Matched::Base.AbstractPipe) at io.jl:403                                                                                                                                                                    |
-|                   |                               |                 |   bytesavailable(!Matched::Base.GenericIOBuffer) at iobuffer.jl:240                                                                                                                                                           |
-|                   |                               |                 |   bytesavailable(!Matched::IOStream) at iostream.jl:377                                                                                                                                                                       |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-| max_transfer_size |                               | IOTraits.jl:857 | max_transfer_size(stream)                                                                                                                                                                                                     |
-|     readavailable |                               | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching readavailable(::IOTraits.NullIn)                                                                                                                                                              |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   readavailable(!Matched::Base.AbstractPipe) at io.jl:380                                                                                                                                                                     |
-|                   |                               |                 |   readavailable(!Matched::Base.GenericIOBuffer) at iobuffer.jl:470                                                                                                                                                            |
-|                   |                               |                 |   readavailable(!Matched::IOStream) at iostream.jl:379                                                                                                                                                                        |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|          readline |                               | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching readline(::IOTraits.NullIn)                                                                                                                                                                   |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   readline() at io.jl:506                                                                                                                                                                                                     |
-|                   |                               |                 |   readline(!Matched::AbstractString; keep) at io.jl:500                                                                                                                                                                       |
-|                   |                               |                 |   readline(!Matched::IOStream; keep) at iostream.jl:444                                                                                                                                                                       |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|              read | Type{Int64}                   | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching read(::IOTraits.NullIn, ::Type{Int64})                                                                                                                                                        |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   read(!Matched::Base.GenericIOBuffer, ::Union{Type{Float16}, Type{Float32}, Type{Float64}, Type{Int128}, Type{Int16}, Type{Int32}, Type{Int64}, Type{UInt128}, Type{UInt16}, Type{UInt32}, Type{UInt64}}) at iobuffer.jl:189 |
-|                   |                               |                 |   read(!Matched::AbstractString, ::Type{T}) where T at io.jl:434                                                                                                                                                              |
-|                   |                               |                 |   read(!Matched::AbstractString, ::Any...) at io.jl:432                                                                                                                                                                       |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|              read | Type{String}                  | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching read(::IOTraits.NullIn, ::Type{String})                                                                                                                                                       |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   read(!Matched::Base.AbstractCmd, ::Type{String}) at process.jl:421                                                                                                                                                          |
-|                   |                               |                 |   read(!Matched::TraitsIO, ::Type{String}; timeout) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1511                                                                                               |
-|                   |                               |                 |   read(!Matched::AbstractString, ::Type{T}) where T at io.jl:434                                                                                                                                                              |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|              read | Integer                       | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching read(::IOTraits.NullIn, ::Int64)                                                                                                                                                              |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   read(!Matched::Base.GenericIOBuffer, ::Integer) at iobuffer.jl:471                                                                                                                                                          |
-|                   |                               |                 |   read(!Matched::TraitsIO, ::Integer; timeout) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1615                                                                                                    |
-|                   |                               |                 |   read(!Matched::AbstractString, ::Any...) at io.jl:432                                                                                                                                                                       |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|        readbytes! | Vector{UInt8}                 | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching readbytes!(::IOTraits.NullIn, ::Vector{UInt8})                                                                                                                                                |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   readbytes!(!Matched::Base.GenericIOBuffer, ::Array{UInt8, N} where N) at iobuffer.jl:460                                                                                                                                    |
-|                   |                               |                 |   readbytes!(!Matched::Base.GenericIOBuffer, ::Array{UInt8, N} where N, !Matched::Int64) at iobuffer.jl:461                                                                                                                   |
-|                   |                               |                 |   readbytes!(!Matched::Base.GenericIOBuffer, ::Array{UInt8, N} where N, !Matched::Any) at iobuffer.jl:460                                                                                                                     |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|        readbytes! | AbstractVector{UInt8}, Number | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching AbstractVector{UInt8}()                                                                                                                                                                       |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   AbstractArray{T, N}(!Matched::AbstractArray{S, N}) where {T, N, S} at array.jl:541                                                                                                                                          |
-|             read! | AbstractArray                 | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching AbstractArray()                                                                                                                                                                               |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   AbstractArray(!Matched::Union{LinearAlgebra.QR, LinearAlgebra.QRCompactWY}) at /Users/julia/buildbot/worker/package_macos64/build/usr/share/julia/stdlib/v1.6/LinearAlgebra/src/qr.jl:433                                   |
-|                   |                               |                 |   AbstractArray(!Matched::LinearAlgebra.CholeskyPivoted) at /Users/julia/buildbot/worker/package_macos64/build/usr/share/julia/stdlib/v1.6/LinearAlgebra/src/cholesky.jl:435                                                  |
-|                   |                               |                 |   AbstractArray(!Matched::LinearAlgebra.LQ) at /Users/julia/buildbot/worker/package_macos64/build/usr/share/julia/stdlib/v1.6/LinearAlgebra/src/lq.jl:119                                                                     |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|         readuntil | Any                           | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no constructors have been defined for Any                                                                                                                                                                        |
-|        countlines |                               | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching countlines(::IOTraits.NullIn)                                                                                                                                                                 |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   countlines(!Matched::IO; eol) at io.jl:1175                                                                                                                                                                                 |
-|                   |                               |                 |   countlines(!Matched::AbstractString; eol) at io.jl:1192                                                                                                                                                                     |
-|                   |                               |                 |   countlines(!Matched::IOTraits.FullInDelegate; k...) at /Users/samoconnor/git/jlpi/UnixIO/packages/IOTraits/src/IOTraits.jl:1153                                                                                             |
-|          eachline |                               | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching eachline(::IOTraits.NullIn)                                                                                                                                                                   |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   eachline() at io.jl:1004                                                                                                                                                                                                    |
-|                   |                               |                 |   eachline(!Matched::IO; keep) at io.jl:1004                                                                                                                                                                                  |
-|                   |                               |                 |   eachline(!Matched::AbstractString; keep) at io.jl:1008                                                                                                                                                                      |
-|                   |                               |                 |   ...                                                                                                                                                                                                                         |
-|          readeach | Type{Char}                    | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching readeach(::IOTraits.NullIn, ::Type{Char})                                                                                                                                                     |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   readeach(!Matched::IOT, ::Type) where IOT<:IO at io.jl:1047                                                                                                                                                                 |
-|          readeach | Type{Int64}                   | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching readeach(::IOTraits.NullIn, ::Type{Int64})                                                                                                                                                    |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   readeach(!Matched::IOT, ::Type) where IOT<:IO at io.jl:1047                                                                                                                                                                 |
-|          readeach | Type{UInt8}                   | ⚠️              | ErrorException("no unique matching method found for the specified argument types")                                                                                                                                            |
-|                   |                               |                 | MethodError: no method matching readeach(::IOTraits.NullIn, ::Type{UInt8})                                                                                                                                                    |
-|                   |                               |                 | Closest candidates are:                                                                                                                                                                                                       |
-|                   |                               |                 |   readeach(!Matched::IOT, ::Type) where IOT<:IO at io.jl:1047                                                                                                                                                                 |
-

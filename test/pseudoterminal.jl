@@ -9,6 +9,8 @@ using Crayons
 
 function ptdump(f, cmd, cin, cout)
 
+    @info "ptdump" cmd cin cout
+
     blue = crayon"fg:blue"
     red = crayon"bold fg:red"
 
@@ -85,6 +87,9 @@ mktempdir() do d
     env = merge(ENV, Dict("JULIA_UNIX_IO_DEBUG_LEVEL" => "0",
                           "JULIA_DEBUG" => ""))
     UnixIO.ptopen(`$(Base.julia_cmd()) $jlfile`; env=env, opts...) do cin, cout
+        @info "ptopen" cin cout
+        cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+        cin=IOTraits.BaseIO(cin)
     ptdump(Base.julia_cmd(), cin, cout) do fin, fout
         while true
             l = fin()

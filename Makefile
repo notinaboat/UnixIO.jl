@@ -1,4 +1,4 @@
-PACKAGE := $(shell basename $(CURDIR))
+PACKAGE := UnixIO
 export JULIA_PKG_OFFLINE = true
 export JULIA_PROJECT = $(CURDIR)
 export JULIA_DEPOT_PATH = $(CURDIR)/../jl_depot
@@ -17,7 +17,6 @@ HTML_TITLE_LINK := https://github.com/notinaboat/UnixIO.jl
 
 include $(README_DOCS_DIR)/Makefile.shared
 
-HTML_FILES = packages/IOTraits/README.md.html
 HTML_FILES = packages/IOTraits/README.md.html
 .PHONY: docs
 docs: $(HTML_FILES:%=docs/%)
@@ -38,7 +37,7 @@ docgen:
 	
 packages/IOTraits/README.md: packages/IOTraits/src/IOTraits.jl.md
 	cp $< $@.tmp
-	$(JL) -e "using IOTraits; IOTraits.dump_info()" >> $@.tmp
+#	$(JL) -e "using IOTraits; IOTraits.dump_info()" >> $@.tmp
 	mv $@.tmp $@
 
 JL := ln -sf Manifest.toml.1.6 Manifest.toml; julia

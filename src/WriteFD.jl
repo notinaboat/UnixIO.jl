@@ -3,8 +3,6 @@ Write-only Unix File Descriptor.
 """
 
 
-raw_transfer(fd::FD{Out}, buf, count) = C.write(fd, buf, count)
-
 
 shutdown(fd::FD{Out}) = shutdown(fd, C.SHUT_WR)
 

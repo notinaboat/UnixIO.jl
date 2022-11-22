@@ -58,7 +58,7 @@ end
 @wrap in Base.bytesavailable
 @wrap in Base.read
 @wrap in Base.read!
-#@wrap in Base.readbytes! FIXME "WARNING: Method definition readbytes...." ???
+@wrap in Base.readbytes!
 @wrap in Base.readuntil
 @wrap in Base.readline
 @wrap in Base.countlines

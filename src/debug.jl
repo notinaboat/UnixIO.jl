@@ -4,6 +4,7 @@ using Crayons
 using TextWrap
 
 using REPL
+using Base: @lock
 
 
 include("debug_recompile_trigger.jl") # The Makefile touches this file to force
@@ -307,7 +308,7 @@ function debug_write(fd, p, l)
             @assert errno() in (C.EAGAIN, C.EINTR)
         end
     end
-    tcdrain(fd)
+    C.tcdrain(fd)
 end
 debug_write(p, l) = debug_write(Base.STDERR_NO, p, l)
 debug_write(s::String) = GC.@preserve s debug_write(pointer(s), ncodeunits(s))
@@ -344,6 +345,8 @@ dbtiny(x::Cmd) = repr(x)
 function dbshort(x)
     io = IOBuffer()
     dbshow(debug_io_context(io), x)
+    print(io, "::")
+    show(io, typeof(x))
     String(take!(io))
 end
 
@@ -468,7 +471,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
         try
             # Original function body.
             _db_result = $body
-
+            return _db_result
         catch _db_err
             _db_result = "⚠️  $_db_err"
             rethrow(_db_err)
@@ -481,7 +484,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
             end
             debug_indent_pop()
         end
-        _db_result
+        #_db_result
     end
     append!(head.args, body.args)
     esc(ex)
@@ -638,6 +641,7 @@ dbprint(io::IO, v::String) = print(io, v)
 dbprint(io::IO, a) = print(io, a)
 
 dbshow(io::IO, a) = show(io, a)
+dbshow(io::IO, a::Unsigned) = print(io, a)
 
 function dbprint(io::IO, a, args...)
     for a in (a, args...)
@@ -682,6 +686,7 @@ end
 
 # Optional Exports.
 
+#= FIXME
 module Debug
 
     for x in (Symbol("@db"),
@@ -701,6 +706,7 @@ module Debug
        eval(:(import ..UnixIO:$x; export $x))
    end
 end
+=#
 
 
 

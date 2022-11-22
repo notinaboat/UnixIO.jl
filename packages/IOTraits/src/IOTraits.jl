@@ -6,6 +6,22 @@ IO interfaces.
 """
 module IOTraits
 
+using Preconditions
+using Markdown
+using Preferences
+using Mmap
+include("../../../src/macroutils.jl")
+
+    using UnixIOHeaders
+    const C = UnixIOHeaders
+    include("../../../src/debug.jl")
+
+    @db function __init__()
+        @ccall(jl_generating_output()::Cint) == 1 && return
+        debug_init()
+        @db 1 "UnixIO.DEBUG_LEVEL = $DEBUG_LEVEL. See `src/debug.jl`."
+    end
+
 include("idoc.jl")
 
 
@@ -13,14 +29,16 @@ raw"""
 ## Background
 
 This collection of Trait types began as a tool for resolving method
-selection issues in the UnixIO.jl package. Everything in Unix is a
-file, but there are many types of file, many types of Unix, and
-many ways a file handled can be configured.
+selection issues in the UnixIO.jl package.
+
+Everything in Unix is a file, but there are many different types of file,
+a few different types of Unix, and many ways a file handle can be configured.
 
 Selection of correct (or most efficient) methods can often be
-achieved with a simple type hierarchy. However traits seemed to be
+achieved with a simple type hierarchy. However traits seem to be
 useful way to deal with variations in behaviour that depend
 file handle configuration and platform.
+
 In general `libc`'s `write(2)` and `read(2)` can be used to transfer
 data to or from any Unix file descriptor. However, the precise
 behaviour of these functions depends on many factors.
@@ -38,7 +56,7 @@ platform.
 
 IOTraits expands on the traits from UnixIO.jl in the hope of making
 them more broadly useful.
-According to the [law of the hammer][Hammer] some of this is probably 
+However, according to the [law of the hammer][Hammer] some of this is probably 
 overkill. The intention is to consider the application of Trait types
 to various aspects of IO and to see where it leads.
 
@@ -51,7 +69,7 @@ to various aspects of IO and to see where it leads.
 
 ## Overview
 
-The IOTraits interface is built around the `transfer(stream, buffer)` function.
+The IOTraits interface is built around the function `transfer(stream, buffer)`.
 This function transfers data between a stream and a buffer.
 
 Traits are used to specify the behaviour of the stream and the buffer.
@@ -62,24 +80,24 @@ Trait                      Description
 `TransferDirection`        Which way is the transfer? \
                            (`In`, `Out` or `Exchange`).
 
-`StreamIndexing`           Is indexing (e.g. `pread(2)`) supported? \
+`StreamIndexing`           Is indexed stream access supported? (e.g. `pread(2)`) \
                            (`NotIndexable`, `IndexableIO`)
 
 `FromBufferInterface`      How to get data from the buffer? \
-                           (`FromIO`, `FromPop`, `FromTake`, `UsingIndex`,
-                            `FromIteration` or `UsingPtr`)
+                           (`FromIO`, `FromStream`, `FromPop`, `FromTake`,
+                            `UsingIndex`, `FromIteration` or `UsingPtr`)
 
 `ToBufferInterface`        How to put data into the buffer? \
-                           (`ToIO`, `ToPush`, `ToPut`, `UsingIndex` or
-                            `UsingPtr`)
+                           (`ToIO`, `ToStream`, `ToPush`, `ToPut`,
+                            `UsingIndex` or `UsingPtr`)
 
 `TotalSize`                How much data is available? \
                            (`UnknownTotalSize`, `VariableTotalSize`,
                             `FixedTotalSize`, or `InfiniteTotalSize`)
 
 `TransferSize`              How much data can be moved in a single transfer? \
-                            (`UnknownTransferSize`, `KnownTransferSize`,
-                             `LimitedTransferSize` or `FixedTransferSize`)
+                            (`UnlimitedTransferSize`, `LimitedTransferSize`
+                            or `FixedTransferSize`)
 
 `ReadFragmentation`         What guarantees are made about fragmentation? \
                             (`ReadsBytes`, `ReadsLines`, `ReadsPackets` or
@@ -92,10 +110,12 @@ Trait                      Description
                             (`WaitBySleeping`, `WaitUsingPosixPoll`,
                              `WaitUsingEPoll`, `WaitUsingPidFD` or
                              `WaitUsingKQueue`)
+
+FIXME update summaries
 --------------------------------------------------------------------------------
 
 
-## IO Interface Model
+## The IO Interface Model
 
 ```julia
 julia>
@@ -103,7 +123,8 @@ help?> Base.IO
   No documentation found.
 ```
 
-As it stands Julia doesn't have a well defined generic interface for IO.
+As things stand Julia doesn't have a well defined generic interface for IO.
+
 It isn't possible to write a generic library that accepts `<: IO` objects
 because specification of the `IO` interface is not complete and the reference
 implementations are inconsistent. [^IF1] There are also instances where
@@ -123,19 +144,24 @@ actually blocks to wait for data.
 
 The Julia IO interface is built around the abstract type `Base.IO`. The `IO`
 interface specifications refer to `IO` objects as "stream" in some places
-and "io" in others.[^IF3] The IOTraits interface defines `IOTraits.Stream`
+and "io" in others[^IF3].
+
+The IOTraits interface defines `IOTraits.Stream`
 and uses the word "stream" to refer to instances of this type. To avoid
 ambiguity: instances of `IO` are referred to as "a `Base.IO` object".
-Also, for clarity `IOTraits.Stream` is not a subtype of `Base.IO`.
 
 [^IF3]: Examples from function signatures:
 `close(stream)`, `bytesavailable(io)`, `readavailable(stream)`,
 `isreadable(io)`, `read(io::IO, String)`, `eof(stream)`. \
 Examples from function descriptions: "The IO stream", "the specified IO object"
 "the given I/O stream", "the stream `io`", "the stream or file". \
-Note: `Base.IOStream` is a concrete subtype of `IO` that implements local
+(Also note: `Base.IOStream` is a concrete subtype of `IO` that implements local
 file system IO. References to "stream" and "IO stream" in existing `IO`
-interface specifications are not related to `Base.IOStream`.
+interface specifications are not related to `Base.IOStream`.)
+
+[^BaseIO]: Similarities and differences between the `Base.IO`
+model and the `IOTraits.Stream` model can be seen by reading the
+`IOTraits.BaseIO` implementations of the `Base.IO` functions below.
 """
 
 """
@@ -143,21 +169,18 @@ The `Stream` type models byte-streams.
 Many common operations involve transferring data to and from byte streams.
 e.g. writing data to a local file; receiving data from a network server;
 or typing commands into a terminal.
+
+Note that `IOTraits.Stream` is not a subtype of `Base.IO`.[^BaseIO]
 """
 abstract type Stream end
 
 """
-`BaseIO(::Stream) -> Base.IO` creates a Base compatible wrapper around a
-stream.
-Similarities and differences between the `Base.IO` model and the
-`IOTraits.Stream` model can be seen by reading the `TraitsIO`
-implementations of the `Base.IO` functions below.
+The constructor `BaseIO(::Stream) -> Base.IO` creates a Base.IO compatible
+wrapper around a stream.
 """
 struct BaseIO{T<:Stream} <: Base.IO
     stream::T
 end
-
-StreamDelegation(::Type{BaseIO}) = DelegatedToSubstream()
 
 
 
@@ -201,7 +224,7 @@ with a retry layer to support cases where all `n` items are required.
 
 **Blocking:** By default the `transfer` function waits indefinitely for
 data to be available. Control over this behaviour is provided by the optional
-`deadline=` argument. `transfer` stops waiting when `deadline > time()`.
+`deadline=` argument. The `transfer` function stops waiting when `deadline > time()`.
 This interface allows non-blocking transfers (`deadline=0`), blocking transfers
 (`deadline=Inf`) or anything in between.[^AS2]
 
@@ -261,6 +284,27 @@ the same behavior as direction `Out` except that incoming data appears in the
 output buffer after each output transfer.
 
 
+### Atomicity of Transfers
+
+FIXME
+ - byte transfers always atomic
+ - multi-byte items
+    - return zero if bytesavailable < ioelsize ?
+    - if Unknown Availability try a transfer and error if not enough bytes
+        - include the partial bytes in the exception object
+        - warning with suggestion to wrap with a buffer
+
+
+### Generic Code and Dependance on Traits
+
+FIXME
+ - Generic code may rely on e.g. Low Transfer Cost, or Known Transfer Size
+ - Generic code should have assertions for these traits.
+ - Generic code could promote streams to have required traits as needed
+   (i.e. wrap with buffered stream).
+
+
+
 ### Methods of Base Functions for Streams
 
 The IOTraits interface avoids defining methods of Base functions that have
@@ -277,29 +321,40 @@ Base.isopen(s::Stream) = is_proxy(s) ? isopen(unwrap(s)) : false
 
 Base.close(s::Stream) = is_proxy(s) ? close(unwrap(s)) : nothing
 
-Base.wait(s::Stream) = is_proxy(s) ? wait(unwrap(s)) :
-                                     wait(s, WaitingMechanism(s))
+Base.wait(s::Stream; deadline=Inf) = is_proxy(s) ?
+                                     wait(unwrap(s); deadline) :
+                                     _wait(s, WaitingMechanism(s); deadline)
 
-function Base.bytesavailable(s::Stream)
+@db function Base.bytesavailable(s::Stream)
     @require is_input(s)
-    _bytesavailable(unwrap(s))
+    s = unwrap(s)
+    _bytesavailable(s, Availability(s), TransferSize(s))
 end
 
-_bytesavailable(s) = _bytesavailable(s, TransferSize(io))
-_bytesavailable(s, ::UnknownTransferSize) = 0
-_bytesavailable(s, ::KnownTransferSize) =
-    _bytesavailable(s, TransferSizeMechanism(s))
-
-
-function Base.length(s::Stream)
+@db function Base.length(s::Stream)
     @require TotalSize(s) isa KnownTotalSize
-    _length(unwrap(s), TotalSizeMechanism(s))
+    s = unwrap(s)
+    _length(s, TotalSizeMechanism(s))
 end
 
-_length(stream, ::SupportsStatSize) = stat(stream).size
 
+@db function Base.position(s::Stream)
+    @require CursorSupport(s) isa AbstractHasPosition
+    s = unwrap(s)
+    _position(s, CursorSupport(s))
+end
 
-# FIXME wait timeout ? deadline ? args for wait ?
+@db function Base.readline(s::Stream; keep=false, timeout=Inf)
+    @require is_input(s)
+    s = unwrap(s)
+    _readline(s, ReadFragmentation(s); keep, timeout)
+end
+
+@db function Base.peek(s::Stream, ::Type{T}; timeout=Inf) where T
+    @require is_input(s)
+    s = unwrap(s)
+    _peek(s, PeekSupport(s), T; timeout)
+end
 
 
 
@@ -309,7 +364,7 @@ _length(stream, ::SupportsStatSize) = stat(stream).size
 The StreamDelegation trait allows a Stream subtype to delegate most method
 calls to a wrapped substream while redefining other methods as needed.
 
-Wrappers are used to augment low level IO drivers with features like buffering
+Wrappers are used to augment low level stream drivers with features like buffering
 or defragmentation. Wrappers are also used to make `Stream` objects compatible
 with `Base.IO`.
 
@@ -331,11 +386,12 @@ is_proxy(s) = StreamDelegation(s) != NotDelegated()
 
 """
 `unwrap(stream)`
-Retrieves the underlying stream that is wrapped by a proxy stream.
+-- Retrieves the underlying stream that is wrapped by a proxy stream.
 """
 unwrap(s) = unwrap(s, StreamDelegation(s))
 unwrap(s, ::NotDelegated) = s
 unwrap(s, ::DelegatedToSubStream) = s.stream
+unwrap(T::Type, ::DelegatedToSubStream) = fieldtype(T, :stream)
 
 
 
@@ -371,11 +427,6 @@ raw"""
     - natural page size?
 
 """
-using Preconditions
-using Markdown
-using Preferences
-using Mmap
-include("../../../src/macroutils.jl")
 
 
 
@@ -409,7 +460,21 @@ TransferDirection(T::Type) = is_proxy(T) ? TransferDirection(unwrap(T)) :
 is_input(s) = TransferDirection(s) != Out()
 is_output(s) = TransferDirection(s) != In()
 
+verb(::In) = "from"
+verb(::Out) = "to"
 
+
+"""
+The constructor `BaseIOStream(::Base.IO) -> IOTraits.Stream` creates a Stream
+compatible wrapper around a Base.IO.
+"""
+struct BaseIOStream{T<:Base.IO,D<:TransferDirection} <: Stream
+    io::T
+end
+
+TransferDirection(::Type{BaseIOStream{T, D}}) where {T, D} = D()
+
+Base.isopen(s::BaseIOStream) = isopen(s.io)
 
 
 # IO Indexing Trait
@@ -428,6 +493,7 @@ stream_is_indexable(s) = StreamIndexing(s) == IndexableIO()
 
 
 ioeltype(s) = isabstracttype(eltype(s)) ? UInt8 : eltype(s)
+@selfdoc ioelsize(s) = sizeof(ioeltype(s))
 
 
 
@@ -453,15 +519,16 @@ determines what polling mechamism is used.
 If `stream` is indexable then `start` can be a tuple of two indexes:
 `(stream_start_byte_index, buffer_start_index)`.
 
-The direction of transfer (`In`, `Out` or `Exchange`) depends on
-`TransferDirection(stream)`.
+The direction of transfer depends on
+`TransferDirection(stream) ->` (`In`, `Out` or `Exchange`).
 
 The type of items transferred depends on `ioeltype(buffer)`.[^ELTYPE]
 
 [^ELTYPE]: By default `ioeltype(x) = eltype(x)`.
 
-The `buffer` can be an `AbstractArray`, an `AbstractChannel`, a `URI`, an `IO`,
-or another `Stream`.  Or, the `buffer` can be any collection that implements
+The `buffer` can be an `AbstractArray`, an `AbstractChannel`, a `URI`,
+a `Base.IO`, or another `Stream`.
+Or, the `buffer` can be any collection that implements
 the Iteration Interface, the Indexing Interface, the AbstractChannel
 interface, or the `push!`/`pop!` interface.[^BUFIF]
 
@@ -477,18 +544,21 @@ to (or from) the identified resource.
 A transfer to a `URI` creates a new resource or replaces the resource
 (i.e. HTTP PUT semantics).
 """
-function transfer(stream, buf, n=missing;
-                  start::Union{Integer, NTuple{2,Integer}}=1,
+@db function transfer(stream, buf, n::Union{Integer,Missing}=missing;
+                  start::Union{Integer, NTuple{2,Integer}}=UInt(1),
                   timeout=Inf,
                   deadline=Inf)
 
     @require isopen(stream)
+    @require ismissing(n) || n > 0
+    @require all(start .> 0)
     if timeout != Inf
         deadline = time() + timeout
     end
-    n = transfer(stream, buf, n, start, deadline)
+    n = transfer(stream, buf, n, start, Float64(deadline))
     transfer_complete(stream, buf, n)
-    return n
+    @ensure n isa UInt
+    @db return n
 end
 
 
@@ -512,7 +582,7 @@ transfer_complete(stream, buf, n) = nothing
 `In` streams must be on the left.
 `Out` streams must be on the right.
 """
-function transfer(t::Pair{<:Stream,<:Any}, a...; start=(1 => 1), kw...)
+function transfer(t::Pair{<:Stream, <:Any}, a...; start=(1 => 1), kw...)
     @require TransferDirection(t[1]) == In()
     if start isa Pair
         start = (start[1], start[2])
@@ -530,17 +600,240 @@ end
 
 
 
+## Waiting for the Deadline
+
+idoc"""
+The specification for `transfer` says: If no items are immediately available,
+wait until `time() > deadline` for at least one item to be transferred.
+
+The method below starts by simply attempting the transfer.
+This avoids the overhead of locking and measuring the current time.
+If the initial transfer attempt yields no data, the `wait_for_transfer`
+method is selected based on Waiting Mechanism trait.
+
+If the buffer elements are larger than one byte and the stream has
+Unknown Availability then `transfer_available` can end up with a
+partial item in the buffer. In this situation a second attempt is needed
+to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
+that the second transfer adheres to the specified deadline.
+
+"""
+function transfer(stream, buffer, n, start, deadline::Float64)
+
+    if Availability(stream) == UnknownAvailability() &&
+    ioelsize(buffer) != 1 &&
+    deadline != Inf
+        stream = timeout_stream(stream; deadline)
+    end
+
+    r = transfer_available(stream, buffer, n, start)
+    if r > 0 || iszero(deadline)
+        return r
+    end
+    wait_for_transfer(stream, WaitingMechanism(stream),
+                      buffer, n, start, deadline)
+end
+
+
+
+# Waiting Mechanism Trait
+
+abstract type WaitingMechanism end
+struct WaitBySleeping     <: WaitingMechanism end
+struct WaitUsingPosixPoll <: WaitingMechanism end
+struct WaitUsingEPoll     <: WaitingMechanism end
+struct WaitUsingPidFD     <: WaitingMechanism end
+struct WaitUsingKQueue    <: WaitingMechanism end
+
+
+"""
+The `WaitingMechanism` trait describes ways of waiting for OS resources
+that are not immediately available. e.g. when `read(2)` returns
+`EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
+
+Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
+define a method of `Base.wait(::T, r::R)`.
+`WaitBySleeping` is the default.[^SLEEP]
+
+If a `WaitingMechanism`, `T`, is not available on a particular OS
+then `Base.isvalid(::T)` should be defined to return `false`.[^AIO]
+
+[^AIO]: ⚠️ Consider Linux AIO `io_getevents` for disk io?
+
+`WaitingMechanism(stream)` returns one of:
+
+--------------------------------------------------------------------------------
+Waiting Mechanism     Description 
+--------------------- ----------------------------------------------------------
+`WaitBySleeping`      Wait using a dumb retry/sleep loop.
+
+`WaitUsingPosixPoll`  Wait using the POSIX `poll` mechanism.
+                      Wait for activity on a set of file descriptors.
+                      Applicable to FIFO pipes, sockets and character devices
+                      (but not local files).  See [`poll(2)`][poll]
+
+`WaitUsingEPoll`      Wait using the Linux `epoll` mechanism.
+                      Like `poll` but scales better for workloads with a large
+                      number of waiting streams.
+                      See [`epoll(7)`][epoll]
+
+`WaitUsingKQueue`     Wait using the BSD `kqueue` mechanism.
+                      Like `epoll` but can also wait for files, processes,
+                      signals etc. See [`kqueue(2)`][kqueue]
+
+`WaitUsingPidFD()`    Wait for process termination using the Linux `pidfd`
+                      mechanism. A `pidfd` is a special process monitoring
+                      file descriptor that can in turn be monitored by `poll` or
+                      `epoll`. See [`pidfd_open(2)`][pidfd]
+--------------------------------------------------------------------------------
+
+[poll]: https://man7.org/linux/man-pages/man2/poll.2.html
+[epoll]: https://man7.org/linux/man-pages/man7/epoll.7.html
+[kqueue]: https://www.freebsd.org/cgi/man.cgi?kqueue
+[pidfd]: http://man7.org/linux/man-pages/man2/pidfd_open.2.html
+
+[^SLEEP]: Sleeping may be the most efficient mechanism for small systems with
+simple IO requirements, for large systems where throughput is more important
+than latency, or for systems that simply do not spend a lot of time
+waiting for IO. Sleeping allows other Julia tasks to run immediately, whereas
+the other polling mechanisms all have some amount of book-keeping and system
+call overhead.
+"""
+WaitingMechanism(x) = WaitingMechanism(typeof(x))
+WaitingMechanism(T::Type) = is_proxy(T) ? WaitingMechanism(unwrap(T)) :
+                                          WaitBySleeping()
+
+Base.isvalid(::WaitingMechanism) = true
+Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
+Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
+Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
+
+firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
+
+const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
+                                          WaitUsingEPoll(),
+                                          WaitUsingPosixPoll(),
+                                          WaitBySleeping())
+
+_wait(x, ::WaitBySleeping; deadline=Inf) = sleep(0.1)
+
+
+"""
+## Preferred Polling Mechanism
+
+    set_poll_mechanism(name)
+
+Configure the preferred event polling mechanism:
+"kqueue", "epoll", "poll", or "sleep".[^POLL]
+This setting is persistently stored through [Preferences.jl][Prefs].
+
+[^POLL]: This setting applies only to `poll(2)`-compatible file descriptors
+(i.e. it does not apply to local disk files).
+
+By default, IOTraits will try to choose the best available mechanism
+(see `default_poll_mechanism`).
+
+
+To find out what mechanism is used for a particular `FD` call:
+`WaitingMechanism(fd)`
+
+[Prefs]: https://github.com/JuliaPackaging/Preferences.jl
+"""
+function set_poll_mechanism(x)
+    @require poll_mechanism(x) != nothing
+    @require isvalid(poll_mechanism(x))
+    @set_preferences!("waiting_mechanism" => x)
+    @warn "Preferred IOTraits.WaitingMechanism set to $(poll_mechanism(x))." *
+          "UnixIO must be recompiled for this setting to take effect."
+end
+
+poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
+                       name == "epoll"  ? WaitUsingEPoll() :
+                       name == "poll"   ? WaitUsingPosixPoll() :
+                       name == "sleep"  ? WaitBySleeping() :
+                                          default_poll_mechanism
+
+const preferred_poll_mechanism =
+    poll_mechanism(@load_preference("waiting_mechanism"))
+
+
+
+## Wait By Sleeping Method
+
+idoc"""
+The Wait By Sleeping method for `wait_for_transfer` calls `transfer_available`
+in a loop until data is available or the deadline is reached.
+
+An exponentially increasing sleep delay minimises latency for short waits and
+limits CPU use for longer waits.
+"""
+const delay_sequence =
+    ExponentialBackOff(;n = typemax(Int),
+                        first_delay = 0.01, factor = 1.2, max_delay = 0.25)
+
+@db function wait_for_transfer(stream, ::WaitBySleeping,
+                               buf, n, start, deadline::Float64)
+    for delay in delay_sequence
+        r = transfer_available(stream, buf, n, start);
+        if r > 0
+            @db return r
+        end
+        if time() >= deadline
+            @db return UInt(0)
+        end
+        sleep(delay)
+    end
+end
+
+
+
+## Specialised Waiting Methods
+
+idoc"""
+In the default waiting method, `wait` is called in a loop until data is
+available or the deadline is reached. The appropriate `wait` method will
+be selected according to Waiting Mechanism.
+
+`Base.lock` and `Base.unlock` must be implemented for each stream type.[^LOCK]
+
+[^LOCK]: These methods should do whatever is necessary to avoid race conditions
+between `Base.wait` and `transfer_available`.
+In UnixIO.jl `Base.wait` waits for a `ThreadSynchronizer` and the underlying
+polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
+"""
+@db function wait_for_transfer(stream, ::WaitingMechanism,
+                               buf, n, start, deadline::Float64)
+    try 
+        lock(stream)
+        while time() < deadline && bytes_remaining(stream) != 0
+            wait(stream; deadline)
+            r = transfer_available(stream, buf, n, start);
+            if r > 0
+                @db return r
+            end
+        end
+        @db return UInt(0)
+    finally
+        unlock(stream)
+    end
+end
+
+
+
 # Buffer Interface Traits
 
 abstract type BufferInterface end
 struct UsingIndex <: BufferInterface end
 struct UsingPtr <: BufferInterface end
-struct RawPtr <: BufferInterface end
+struct IsItemPtr <: BufferInterface end
+struct IsBytePtr <: BufferInterface end
 struct FromIO <: BufferInterface end
+struct FromStream <: BufferInterface end
 struct FromPop <: BufferInterface end
 struct FromTake <: BufferInterface end
 struct FromIteration <: BufferInterface end
 struct ToIO <: BufferInterface end
+struct ToStream <: BufferInterface end
 struct ToPush <: BufferInterface end
 struct ToPut <: BufferInterface end
 
@@ -555,27 +848,33 @@ data from a particular buffer type
 | Interface         | Description                                              |
 |:----------------- |:-------------------------------------------------------- |
 | `FromIO()`        | Take data from the buffer using the `Base.IO` interface. |
+| `FromStream()`    | Take data from the `IOTraits.Stream` interface.          |
 | `FromPop()`       | Use `pop!(buffer)` to read from the buffer.              |
 | `FromTake()`      | Use `take!(buffer)`.                                     |
 | `FromIteration()` | Use `for x in buffer...`.                                |
 | `UsingIndex()`    | Use `buffer[i]` (the default).                           |
-| `UsingPtr()`      | Use `unsafe_copyto!(pointer(buffer), x, n)`.             | 
-| `RawPtr()`        | Use `unsafe_copyto!(buffer, x, n)`.                      | 
+| `UsingPtr()`      | Use `unsafe_copyto!(x, pointer(buffer), n)`.             | 
+| `IsItemPtr()`     | Use `unsafe_copyto!(x, buffer, n)`.                      | 
+| `IsBytePtr()`     | Special case of `IsItemPtr` for `ioelsize(buffer) == 1`. |
 
-Default `FromBufferInterface` methods are built in for common buffer types:
+Default `FromBufferInterface` methods are built-in for common buffer types:
 """
 FromBufferInterface(x) = FromBufferInterface(typeof(x))
 FromBufferInterface(::Type) = FromIteration()
 FromBufferInterface(::Type{<:IO}) = FromIO()
+FromBufferInterface(::Type{<:Stream}) = FromStream()
 FromBufferInterface(::Type{<:AbstractChannel}) = FromTake()
-FromBufferInterface(::Type{<:Ptr}) = RawPtr()
 FromBufferInterface(::Type{<:Ref}) = UsingPtr()
+FromBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
+                                                                 IsItemPtr()
 
 
 """
 Pointers can be used for `AbstractArray` buffers of Bits types.
 """
 FromBufferInterface(T::Type{<:AbstractArray}) = ArrayIOInterface(T)
+
+ArrayIOInterface(::Type) where T = UsingIndex()
 
 ArrayIOInterface(::Type{<:Array{T}}) where T =
     isbitstype(T) ? UsingPtr() : UsingIndex()
@@ -595,189 +894,26 @@ in a particular type of buffer
 | Interface      | Description                                                 |
 |:-------------- |:----------------------------------------------------------- |
 | `ToIO`         | Write data to the buffer using the `Base.IO` interface.     |
+| `ToStream`     | Write data using the `IOTraits.Stream` interface.           |
 | `ToPush`       | Use `push!(buffer, data)`.                                  |
 | `ToPut`        | Use `put!(buffer, data)`.                                   |
 | `UsingIndex`   | Use `buffer[i] = data (the default)`.                       |
-| `UsingPtr`     | Use `unsafe_copyto!(x, pointer(buffer), n)`.                |
-| `RawPtr`       | Use `unsafe_copyto!(x, buffer, n)`.                         |
+| `UsingPtr`     | Use `unsafe_copyto!(pointer(buffer), x, n)`.                |
+| `IsItemPtr`    | Use `unsafe_copyto!(buffer, x, n)`.                         |
+| `IsBytePtr`    | Special case of `IsItemPtr` for `ioelsize(buffer) == 1`.    |
 
-Default `ToBufferInterface` methods are built in for common buffer types.
+Default `ToBufferInterface` methods are built-in for common buffer types.
 """
 
 ToBufferInterface(x) = ToBufferInterface(typeof(x))
 ToBufferInterface(::Type) = ToPush()
 ToBufferInterface(::Type{<:IO}) = ToIO()
+ToBufferInterface(::Type{<:Stream}) = ToStream()
 ToBufferInterface(::Type{<:AbstractChannel}) = ToPut()
 ToBufferInterface(::Type{<:Ref}) = UsingPtr()
-ToBufferInterface(::Type{<:Ptr}) = RawPtr()
 ToBufferInterface(T::Type{<:AbstractArray}) = ArrayIOInterface(T)
-
-
-
-# Transfer Function Dispatch
-
-idoc"""
-The top level `transfer` method promotes the keyword arguments
-(`start` and `deadline`) to positional arguments so we can dispatch
-on their types.
-
-## `start` Index Normalisation
-
-If `start` is a Tuple of indexes it is normalised by the method below.
-The `StreamIndexing` trait is used to check that `stream` supports indexing.
-Indexable streams are replaced by a `Tuple` containing `stream` and the
-stream index.
-"""
-function transfer(stream, buf, n, start::Tuple, deadline)
-    @require StreamIndexing(stream) == IndexableIO() || start[1] == 1
-    if start[1] != 1
-        stream = (stream, start[1])
-    end
-    transfer(stream, buf, n, start[2], deadline)
-end
-
-idoc"""
-From here on, `start` is always a simple `Integer` index into `buf`.
-
-
-## Applicaiton of Direction and Buffer Interface Traits
-
-Next, the `IODriection` and `BufferInterface` traits are inserted into the
-argument list.[^InOut]
-
-[^InOut]: Note that although the `IODirection` is part of the argument list
-and it is best to avoid premature specialisation on direction. Eventually
-most transfers will end up calling an OS `read` or `write` function.
-However, much of the transfer logic is the same irrespective of direction.
-For example, the methods for `UsingPtr` and `UsingIndex` below work for
-both input and output. (Another consideration is supporting interfaces with
-`IODirection` `Exchange`).
-"""
-transfer(stream, buf, n, start::Integer, deadline) = 
-    transfer(stream, TransferDirection(stream), buf, n, start, deadline)
-
-transfer(stream, ::In, buf, n, start, deadline) =
-    transfer(stream, In(), buf, ToBufferInterface(buf), n, start, deadline)
-
-transfer(stream, ::Out, buf, n, start, deadline) =
-    transfer(stream, Out(), buf, FromBufferInterface(buf), n, start, deadline)
-
-
-
-## Transfer Specialisations for Indexable Buffers
-
-idoc"""
-Try to use the whole length of the buffer if `n` is missing.
-"""
-function transfer(stream, ::AnyDirection,
-                  buf, ::Union{RawPtr, UsingPtr, UsingIndex},
-                  n::Missing, start, deadline)
-    n = length(buffer) - (start - 1)
-    transfer(stream, buffer, n, start, deadline)
-end
-
-
-idoc"""
-Convert pointer-compatible buffers to pointers.
-"""
-function transfer(stream, ::AnyDirection, buf, ::UsingPtr, n, start, deadline)
-    checkbounds(buf, (start-1) + n)
-    GC.@preserve buf transfer(stream, pointer(buf), n, start, deadline)
-end
-
-
-idoc"""
-Transfer one item at a time for indexable buffers that are not
-accessible through pointers.
-"""
-function transfer(stream, d::AnyDirection, buf, ::UsingIndex, n, start, deadline)
-    T = ioeltype(buf)
-    x = Ref{T}()
-    count = 0
-    for i in eachindex(view(buf, start:(start-1)+n))
-        d == In() || (x[] = buf[i])
-        n = transfer(stream, x, 1, 1, deadline)
-        if n == 0
-            break
-        end
-        d == Out() || (buf[i] = x[])
-        count += n
-        stream = next_stream_index(stream, T)
-    end
-    return count
-end
-
-next_stream_index((stream, i), T) = (stream, i + sizeof(T))
-next_stream_index(stream::Stream, T) = stream
-
-
-## Transfer Specialisations for Iterable Buffers
-
-idoc"""
-Iterate over `buf` (skip items until `start` index is reached).
-Transfer each item one at a time.
-"""
-function transfer(stream, ::In, buf, ::FromIteration, n, start, deadline)
-    count = 0
-    for x in buf
-        if start > 1
-            start -= 1
-            continue
-        end
-        n = transfer(stream, Ref(x), 1, 1, deadline)
-        if n == 0
-            break
-        end
-        count += n
-        stream = next_stream_index(stream, ioeltype(buf))
-    end
-    return count
-end
-
-
-## Transfer Specialisations for Collection Buffers
-
-transfer(s, dir, buf, ::ToPut, a...) = transfer(s, dir, buf, put!, a...)
-transfer(s, dir, buf, ::ToPush, a...) = transfer(s, dir, buf, push!, a...)
-transfer(s, dir, buf, ::FromPop, a...) = transfer(s, dir, buf, pop!, a...)
-transfer(s, dir, buf, ::FromTake, a...) = transfer(s, dir, buf, take!, a...)
-
-function transfer(s, d::TransferDirection, buf, f::Function, n, start, deadline)
-    @require start == 1
-    T = ioeltype(buf)
-    x = Ref{T}()
-    count = 0
-    while count < n
-        d == In() || (x[] = f(buf))
-        n = transfer(s, x, 1, 1, deadline)
-        if n == 0
-            break
-        end
-        d == Out() || f(buf, x[])
-        count += n
-        s = next_stream_index(s, T)
-    end
-    return count
-end
-
-
-## Transfer Specialisations for IO Buffers
-
-function transfer(s1, ::In, s2, ::ToIO, n, start, deadline)
-    n = min(n, max(default_buffer_size(s1),
-                   default_buffer_size(s2)))
-    buf = Vector{UInt8}(undef, n)
-    while true
-        n = transfer(s1 => buf)
-        if n == 0
-            break
-        end
-        transfer(buf => s2, n)
-    end
-    @assert false
-    #FIXME should this return as soon as something has been transferred?
-    #FIXME should it read byteavailable from io1, transfer all of that, then return?
-end
+ToBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
+                                                               IsItemPtr()
 
 
 
@@ -789,10 +925,10 @@ struct InfiniteTotalSize <: TotalSize end
 abstract type KnownTotalSize end
 struct VariableTotalSize <: KnownTotalSize end
 struct FixedTotalSize <: KnownTotalSize end
+const AnyTotalSize = TotalSize
 
 """
-The `TotalSize` trait describes how much data is available from an
-IO interface.
+The `TotalSize` trait describes how much data is available from a stream.
 
 `TotalSize(stream)` returns one of:
 
@@ -811,19 +947,13 @@ Total Size              Description
 `InfiniteTotalSize()`   End of file will never be reached. Applicable
                         to some device files.
 
-`UnknownTotalSize()`    No known data size limit.
+`UnknownTotalSize()`    No known data size limit. But end of file may be
+                        reached. e.g. if the other end is closed.
 --------------------------------------------------------------------------------
 """
 TotalSize(x) = TotalSize(typeof(x))
 TotalSize(T::Type) = is_proxy(T) ? TotalSize(unwrap(T)) :
                                    UnknownTotalSize()
-
-abstract type MmapSupport end
-struct Mappable <: MmapSupport end
-struct NotMappable <: MmapSupport end
-MmapSupport(x) = MmapSupport(typeof(x))
-MmapSupport(T::Type) = is_proxy(T) ? MmapSupport(unwrap(T)) :
-                                     NotMappable()
 
 abstract type SizeMechanism end
 struct NoSizeMechanism <: SizeMechanism end
@@ -833,12 +963,16 @@ TotalSizeMechanism(x) = TotalSizeMechanism(typeof(x))
 TotalSizeMechanism(T::Type) = is_proxy(T) ? TotalSizeMechanism(unwrap(T)) :
                                             NoSizeMechanism()
 
+@db function _length(stream, ::SupportsStatSize)
+    stat(stream).size
+end
+
+
 
 # Transfer Size Trait
 
 abstract type TransferSize end
-struct UnknownTransferSize <: TransferSize end
-struct KnownTransferSize <: TransferSize end
+struct UnlimitedTransferSize <: TransferSize end
 struct LimitedTransferSize <: TransferSize end
 struct FixedTransferSize <: TransferSize end
 const AnyTransferSize = TransferSize
@@ -850,41 +984,36 @@ transfer.
 `TransferSize(stream)` returns one of:
 
 --------------------------------------------------------------------------------
-Transfer Size           Description
------------------------ --------------------------------------------------------
-`UnknownTransferSize()` Transfer size is not known in advance.
-                        The only way to know how much data is available is to
-                        attempt a transfer.
+Transfer Size             Description
+------------------------- ------------------------------------------------------
+`UnlimitedTransferSize()` No known transfer size limit.
 
-`KnownTransferSize()`   The amount of data immediately available for transfer
-                        can be queried using the `bytesavailable` function.
+`LimitedTransferSize()`   The amount of data that can be moved in a single
+                          transfer is limited. e.g. by a device block size or
+                          buffer size. The maximum transfer size can queried
+                          using the `max_transfer_size` function.
 
-`LimitedTransferSize()` The amount of data that can be moved in a single
-                        transfer is limited. e.g. by a device block size or
-                        buffer size. The maximum transfer size can queried
-                        using the `max_transfer_size` function.
-                        The amount of data immediately available for transfer
-                        can be queried using the `bytesavailable` function.
-
-`FixedTransferSize()`   The amount of data moved by a single transfer is fixed.
-                        e.g. `/dev/input/event0` device always transfers
-                        `sizeof(input_event)` bytes.
+`FixedTransferSize()`     The amount of data moved by a single transfer is
+                          fixed. e.g. `/dev/input/event0` device always
+                          transfers `sizeof(input_event)` bytes.
 --------------------------------------------------------------------------------
 """
 TransferSize(s) = TransferSize(typeof(s))
-TransferSize(T::Type) = is_proxy(T) ?
-                        TransferSize(unwrap(T)) :
-                            TransferSizeMechanism(T) == NoSizeMechanism() ?
-                            UnknownTransferSize() :
-                            KnownTransferSize()
+TransferSize(T::Type) = is_proxy(T) ?  TransferSize(unwrap(T)) :
+                                       UnlimitedTransferSize()
 
-max_transfer_size(stream) = max_transfer_size(stream, TransferSize(stream))
-max_transfer_size(stream, ::Union{UnknownTransferSize,
-                                  KnownTransferSize}) = typemax(Int)
+max_transfer_size(s) = max_transfer_size(s, TransferSize(s), TotalSize(s))
+max_transfer_size(s, ::AnyTransferSize, ::AnyTotalSize) = typemax(UInt)
+max_transfer_size(s, ::UnlimitedTransferSize, ::KnownTotalSize) = length(s)
+max_transfer_size(s, ::LimitedTransferSize, ::AnyTotalSize) = 
+    max_transfer_size(s, TransferSizeMechanism(s))
+
 
 
 """
 `TransferSizeMechanism(stream)` returns one of:
+
+FIXME look at `F_GETPIPE_SZ` and `SO_SNDBUF`
 
  * `SupportsFIONREAD()` -- The underlying device supports `ioctl(2), FIONREAD`.
  * `SupportsStatSize()` -- The underlying device supports  `fstat(2), st_size`.
@@ -893,6 +1022,356 @@ TransferSizeMechanism(s) = TransferSizeMechanism(typeof(s))
 TransferSizeMechanism(T::Type) = is_proxy(T) ?
                                  TransferSizeMechanism(unwrap(T)) :
                                  NoSizeMechanism()
+
+
+
+# Data Availability Trait
+
+abstract type Availability end
+struct AlwaysAvailable <: Availability end
+struct PartiallyAvailable <: Availability end
+struct UnknownAvailability <: Availability end
+
+
+"""
+The `Availability` trait describes when data is available from a stream.
+
+`Availability(stream)` returns one of:
+
+--------------------------------------------------------------------------------
+Availability            Description
+----------------------- --------------------------------------------------------
+`AlwaysAvailable()`     Data is always immediately available.
+                        i.e. `bytesavailable` === `bytes_remaining`.
+                        Applicable to some device files (dev/event, /dev/zero).
+                        Applicable to local disk files.
+
+`PartiallyAvailable()`  Some data may be immediately available from a buffer,
+                        but `bytesavailable` can be less than `bytes_remaining`.
+
+`UnknownAvailability()` There is no mechanism for determining data availability.
+                        The only way to know how much data is available is to
+                        attempt a transfer.
+                        i.e. `bytesavailable` is always 0.
+--------------------------------------------------------------------------------
+"""
+Availability(x) = Availability(typeof(x))
+Availability(T::Type) = is_proxy(T) ? Availability(unwrap(T)) :
+                                      UnknownAvailability()
+
+@db function _bytesavailable(s, ::UnknownAvailability, ::AnyTransferSize)
+    missing
+end
+
+@db function _bytesavailable(s, ::AlwaysAvailable, ::UnlimitedTransferSize)
+    bytes_remaining(s)
+end
+
+@db function _bytesavailable(s, ::AlwaysAvailable, ::FixedTransferSize)
+   max_transfer_size(s)
+end
+
+
+@db function _bytesavailable(s, ::PartiallyAvailable, ::AnyTransferSize)
+    _bytesavailable(s, TransferSizeMechanism(s))
+end
+
+
+
+# Transfer Function Dispatch
+
+"""
+    transfer_available(stream, buf, n, start)
+
+Transfer at most `n` items between `stream` and `buffer`.
+Return the number of items transferred.
+"""
+function transfer_available end
+
+idoc"""
+## `start` Index Normalisation
+
+If `start` is a Tuple of indexes it is normalised by the method below.
+The `StreamIndexing` trait is used to check that `stream` supports indexing.
+Indexable streams are replaced by a `Tuple` containing `stream` and the
+stream index.
+"""
+@db function transfer_available(stream, buf, n, start::Tuple)
+    @require StreamIndexing(stream) == IndexableIO() || start[1] == 1
+    @require start >= (1,1)
+    if start[1] != 1
+        stream = (stream, UInt(start[1]))
+    end
+    transfer_available(stream, buf, n, UInt(start[2]))
+end
+
+idoc"""
+From here on, `start` is always a simple `UInt` index into `buf`.
+
+
+## Application of the Direction and Buffer Interface Traits
+
+Next, the `IODriection` and `BufferInterface` traits are inserted into the
+argument list.[^InOut]
+
+[^InOut]: Note that although the `IODirection` is now part of the argument
+list, premature specialisation on direction is avoided. Eventually
+most transfers will end up calling an OS `read` or `write` function.
+However, much of the transfer logic is the same irrespective of direction.
+For example, the methods for `UsingPtr` and `UsingIndex` below work for
+both input and output. (Another consideration is supporting interfaces with
+`IODirection` `Exchange`).
+"""
+transfer_available(stream, buf, n, start) = 
+    transfer_available(stream, TransferDirection(stream), buf, n, start)
+
+transfer_available(stream, ::In, buf, n, start) =
+    transfer_available(stream, In(), buf, ToBufferInterface(buf), n, start)
+
+transfer_available(stream, ::Out, buf, n, start) =
+    transfer_available(stream, Out(), buf, FromBufferInterface(buf), n, start)
+
+
+
+## Low Level Byte-Stream Methods
+
+idoc"""
+The specialised methods for various Buffer Interfaces eventually
+call this this IsBytePtr method, which in turn calls the low level
+`unsafe_transfer` implementation methods.
+"""
+@db function transfer_available(stream, direction, buf::Ptr{UInt8}, ::IsBytePtr,
+                                n::UInt, start::UInt)
+    r = unsafe_transfer(stream, direction, buf + (start-1), n)
+    @ensure r isa UInt
+    @db return r
+end
+
+
+idoc"""
+This method handles items larger than one byte.
+It returns zero if there are not enough bytes available for a whole item.
+For streams with Unknown Transfer Size the requested transfer is attempted 
+but an error is thrown if a partial item is transferred.
+"""
+@db function transfer_available(stream, direction, buf, ::IsItemPtr,
+                                n::UInt, start::UInt)
+    sz = ioelsize(buf)
+    @assert sz > 1
+    if Availability(stream) != UnknownAvailability()
+        n::UInt = min(n, bytesavailable(stream) ÷ sz)
+        n > 0 || @db return UInt(0)
+    end
+
+    buf = Ptr{UInt8}(buf)
+    start = 1 + ((start-1) * sz)
+
+    r = transfer_available(stream, direction, buf, IsBytePtr(), n * sz, start)
+    @ensure r isa UInt
+
+    if r % sz != 0
+        @assert Availability(stream) == UnknownAvailability()
+        r += transferall(stream, buf + (start-1) + r, r % sz)
+    end
+    if r % sz != 0
+        throw(IOTraitsError(stream,
+              "Partial Transfer Error: " *
+              "Transfer $(verb(direction)) $stream returned $r bytes " *
+              "but $(typeof(buf)) has $sz-byte elements " *
+              "($r % $sz = $(r % sz)).\n" *
+              "Consider using BufferedInput(stream) to ensure that " *
+              "`Availability(stream) != UnknownAvailability`."))
+    end
+    r ÷= sz
+    @ensure r <= n
+    @db return r
+end
+
+
+"""
+At least one of the following `unsafe_transfer` methods must be implemented
+for each type `T <: IOTraits.Stream`:
+
+    unsafe_transfer(s::T, ::IOTraits.In,           buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer(s::T, ::IOTraits.Out,          buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer(s::T, ::IOTraits.Exchange,     buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer(s::T, ::IOTraits.AnyDirection, buffer::Ptr{UInt8}, n::UInt)
+
+`unsafe_transfer` should transfer at most `n` items between `stream` and
+`buffer` and return the number of items transferred (or zero if no items are
+immediately available)[^BLOCKING].
+
+[^BLOCKING]: ⚠️ Note that the `BaseIOStream` methods defined here do
+not properly implement the specification because `unsafe_read` and
+`unsafe_write` may block to wait for data. These methods are intended
+for testing purposes only.  The transfer timeout feature will not
+work properly for `BaseIOStream`.
+"""
+function unsafe_transfer end
+
+
+unsafe_transfer(T::Type) = is_proxy(T) ? ReadFragmentation(unwrap(T)) :
+                                           ReadsBytes()
+
+unsafe_transfer(s::BaseIOStream, ::In, buf::Ptr{UInt8}, n::UInt) =
+    UInt(unsafe_read(s.io, buf, n))
+
+unsafe_transfer(s::BaseIOStream, ::Out, buf::Ptr{UInt8}, n::UInt) =
+    UInt(unsafe_write(s.io, buf, n))
+
+
+
+
+## Transfer Specialisations for Indexable Buffers
+
+idoc"""
+If `n` is missing, use the whole length of the buffer.
+
+After this both `n` and `start` are always `UInt`s.
+"""
+@db function transfer_available(stream, direction::AnyDirection,
+                                buf, interface::Union{UsingPtr, UsingIndex},
+                                n::Missing, start::UInt)
+    @require length(buf) > 0
+    n = length(buf) - (start - 1)
+    transfer_available(stream, direction, buf, interface, UInt(n), start)
+end
+
+transfer_available(stream, direction, buf, interface, n::Missing, start::UInt) =
+    transfer_available(stream, direction, buf, interface, typemax(UInt), start)
+
+transfer_available(stream, direction, buf, interface, n::Integer, start::Integer) = 
+    transfer_available(stream, direction, buf, interface, UInt(n), UInt(start))
+
+
+idoc"""
+If the buffer is pointer-compatible convert it to a pointer.
+`unsafe_transfer` function.
+"""
+@db function transfer_available(stream, ::AnyDirection, buf, ::UsingPtr,
+                                n::UInt, start::UInt)
+    checkbounds(buf, (start-1) + n)
+    GC.@preserve buf transfer_available(stream, pointer(buf, start), n, 1)
+end
+
+@db function transfer_available(stream, ::AnyDirection, buf::Ref, ::UsingPtr,
+                                n::UInt, start::UInt)
+    p = Base.unsafe_convert(Ptr{eltype(buf)}, buf)
+    GC.@preserve buf transfer_available(stream, p, n, 1)
+end
+
+
+idoc"""
+If the buffer is not pointer-compatible, transfer one item at a time.
+"""
+@db function transfer_available(stream, d::AnyDirection, buf, ::UsingIndex,
+                                n::UInt, start::UInt)
+    T = ioeltype(buf)
+    x = Vector{T}(undef, 1)
+    count::UInt = 0
+    for i in eachindex(view(buf, start:(start-1)+n))
+        d == In() || (x[1] = buf[i])
+        n = transfer(stream, x; deadline=0)
+        if n == 0
+            break
+        end
+        d == Out() || (buf[i] = x[1])
+        count += n
+        stream = next_stream_index(stream, T)
+    end
+    @db return count
+end
+
+next_stream_index((stream, i), T) = (stream, i + sizeof(T))
+next_stream_index(stream::Stream, T) = stream
+
+
+## Transfer Specialisations for Iterable Buffers
+
+idoc"""
+Iterate over `buf` (skip items until `start` index is reached).
+Transfer each item one at a time.
+"""
+@db function transfer_available(stream, ::In, buf, ::FromIteration,
+                                n::UInt, start::UInt)
+    count::UInt = 0
+    for x in buf
+        if start > 1
+            start -= 1
+            continue
+        end
+        n = transfer(stream, [x]; deadline=0)
+        if n == 0
+            break
+        end
+        count += n
+        stream = next_stream_index(stream, ioeltype(buf))
+    end
+    return count
+end
+
+
+
+## Transfer Specialisations for Collection Buffers
+
+for (T, f) in [ToPut => put!,
+              ToPush => push!,
+              FromPop => pop!,
+              FromTake => take!]
+    eval(:(transfer_available(s, dir, buf, ::$T, n::UInt, start::UInt) =
+           transfer_available(s, dir, buf,   $f, n, start)))
+end
+
+@db function transfer_available(stream, d::TransferDirection, buf, f::Function,
+                                n::UInt, start::UInt)
+    @require start == 1
+    T = ioeltype(buf)
+    x = Vector{T}(undef, 1)
+    count::UInt = 0
+    while count < n
+        d == In() || (x[1] = f(buf))
+        r = transfer(stream, x; deadline=0)
+        if r == 0
+            break
+        end
+        d == Out() || f(buf, x[1])
+        count += r
+        stream = next_stream_index(stream, T)
+    end
+    @db return count
+end
+
+
+
+## Transfer Specialisations for IO Buffers
+
+@db function transfer_available(s1, ::In, s2, ::ToStream,
+                                n::UInt, start::UInt)
+    buf = Vector{UInt8}(undef, min(n, max(default_buffer_size(s1),
+                                          default_buffer_size(s2))))
+    count::UInt = 0
+    while count < n
+        r = transfer(s1 => buf; deadline=0)
+        if r == 0
+            break
+        end
+        r2 = transfer(buf => s2, r)
+        @assert r2 == r
+        # FIXME should query available capacity and not read more than that?
+        count += r
+    end
+    return count
+end
+
+transfer_available(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt) =
+    transfer_available(s2, In(), s1, ToStream(), n, start)
+
+function transfer_available(s, direction, io, ::Union{ToIO,FromIO},
+                            n::UInt, start::UInt)
+    s2 = BaseIOStream{typeof(io), direction == In() ? Out : In}(io)
+    transfer_available(s, direction, s2, n, start)
+end
+
 
 
 
@@ -949,6 +1428,7 @@ TransferCost(s) = TransferCost(typeof(s))
 TransferCost(T::Type) = is_proxy(T) ? TransferCost(T) :
                                       HighTransferCost()
 
+
 const kBytesPerSecond = Int(1e3)
 const MBytesPerSecond = Int(1e6)
 const GBytesPerSecond = Int(1e9)
@@ -960,10 +1440,11 @@ DataRate(T::Type) = is_proxy(T) ? DataRate(unwrap(T)) :
 # Cursor Traits (Mark & Seek)
 
 abstract type CursorSupport end
-abstract type AbstractSeekable <: CursorSupport end
+abstract type AbstractHasPosition <: CursorSupport end
 struct NoCursors <: CursorSupport end
-struct Seekable  <: AbstractSeekable end
-struct Markable  <: AbstractSeekable end
+struct HasPosition <: AbstractHasPosition end
+struct Seekable  <: AbstractHasPosition end
+struct Markable  <: AbstractHasPosition end
 
 """
 The `CursorSupport` trait describes mark and seek capabilities.
@@ -989,151 +1470,208 @@ const NotMarkable = Union{NoCursors,Seekable}
 trait_error(s, trait) =
     throw(ArgumentError("$(typeof(s)) does not implement $trait"))
 
-Base.seek(io::TraitsIO, pos) = seek(io.stream, CursorSupport(io.stream), pos)
+Base.seek(io::BaseIO, pos) = seek(io.stream, CursorSupport(io.stream), pos)
 _seek(s, ::NoCursors, pos) = trait_error(s, Seekable)
 
-Base.skip(io::TraitsIO, offset) = _skip(io.stream, CursorSupport(io.stream), offset)
+Base.skip(io::BaseIO, offset) = _skip(io.stream, CursorSupport(io.stream), offset)
 _skip(s, ::NoCursors, offset) = trait_error(s, Seekable)
 
-Base.position(io::TraitsIO) = _position(io.stream, CursorSupport(io.stream))
+# FIXME
+#Base.position(io::BaseIO) = _position(io.stream, CursorSupport(io.stream))
 _position(s, ::NoCursors) = nothing
 
-Base.seekend(io::TraitsIO) = _seekend(io.stream, CursorSupport(io.stream))
+Base.seekend(io::BaseIO) = _seekend(io.stream, CursorSupport(io.stream))
 _seekend(s, ::NoCursors) = nothing
 
-Base.mark(io::TraitsIO) = _mark(io.stream, CursorSupport(io.stream))
+Base.mark(io::BaseIO) = _mark(io.stream, CursorSupport(io.stream))
 _mark(s, ::NotMarkable) = trait_error(s, Markable)
 
-Base.unmark(io::TraitsIO) = _unmark(io.stream, CursorSupport(io.stream))
+Base.unmark(io::BaseIO) = _unmark(io.stream, CursorSupport(io.stream))
 _unmark(s, ::NotMarkable) = trait_error(s, Markable)
 
-Base.reset(io::TraitsIO) = _reset(io.stream, CursorSupport(io.stream))
+Base.reset(io::BaseIO) = _reset(io.stream, CursorSupport(io.stream))
 _reset(s, ::NotMarkable) = trait_error(s, Markable)
 
-Base.ismarked(io::TraitsIO) = _ismarked(io.stream, CursorSupport(io.stream))
+Base.ismarked(io::BaseIO) = _ismarked(io.stream, CursorSupport(io.stream))
 _ismarked(s, ::NotMarkable) = trait_error(s, Markable)
 
 
 
-# Event Notification Mechanism Trait
+# Peekable Trait
 
-abstract type WaitingMechanism end
-struct WaitBySleeping     <: WaitingMechanism end
-struct WaitUsingPosixPoll <: WaitingMechanism end
-struct WaitUsingEPoll     <: WaitingMechanism end
-struct WaitUsingPidFD     <: WaitingMechanism end
-struct WaitUsingKQueue    <: WaitingMechanism end
+abstract type PeekSupport end
+struct Peekable <: PeekSupport end
+struct NotPeekable <: PeekSupport end
+PeekSupport(s) = PeekSupport(typeof(s))
+PeekSupport(T::Type) = is_proxy(T) ? PeekSupport(unwrap(T)) :
+                                     NotPeekable()
+
+_peek(s, ::NotPeekable, T) = trait_error(s, Peekable)
 
 
-"""
-The `WaitingMechanism` trait describes ways of waiting for OS resources
-that are not immediately available. e.g. when `read(2)` returns
-`EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
 
-Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
-define a method of `Base.wait(::T, r::R)`.
-`WaitBySleeping` is the default.[^SLEEP]
-
-If a `WaitingMechanism`, `T`, is not available on a particular OS
-then `Base.isvalid(::T)` should be defined to return `false`.[^AIO]
-
-[^AIO]: ⚠️ Consider Linux AIO `io_getevents` for disk io?
-
-`WaitingMechanism(stream)` returns one of:
-
---------------------------------------------------------------------------------
-Waiting Mechanism     Description 
---------------------- ----------------------------------------------------------
-`WaitBySleeping`      Wait using a dumb retry/sleep loop.
-
-`WaitUsingPosixPoll`  Wait using the POXSX `poll` mechanism.
-                      Wait for activity on a set of file descriptors.
-                      Applicable to FIFO pipes, sockets and character devices
-                      (but not local files).  See [`poll(2)`][poll]
-
-`WaitUsingEPoll`      Wait using the Linux `epoll` mechanism.
-                      Like `poll` but scales better for workloads with a large
-                      number of waiting streams.
-                      See [`epoll(7)`][epoll]
-
-`WaitUsingKQueue`     Wait using the BSD `kqueue` mechanism.
-                      Like `epoll` but can also wait for files, processes,
-                      signals etc. See [`kqueue(2)`][kqueue]
-
-`WaitUsingPidFD()`    Wait for process termination using the Linux `pidfd`
-                      mechanism. A `pidfd` is a special process monitoring
-                      file descriptor that can in turn be monitored by `poll` or
-                      `epoll`. See [`pidfd_open(2)`][pidfd]
---------------------------------------------------------------------------------
-
-[poll]: https://man7.org/linux/man-pages/man2/poll.2.html
-[epoll]: https://man7.org/linux/man-pages/man7/epoll.7.html
-[kqueue]: https://www.freebsd.org/cgi/man.cgi?kqueue
-[pidfd]: http://man7.org/linux/man-pages/man2/pidfd_open.2.html
-
-[^SLEEP]: This may be the most efficient mechanism for small systems with
-simple IO requirements, for large systems where throughput is more important
-than latency, or for systems that simply do not spend a lot of time
-waiting for IO. Sleeping allows other Julia tasks to run immediately, whereas
-the other polling mechanisms all have some amount of book-keeping and system
-call overhead.
-"""
-WaitingMechanism(x) = WaitingMechanism(typeof(x))
-WaitingMechanism(T::Type) = is_proxy(T) ? WaitingMechanism(unwrap(T)) :
-                                          WaitBySleeping()
-
-Base.isvalid(::WaitingMechanism) = true
-Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
-Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
-Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
-
-firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
-
-const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
-                                          WaitUsingEPoll(),
-                                          WaitUsingPosixPoll(),
-                                          WaitBySleeping())
-
-Base.wait(x, ::WaitBySleeping) = sleep(0.1)
-
+# Timeout Stream
 
 """
-## Preferred Polling Mechanism
+    TimeoutStream(stream; timeout, deadline) -> TimeoutStream
+    timeout_stream(stream; timeout=Inf, deadline=Inf) -> Stream
 
-    set_poll_mechanism(name)
+The temporary `TimeoutStream` wrapper adds an immutable transfer deadline to a
+stream. It is used in cases where a stream interface function needs to
+make multiple calls to `transfer` (e.g. `readall`).
 
-Configure the preferred event polling mechanism:
-"kqueue", "epoll", "poll", or "sleep".[^POLL]
-This setting is persistently stored through [Preferences.jl][Prefs].
-
-[^POLL]: This setting applies only to `poll(2)`-compatible file descriptors
-(i.e. it does not apply to local disk files).
-
-By default, IOTraits will try to choose the best available mechanism
-(see `default_poll_mechanism`).
-
-
-To find out what mechanism is used for a particular `FD` call:
-`WaitingMechanism(fd)`
-
-[Prefs]: https://github.com/JuliaPackaging/Preferences.jl
+Note that the `timeout_stream` function simply returns `stream` if
+`timeout` and `deadline` are both `Inf`.
 """
-function set_poll_mechanism(x)
-    @require poll_mechanism(x) != nothing
-    @require isvalid(poll_mechanism(x))
-    @set_preferences!("waiting_mechanism" => x)
-    @warn "Preferred IOTraits.WaitingMechanism set to $(poll_mechanism(x))." *
-          "UnixIO must be recompiled for this setting to take effect."
+struct TimeoutStream{T<:Stream} <: Stream
+    stream::T
+    deadline::Float64
+    function TimeoutStream(stream::T; timeout, deadline) where T
+        @require timeout < Inf || deadline < Inf
+        if timeout < Inf
+            deadline = time() + timeout
+        end
+        new{T}(stream, deadline)
+    end
 end
 
-poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
-                       name == "epoll"  ? WaitUsingEPoll() :
-                       name == "poll"   ? WaitUsingPosixPoll() :
-                       name == "sleep"  ? WaitBySleeping() :
-                                          default_poll_mechanism
+timeout_stream(s::TimeoutStream; kw...) = timeout_stream(s.stream; kw...)
 
-const preferred_poll_mechanism =
-    poll_mechanism(@load_preference("waiting_mechanism"))
+timeout_stream(s; timeout=Inf, deadline=Inf) =
+    timeout == Inf && deadline == Inf ? s : TimeoutStream(s; timeout, deadline)
+
+StreamDelegation(::Type{<:TimeoutStream}) = DelegatedToSubStream()
+
+@db function transfer(s::TimeoutStream{T}, buffer,
+                      n::Union{Missing, Integer}; kw...) where T
+    @info "transfer(t::TimeoutStream, ...)"
+    transfer(s.stream, buffer, n; deadline = s.deadline, kw...)
+end
+
+unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
+    unsafe_transfer(s.stream, direction, buffer, n)
+
+
+
+# Interface Functions
+
+"""
+How many bytes remain before the end of `stream`?
+"""
+function bytes_remaining(s::Stream)
+    @require is_input(s)
+    bytes_remaining(s, TotalSize(s), CursorSupport(s))
+end
+
+bytes_remaining(s, ::UnknownTotalSize, ::Any) = nothing
+bytes_reamaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
+bytes_remaining(s, ::KnownTotalSize, ::AbstractHasPosition) =
+    length(s) - position(s)
+
+
+
+"""
+`readbyte` returns one byte
+(or `nothing` at end of stream or if `timeout` expires).
+
+Specialized based on Transfer Cost.
+"""
+function readbyte(s::Stream; timeout=Inf)
+    @require is_input(s)
+    readbyte(s, TransferCost(s); timeout)
+end
+
+readbyte(s, ::HighTransferCost; kw...) =
+    error(typeof(s), " does not support byte I/O. ",
+          "Consider using the `LazyBufferedInput` wrapper.")
+
+
+idoc"""
+Allow single byte read for interfaces with Low Transfer Cost,
+but warn if a special Read Fragmentation trait is available.[^WARNINGS]
+
+[^WARNINGS]: ⚠️ FIXME: Warnings should be configurable via Preferences.jl
+"""
+function readbyte(stream, ::LowTransferCost; timeout)
+    if ReadFragmentation(stream) == ReadsLines()
+        @warn "read(::$(typeof(stream)), UInt8): " *
+              "$(typeof(stream)) implements `IOTraits.ReadsLines`." *
+              "Reading one byte at a time may not be efficient." *
+              "Consider using `readline` instead."
+    end
+    x = Ref{UInt8}()
+    n = GC.@preserve x transfer(stream => pointer(x), 1)
+    n == 1 || return nothing
+    return x[]
+end
+
+
+
+"""
+`readall` reads until the end of `stream` (or until `timeout` expires)
+and returns `Vector{UInt8}`.
+
+Specialise on Total Size and Cursor Support.
+"""
+@db function readall(s::Stream; timeout=Inf)
+    @require is_input(s)
+    readall(s, TotalSize(s), CursorSupport(s); timeout)
+end
+
+
+@db function readall(stream, ::UnknownTotalSize, ::NoCursors; timeout=Inf)
+    n = default_buffer_size(stream)
+    buf = Vector{UInt8}(undef, n)
+    stream = timeout_stream(stream; timeout)
+    n = _readbytes!(stream, buf, typemax(UInt))
+    resize!(buf, n)
+    @db return buf
+end
+
+
+@db function readall(stream, ::KnownTotalSize, ::AbstractHasPosition; timeout=Inf)
+    n = length(stream) - position(stream)
+    buf = Vector{UInt8}(undef, n)
+    transferall(stream, buf, n; timeout)
+    @db return buf
+end
+
+
+"""
+Transfer `n` items between `stream` and `buf`.
+
+Call `transfer` repeatedly until all `n` items have been Transferred, 
+stopping only if end of file is reached.
+
+Return the number of items transferred.
+"""
+@db function transferall(stream, buf, n=length(buf); deadline=Inf, timeout=Inf)
+    stream = timeout_stream(stream; timeout, deadline)
+    ntransferred::UInt = 0
+    while ntransferred < n
+        r = transfer(stream, buf, n - ntransferred; start = ntransferred + 1)
+                                            # FIXME ^^^^^ passing start is not allowed for ToPut etc
+        if r == 0
+            break
+        end
+        ntransferred += r
+    end
+    @ensure ntransferred isa UInt
+    @db return ntransferred
+end
+
+@db function transferall(t::Pair{<:Stream,<:Any}, a...; kw...)
+    @require TransferDirection(t[1]) == In()
+    transferall(t[1], t[2], a...; kw...)
+end
+
+@db function transferall(t::Pair{<:Any,<:Stream}, a...; kw...)
+    @require TransferDirection(t[2]) == Out()
+    transferall(t[2], t[1], a...; kw...)
+end
+
+
+
 
 
 # Null Streams
@@ -1149,7 +1687,8 @@ TransferDirection(::Type{NullIn}) = In()
 transfer(io::NullIn, buf::Ptr{UInt8}, n; kw...) = n
 
 
-
+#=
+FIXME
 include("wrap.jl")
 
 """
@@ -1161,7 +1700,7 @@ each 2nd argument type used in pre-existing methods of `f`
     f(io::IODelegate; kw...) = f(unwrap(io); kw...)
     f(io::IODelegate, a2::T, a...; kw...) = f(unwrap(io), a2, a...; kw...)
 """
-macro delegate_io(f, D=FullInDelegate, u=unwrap)
+macro delegate_io(f, #= FIXME ---> =# D=FullInDelegate, u=unwrap)
     methods = [
       esc(:(( $f(io::$D              ; k...) = $f($u(io)          ; k...)   ))),
     ( esc(:(( $f(io::$D, a::$T, aa...; k...) = $f($u(io), a, aa...; k...)   )))
@@ -1189,23 +1728,32 @@ end
 @delegate_io Base.position
 @delegate_io Base.seekend
 @delegate_io Base.seekstart
+=#
 
 
 
-# BufferedIO
+# Buffered Streams
 
 """
 Generic type for Buffered Input Wrappers.
 
-See `BufferedIn` and `LazyBufferedIn` below.
+See concrete types `BufferedInput` and `LazyBufferedInput` below.
 """
-abstract type GenericBufferedInput end
+abstract type GenericBufferedInput{T} <: Stream end
 
-StreamDelegation(::Type{GenericBufferedInput}) = DelegatedToSubstream()
+function Base.show(io::IO, s::GenericBufferedInput{T}) where T
+    print(io, "GenericBufferedInput{", T, "}(", bytesavailable(s.buffer), ")")
+end
 
-TransferCost(::Type{GenericBufferedInput}) = LowTransferCost()
+StreamDelegation(::Type{<:GenericBufferedInput}) = DelegatedToSubStream()
 
-ReadFragmentation(::Type{GenericBufferedInput}) = ReadsBytes()
+TransferCost(::Type{<:GenericBufferedInput}) = LowTransferCost()
+
+ReadFragmentation(::Type{<:GenericBufferedInput}) = ReadsBytes()
+
+PeekSupport(::Type{<:GenericBufferedInput}) = Peekable()
+
+Availability(::Type{<:GenericBufferedInput}) = PartiallyAvailable()
 
 function buffered_in_warning(stream)
     if ReadFragmentation(stream) != ReadsBytes()
@@ -1218,8 +1766,8 @@ function buffered_in_warning(stream)
     end
 end
 
-Base.close(s::GenericBufferesInput) = ( take!(s.buffer);
-                                        Base.close(s.io) )
+Base.close(s::GenericBufferedInput) = ( take!(s.buffer);
+                                        Base.close(s.stream) )
 
 
 """
@@ -1237,52 +1785,47 @@ default_buffer_size(stream) = DataRate(stream)
 """
 Transfer bytes from the wrapped IO to the internal buffer.
 """
-function refill_internal_buffer(s::GenericBufferedInput,
-                                n=io.buffer_size; kw...)
-
+@db function refill_internal_buffer(s::GenericBufferedInput,
+                                    n=s.buffer_size; kw...)
     # If needed, expand the buffer.
-    iob = s.buffer
-    @assert iob.append
-    Base.ensureroom(iob, n)
-    checkbounds(iob.data, iob.size+n)
+    sbuf = s.buffer
+    @assert sbuf.append
+    Base.ensureroom(sbuf, n)
+    checkbounds(sbuf.data, sbuf.size+n)
 
-    # Transfer from the IO to the buffer.
-    p = pointer(iob.data, iob.size+1)
-    n = GC.@preserve iob transfer(s.stream, p, n; kw...)
-    iob.size += n
+    # Transfer from the stream to the buffer.
+    p = pointer(sbuf.data, sbuf.size+1)
+    n = GC.@preserve sbuf transfer(s.stream, p, n; kw...)
+    sbuf.size += n
+    nothing
 end
 
-
-#= FIXME
-idoc"""
-Shortcut to read one byte directly from buffer.
-Or, if the buffer is empty refill it.
-"""
-function Base.read(io::GenericBufferedIn, ::Type{UInt8}; kw...)
-    if bytesavailable(io.buffer) != 0
-        return Base.read(io.buffer, UInt8)
+function readbyte(s::GenericBufferedInput; timeout)
+    sbuf = s.buffer
+    if bytesavailable(sbuf) == 0
+        refill_internal_buffer(s; timeout)
     end
-    eof(io.io; kw...) && throw(EOFError())
-    refill_internal_buffer(io; kw...)
-    return Base.read(io.buffer, UInt8)
-end
-
-
-idoc"""
-Shortcut to peek into the buffer.
-Or, if the buffer is empty refill it.
-"""
-function Base.peek(io::GenericBufferedIn, ::Type{T}; kw...) where T
-    if bytesavailable(io.buffer) >= sizeof(T)
-        return Base.peek(io.buffer, T)
+    if bytesavailable(sbuf) != 0
+        return read(sbuf, UInt8)
     end
-    eof(io.io; kw...) && throw(EOFError())
-    refill_internal_buffer(io; kw...)
-    return Base.peek(io.buffer, T)
+    @invoke readbyte(s::Stream; timeout)
 end
-=#
+
+@db function Base.peek(s::GenericBufferedInput, ::Type{T}; timeout=Inf) where T
+    while bytesavailable(s.buffer) < sizeof(T)
+        refill_internal_buffer(s; kw...)
+    end
+    peek(s.buffer, T)
+end
 
 
+@db function Base.position(s::GenericBufferedInput)
+    position(s.stream) - bytesavailable(s.buffer)
+end
+
+@db function Base.readline(s::GenericBufferedInput; keep=false, timeout=Inf)
+    _readline(s, ReadsBytes(); keep=false, timeout=Inf)
+end
 
 ## Buffered Input
 
@@ -1298,11 +1841,11 @@ The default `buffer_size` depends on `IOTratis.DataRate(stream)`.
 
 `stream` must not be used directly after the wrapper is created.
 """
-struct BufferedInput{T<:Stream} <: GenericBufferedInput
+struct BufferedInput{T<:Stream} <: GenericBufferedInput{T}
     stream::T
     buffer::IOBuffer
     buffer_size::Int
-    function BufferedIn(stream::T; buffer_size=default_buffer_size(stream)) where T
+    function BufferedInput(stream::T; buffer_size=default_buffer_size(stream)) where T
         @require TransferDirection(stream) == In()
         buffered_in_warning(stream)
         new{T}(stream, PipeBuffer(), buffer_size)
@@ -1313,44 +1856,62 @@ TransferSize(::Type{BufferedInput{T}}) where T = LimitedTransferSize()
 
 max_transfer_size(s::BufferedInput) = s.buffer_size
 
-Base.bytesavailable(s::BufferedInput) = bytesavailable(s.buffer) 
 
+idoc"""
+The non-buffered method returns zero if there are not enough bytes
+available to transfer a whole item (`ioelsize`).
+This method refills the internal buffer if there are less than `ioelsize`
+bytes available. Note that `refill_internal_buffer` may still not yield
+enough bytes. However, calling it here ensures that the enclosing retry
+loop will eventually get the data it needs.
+"""
+@db function transfer_available(s::BufferedInput, direction,
+                                buf, interface::IsItemPtr,
+                                n::UInt, start::UInt)
+    @assert ioelsize(buf) > 1
+    @assert ioelsize(buf) < s.buffer_size
 
-function transfer(s::BufferedInput,
-                  buf::Ptr{UInt8}, n, start::Integer, deadline)
-    @info "transfer(t::BufferedIn, ...)"
-
-    iob = s.buffer
-    # If there are not enough bytes in `iob`, read more from the wrapped IO.
-    if bytesavailable(iob) < n
+    if bytesavailable(s) < ioelsize(buf)
         refill_internal_buffer(s)
     end
 
-    # Read available bytes from `iob` into the caller's `buffer`.
-    n = min(n, bytesavailable(iob))
-    unsafe_read(iob, buf + (start-1), n)
-    return n
+    @invoke transfer_available(s::Stream, direction,
+                               buf, interface::IsItemPtr,
+                               n::UInt, start::UInt)
 end
 
 
-#= FIXME
-idoc"""
-Shortcut to delegate `readavailable` to the internal buffer.
-"""
-function Base.readavailable(io::BufferedIn; kw...)
-    if bytesavailable(io.buffer) == 0
-        refill_internal_buffer(io; kw...)
+
+@db function Base.bytesavailable(s::BufferedInput) 
+    n = bytesavailable(s.buffer) 
+    if n == 0
+        n = bytesavailable(s.stream) 
     end
-    return readavailable(io.buffer)
+    @db return n
 end
-=#
 
 
 
-## LazyBufferedIn
+@db function unsafe_transfer(s::BufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
+
+    sbuf = s.buffer
+    # If there are not enough bytes in `sbuf`, read more from the wrapped stream.
+    if bytesavailable(sbuf) < n
+        refill_internal_buffer(s)
+    end
+
+    # Read available bytes from `sbuf` into the caller's `buffer`.
+    n = min(n, bytesavailable(sbuf))
+    unsafe_read(sbuf, buf, n)
+    @db return n
+end
+
+
+
+## Lazy Buffered Input
 
 """
-    LazyBufferedIn(stream; [buffer_size]) -> Stream
+    LazyBufferedInput(stream; [buffer_size]) -> Stream
 
 Create a wrapper around `stream` to buffer input transfers.
 
@@ -1365,84 +1926,53 @@ The default `buffer_size` depends on `IOTratis.DataRate(io)`.
 
 `stream` must not be used directly after the wrapper is created.
 """
-struct LazyBufferedIn{T<:Stream} <: GenericBufferedIn
+struct LazyBufferedInput{T<:Stream} <: GenericBufferedInput{T}
     stream::T
     buffer::IOBuffer
     buffer_size::Int
-    function LazyBufferedIn(stream::T; buffer_size=default_buffer_size(stream)) where T
-        @require TransferDirection(stream) == In()
-        buffered_in_warning(stream)
-        new{T}(stream, PipeBuffer(), buffer_size)
+    function LazyBufferedInput(s::T; buffer_size=default_buffer_size(s)) where T
+        @require TransferDirection(s) == In()
+        buffered_in_warning(s)
+        new{T}(s, PipeBuffer(), buffer_size)
     end
 end
 
 
-Base.bytesavailable(s::LazyBufferedIn) = bytesavailable(s.buffer) + 
-                                         bytesavailable(s.stream);
+@db function Base.bytesavailable(s::LazyBufferedInput)
+    bytesavailable(s.buffer) + 
+    bytesavailable(s.stream)
+end
 
 
-function transfer(s::LazyBufferedIn, buf::Ptr{UInt8}, n, start::Integer, deadline)
-    @info "transfer(t::LazyBufferedIn, ...)"
-
-    buf += (start-1)
+@db function unsafe_transfer(s::LazyBufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
 
     # First take bytes from the buffer.
-    iob = s.buffer
-    count = bytesavailable(iob)
+    sbuf = s.buffer
+    count = bytesavailable(sbuf)
     if count > 0
         count = min(count, n)
-        unsafe_read(iob, buf, count)
+        unsafe_read(sbuf, buf, count)
     end
 
     # Then read from the wrapped IO.
     if n > count
-        count += transfer(s.stream, buf + count, n - count; deadline)
+        count += unsafe_transfer(s.stream, In(), buf + count, n - count)
     end
 
     @ensure count <= n
-    return count
-end
-
-
-
-# Timeout Stream
-
-"""
-    TimeoutStream(io; timeout) -> Stream
-
-The `TimeoutStream` wrapper adds a default timeout deadline to a stream
-It is used to add timeout capability to Base.IO functions.
-"""
-struct TimeoutStream{T<:Stream} <: Stream
-    stream::T
-    deadline::Float64
-    function TimeoutIO(stream::T, timeout) where T
-        @require timeout < Inf
-        new{T}(stream, time() + timeout)
-    end
-end
-
-StreamDelegation(::Type{TimeoutStream}) = DelegatedToSubstream()
-
-timeout_stream(s, t) = t == Inf ? s : TimeoutStream(s, t)
-
-function transfer(s::TimeoutStream{T}, buffer, n; start, kw...) where T
-    @info "transfer(t::TimeoutStream, ...)"
-    transfer(s.stream, buffer, n; start, deadline = s.deadline)
+    @db return count
 end
 
 
 
 # Base.IO Interface
 
-function transfer(s::BaseIO, buffer, n; kw...)
-    @info "transfer(t::BaseIO, ...)"
-    transfer(s.stream, buffer, n; kw...)
-end
-
-
-Base.isreadable(stream::BaseIO) = is_input(stream.stream)
-Base.iswritable(stream::BaseIO) = is_output(stream.stream)
+Base.isreadable(io::BaseIO) = is_input(io.stream)
+Base.iswritable(io::BaseIO) = is_output(io.stream)
+Base.isopen(io::BaseIO) = isopen(io.stream)
+Base.close(io::BaseIO) = close(io.stream)
+Base.bytesavailable(io::BaseIO) = bytesavailable(io.stream)
+Base.position(io::BaseIO) = position(io.stream)
 
 
 ## Function `eof`
@@ -1450,86 +1980,63 @@ Base.iswritable(stream::BaseIO) = is_output(stream.stream)
 idoc"""
 `eof` is specialised on Total Size.
 """
-function Base.eof(stream::BaseIO; timeout=Inf)
-    @require is_input(stream)
-    eof(stream, TotalSize(stream); timeout)
-end
-
-idoc"""
-If Total Size is known then `eof` is reached when there are
-zero `bytesavailable`.
-"""
-Base.eof(stream, ::KnownTotalSize; kw...) = bytesavailable(stream) == 0
-
-
-idoc"""
-If Total Size is not known then `eof` must "block to wait for more data".
-"""
-function Base.eof(stream, ::UnknownTotalSize; kw...)
-    n = bytesavailable(stream)
-    if n == 0
-        wait(stream; kw...)
-        n = bytesavailable(stream)
+@db function Base.eof(io::BaseIO; timeout=Inf)
+    @require is_input(io.stream)
+    if !isopen(io.stream)
+        @db return true
     end
-    return n == 0
+    if bytesavailable(io.stream) > 0
+        @db return false
+    end
+    if bytes_remaining(io.stream) == 0
+        @db return true
+    end
+    stream = unwrap(io.stream)
+    lock(stream)
+    try
+        deadline = timeout < Inf ? time() + timeout : Inf
+        wait(stream; deadline)
+    finally
+        unlock(stream)
+    end
+    @db return bytesavailable(stream) == 0
 end
-
-Base.eof(stream, ::InfiniteTotalSize; kw...) = (wait(stream; kw...); false)
-
 
 
 ## Function `read(io, T)`
 
-idoc"""
-Single byte read is specialized based on the Transfer Cost.
-(Single byte read for High Transfer Cost falls through to the 
-"does not support byte I/O" error from Base).
-"""
-function Base.read(stream::TraitsIO, ::Type{UInt8}; timeout=Inf)
-    @require is_input(io)
-    _read(io, TransferCost(io), UInt8; timeout)
-end
-
-
-idoc"""
-Allow single byte read for interfaces with Low Transfter Cost,
-but warn if a special Read Fragmentation trait is available.
-"""
-function _read(stream, ::LowTransferCost, ::Type{UInt8}; kw...)
-    if ReadFragmentation(stream) == ReadsLines()
-        @warn "read(::$(typeof(stream)), UInt8): " *
-              "$(typeof(io)) implements `IOTraits.ReadsLines`." *
-              "Reading one byte at a time may not be efficient." *
-              "Consider using `readline` instead."
-    end
-    x = Ref{UInt8}()
-    n = GC.@preserve x transfer(stream => pointer(x), 1; kw...)
-    n == 1 || throw(EOFError())
-    return x[]
+function Base.read(io::BaseIO, ::Type{UInt8}; timeout=Inf)
+    x = readbyte(io.stream; timeout)
+    x != nothing || throw(EOFError())
+    return x
 end
 
 
 idoc"""
 Read as String. \
-Wrap with `TimeoutIO` if timeout is requested.
+Wrap with `TimeoutStream` if timeout is requested.
 """
-function Base.read(stream::BaseIO, ::Type{String}; timeout=Inf)
-    @require is_input(stream)
-    @invoke String(Base.read(timeout_io(stream, timeout)::IO))
+function Base.read(io::BaseIO, ::Type{String}; timeout=Inf)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    String(_read(stream, TotalSize(stream), CursorSupport(stream)))
 end
 
 
 
 ## Function `readbytes!`
 
-Base.readbytes!(s::BaseIO, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
-    readbytes!(s, buf, UInt(nbytes); kw...)
+Base.readbytes!(io::BaseIO, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
+    readbytes!(io, buf, UInt(nbytes); kw...)
 
-function Base.readbytes!(s::BaseIO, buf::Vector{UInt8}, nbytes::UInt;
+@db function Base.readbytes!(io::BaseIO, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true, timeout=Inf)
-    @require is_input(s)
-    deadline = timeout_deadline(timeout)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    _readbytes!(stream, buf, nbytes; all)
+end
 
+@db function _readbytes!(stream, buf, nbytes; all=true)
     lb::Int = length(buf)
     nread = 0
     while nread < nbytes
@@ -1539,77 +2046,33 @@ function Base.readbytes!(s::BaseIO, buf::Vector{UInt8}, nbytes::UInt;
             resize!(buf, lb)
         end
         @assert lb > nread
-        n = transfer(s, buf, lb - nread, nread + 1, deadline)
+        n = transfer(stream => buf, lb - nread; start = nread + 1)
         if n == 0 || !all
             break
         end
         nread += n
     end
     @ensure nread <= nbytes
-    return nread
+    @db return nread
 end
 
-timeout_deadline(timeout) = timeout == Inf ? Inf : time() + timeout
 
 
 ## Function `read(stream)`
 
-idoc"""
-Read until end of file.
-Specialise on Total Size, Cursor Support and Mmap Support.
-"""
-function Base.read(stream; timeout=Inf)
-    @require is_input(stream)
-    _read(stream, TotalSize(stream), CursorSupport(stream); timeout)
-end
+Base.read(io::BaseIO; timeout=Inf) = readall(io.stream; timeout)
 
 
-function _read(stream, ::UnknownTotalSize, ::NoCursors; timeout=Inf)
-    n = default_buffer_size(stream)
-    buf = Vector{UInt8}(undef, n)
-    readbytes!(stream, buf, n; timeout)
-    return buf
-end
-
-
-idoc"""
-
-"""
-function _read(stream, ::KnownTotalSize, ::AbstractSeekable; kw...)
-    n = length(stream) - position(stream)
-    buf = Vector{UInt8}(undef, n)
-    transfer_n(stream => buffer, n; kw...)
-    return buf
-end
-
-
-"""
-Transfer `n` items between `stream` and `buf`.
-
-Call `transfer` repeatedly until all `n` items have been Transferred, 
-stopping only if end of file is reached.
-
-Return the number of items transferred.
-"""
-function transfer_n(stream, buf::Vector{UInt8}, n, start, deadline)
-    @require length(buf) == (start-1) + n
-    nread = 0
-    while nread < n
-        n = transfer(stream, buf, n - nread, start + nread, deadline)
-        if n == 0
-            break
-        end
-        nread += n
-    end
-    return n
-end
 
 
 ## Function `read(stream, n)`
 
-function Base.read(stream::BaseIO, n::Integer; timeout=Inf)
-    @require is_input(stream)
-    @invoke Base.read(timeout_io(stream, timeout)::IO, n::Integer)
+function Base.read(io::BaseIO, n::Integer; timeout=Inf)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    buf = Vector{UInt8}(undef, n)
+    transfer_n(stream, buf, n)
+    return buf
 end
 
 
@@ -1618,13 +2081,14 @@ end
 idoc"""
 `unsafe_read` must keep trying until `nbytes` nave been transferred.
 """
-function Base.unsafe_read(stream::TraitsIO, buf::Ptr{UInt8}, nbytes::UInt;
-                          deadline=Inf)
-    @require is_input(stream)
+function Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt;
+                          timeout=Inf)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
     nread = 0
-    @debug "Base.unsafe_read(stream::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)"
+    @debug "Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)"
     while nread < nbytes
-        n = transfer(stream => buf + nread, nbytes - nread; deadline)
+        n = transfer(stream => (buf + nread), nbytes - nread)
         if n == 0
             throw(EOFError())
         end
@@ -1643,20 +2107,21 @@ end
 
 Read immediately available data from a stream.
 
-If `TransferSize(stream)` is `UnknownTransferSize()` the only way to know how
+If `Availability(stream)` is `UnknownAvailability()` the only way to know how
 much data is available is to attempt a transfer.
 
 Otherwise, the amount of data immediately available can be queried using the
 `bytesavailable` function.
 """
-function Base.readavailable(stream::BaseIO; timeout=0)
-    @require is_input(stream)
-    n = bytesavailable(stream)
-    if n == 0 
-        n = default_buffer_size(stream)
+@db function Base.readavailable(io::BaseIO; timeout=0)
+    @require is_input(io.stream)
+    if Availability(io.stream) == UnknownAvailability()
+        n = default_buffer_size(io.stream)
+    else
+        n = bytesavailable(io.stream)
     end
     buf = Vector{UInt8}(undef, n)
-    n = transfer(stream, buf; timeout)
+    n = transfer(stream, buf, n; timeout)
     resize!(buf, n)
 end
 
@@ -1667,23 +2132,26 @@ end
 idoc"""
 `readline` is specialised based on the Read Fragmentation trait.
 """
-function Base.readline(stream::BaseIO; timeout=Inf, kw...)
-    @require is_input(stream)
-    _readline(stream, ReadFragmentation(stream); timeout, kw...)
+@db function Base.readline(io::BaseIO; keep=false, timeout=Inf)
+    readline(io.stream; keep, timeout)
 end
 
 idoc"""
 If there is no special Read Fragmentation method,
-use `TimeoutStream` to support the timeout option.
+invoke the default `Base.IO` method.
 """
-_readline(stream::BaseIO, ::AnyReadFragmentation; timeout, kw...) =
-    @invoke Base.readline(timeout_stream(stream, timeout)::IO; kw...)
+@db function _readline(stream, ::AnyReadFragmentation; keep=false, timeout=Inf)
+    stream = timeout_stream(stream; timeout)
+    @invoke Base.readline(BaseIO(stream)::IO; keep)
+end
+
 
 
 """
-### `readline(io, ::ReadsLines)`
+If Reads Lines is supported then simply calling `transfer` once will
+read one line.
 
-Character or Terminal devices (`S_IFCHR`) are usually used in
+Character or Terminal devices (`S_IFCHR`) are often used in
 "canonical mode" (`ICANON`).
 
 > "In canonical mode: Input is made available line by line."
@@ -1694,14 +2162,11 @@ It will only ever return an incomplete line if length exceeded `MAX_CANON`.
 Note that in canonical mode a line can be terminated by `CEOF` rather than
 "\n", but `read(2)` does not return the `CEOF` character (e.g. when the
 shell sends a "bash\$ " prompt without a newline).
-
-If `stream` has the `ReadsLines` trait calling `transfer` once will
-read one line.
 """
-function _readline(stream, ::ReadsLines; keep::Bool=false, kw...)
+function _readline(stream, ::ReadsLines; keep::Bool=false, timeout=Inf)
 
     v = Base.StringVector(max_line)
-    n = transfer(stream => v; kw...)
+    n = transfer(stream => v; timeout)
     if n == 0
         return ""
     end
@@ -1720,21 +2185,38 @@ const max_line = 1024 # UnixIO.C.MAX_CANON
 
 ## Function `readuntil`
 
-Base.readuntil(stream::BaseIO, d::AbstractChar; timeout=Inf, kw...) =
-    @invoke Base.readuntil(timeout_stream(stream, timeout)::IO, d; kw...)
+function Base.readuntil(io::BaseIO, d::AbstractChar; timeout=Inf, kw...)
+    @require is_input(io.stream)
+    stream = timeout_stream(io.stream; timeout)
+    @invoke Base.readuntil(BaseIO(stream)::IO, d; kw...)
+end
+
+
+## Function `write(stream, x)`
+
+@db function Base.unsafe_write(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)
+    @require is_output(io.stream)
+    @require isopen(io.stream)
+    transferall(io.stream, buf, nbytes)
+end
 
 
 
 # Exports
 
-export TraitsIO, TransferDirection, transfer
+export TraitsIO, TransferDirection, transfer, transferall, readall
+
+export BufferedInput, LazyBufferedInput
 
 export TotalSize,
        UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
        FixedTotalSize
 
+export Availability,
+       AlwaysAvailable, PartiallyAvailable, UnknownAvailability
+
 export TransferSize,
-       UnknownTransferSize, KnownTransferSize, LimitedTransferSize,
+       UnlimitedTransferSize, LimitedTransferSize,
        FixedTransferSize
 
 export TransferSizeMechanism,
@@ -1747,8 +2229,9 @@ export WaitingMechanism,
        WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
        WaitUsingKQueue
 
-export CursorSupport, AbstractSeekable,
+export CursorSupport, AbstractHasPosition,
        NoCursors,
+       HasPosition,
        Seekable,
        Markable
 
@@ -1818,6 +2301,19 @@ Issue
 
 --------------------------------------------------------------------------------
 """
+
+
+## Errors
+
+struct IOTraitsError <: Exception
+    stream::Stream
+    message::String
+end
+
+function Base.show(io::IO, e::IOTraitsError)
+    print(io, "IOTraitsError: ", e.message)
+end
+
 
 
 using ReadmeDocs

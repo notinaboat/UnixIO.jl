@@ -2,6 +2,7 @@ using Test
 using LoggingTestSets
 using AsyncLog
 using UnixIO
+using UnixIO.IOTraits
 using UnixIO: C
 
 # FIXME use ReTest.jl
@@ -19,23 +20,27 @@ cd(@__DIR__)
 
 @testset LoggingTestSet "Open Type" begin
 
-f() = UnixIO.open(UnixIO.FDType, "foobar")
-info, type = code_typed(f, ())[1]
-@test type == DuplexIO{UnixIO.FD{UnixIO.In,UnixIO.FDType},
-                       UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+let f() = UnixIO.open(UnixIO.FDType, "foobar")
+    info, type = code_typed(f, ())[1]
+    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType}}},
+                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType}}}
+end
 
-f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDWR)
-info, type = code_typed(f, ())[1]
-@test type == DuplexIO{UnixIO.FD{UnixIO.In,UnixIO.FDType},
-                       UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDWR)
+    info, type = code_typed(f, ())[1]
+    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType}}},
+                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType}}}
+end
 
-f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDONLY)
-info, type = code_typed(f, ())[1]
-@test type == UnixIO.FD{UnixIO.In,UnixIO.FDType}
+let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDONLY)
+    info, type = code_typed(f, ())[1]
+    @test type == IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType}}}
+end
 
-f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_WRONLY)
-info, type = code_typed(f, ())[1]
-@test type == UnixIO.FD{UnixIO.Out,UnixIO.FDType}
+let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_WRONLY)
+    info, type = code_typed(f, ())[1]
+    @test type == IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+end
 
 end # testset
 
@@ -51,17 +56,27 @@ uio = UnixIO.open("runtests.jl")
 @test readline(jio) == readline(uio)
 @test read(jio, UInt8) == read(uio, UInt8)
 @test read(jio, UInt32) == read(uio, UInt32)
+@info "Test readline"
 @test readline(jio) == readline(uio)
+@info "Test readbytes(2)"
 jv = UInt8[]; readbytes!(jio, jv, 2)
 uv = UInt8[]; readbytes!(uio, uv, 2)
 @test jv == uv
+@info "Test readbytes(100)"
 jv = UInt8[]; readbytes!(jio, jv, 100)
+@show typeof(uio) typeof(uv)
+@show which(readbytes!, (typeof(uio), typeof(uv), Int))
 uv = UInt8[]; readbytes!(uio, uv, 100)
+@show length(jv), length(uv)
+@show String(copy(jv)), String(copy(uv))
 @test jv == uv
+@info "Test readbytes(100)"
 readbytes!(jio, jv, 100)
 readbytes!(uio, uv, 100)
 @test jv == uv
+@info "Test read"
 @test read(jio) == read(uio)
+@info "Test eof"
 @test eof(jio) == eof(uio)
 @test isopen(jio) == isopen(uio)
 @test close(jio) == close(uio)
@@ -69,6 +84,7 @@ readbytes!(uio, uv, 100)
 @test isopen(jio) == isopen(uio)
 
 
+#= FIXME
 @info "Test system() and read(::Cmd) with large data"
 for _ in 1:1
     mktempdir() do d
@@ -83,11 +99,16 @@ for _ in 1:1
         c = UnixIO.read(`hexdump $f`)
         d = UnixIO.open(`hexdump`) do cin, cout
             @sync begin
-                @async begin
+                @async try
                     write(cin, UnixIO.open(f))
                     close(cin)
+                catch err
+                    UnixIO.printerr("ERROR: $err")
+                    exception=(err, catch_backtrace())
+                    UnixIO.printerr(exception)
+                    @error "ERROR" exception
                 end
-                read(cout)
+                readall(cout)
             end
         end
                 
@@ -105,6 +126,7 @@ for _ in 1:1
         end
     end
 end
+=#
 
 
 @info "Test eachline()"
@@ -117,9 +139,16 @@ uio = UnixIO.open("runtests.jl")
 
 @info "Test open(:Cmd)"
 @test UnixIO.open(`hexdump`) do cmdin, cmdout
-    @async begin
+    cmdin = IOTraits.BaseIO(cmdin) # FIXME
+    cmdout = IOTraits.BaseIO(cmdout) # FIXME
+    @async try
         write(cmdin, read(UnixIO.open("runtests.jl")))
         close(cmdin)
+    catch err
+        UnixIO.printerr("ERROR: $err")
+        exception=(err, catch_backtrace())
+        UnixIO.printerr(exception)
+        @error "ERROR" exception
     end
     read(cmdout)
 end ==
@@ -135,7 +164,7 @@ end
 
 cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
 @info "Test open($cmd)"
-@test UnixIO.open(cmd) do i, o collect(eachline(o)) end == 
+@test UnixIO.open(cmd) do i, o collect(eachline(IOTraits.BaseIO(IOTraits.LazyBufferedInput(o)))) end == 
     open(cmd; read = true) do io collect(eachline(io)) end
 
 
@@ -183,6 +212,7 @@ sleep(1)
 @test isempty(UnixIO.processes)
 cmdin, cmdout = UnixIO.open(`bash -c "while true; do date ; sleep 1; done"`)
 close(cmdin)
+cmdout = IOTraits.LazyBufferedInput(cmdout)
 @test !isempty(UnixIO.processes)
 @test readline(cmdout) != ""
 @test readline(cmdout) != ""

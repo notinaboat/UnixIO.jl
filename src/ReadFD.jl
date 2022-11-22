@@ -3,10 +3,12 @@ Read-only Unix File Descriptor.
 """
 
 
-@db 2 function raw_transfer(fd::FD{In}, buf, count)
+#=
+@db 2 function raw_transfer(fd::FD{In}, ::IOTraits.In, buf, count)
     n = C.read(fd.fd, buf, count)
     @db 2 return n
 end
+=#
 
 
 """
@@ -32,7 +34,7 @@ is no way to detect when the client has closed the terminal.
 This `raw_transfer` method handles this by checking if the client process
 is still alive and returning `0` if it has terminated.
 """
-@db 2 function raw_transfer(fd::FD{In,Pseudoterminal}, buf, count)
+@db 2 function raw_transfer(fd::FD{In,Pseudoterminal}, ::IOTraits.In, buf, count)
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
@@ -84,8 +86,9 @@ end
     @db 1 return x[]
 end
 
-IOTraits.position(io, ::AbstractSeekable) = 
+@db function IOTraits._position(fd::FD, ::Seekable)
     @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
+end
 
 #=
 Base.eof(fd::FD{In}; kw...) = eof(fd, TotalSize(fd); kw...)
