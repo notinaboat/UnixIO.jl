@@ -84,7 +84,6 @@ readbytes!(uio, uv, 100)
 @test isopen(jio) == isopen(uio)
 
 
-#= FIXME
 @info "Test system() and read(::Cmd) with large data"
 for _ in 1:1
     mktempdir() do d
@@ -98,6 +97,8 @@ for _ in 1:1
         b = read(`hexdump $f`) 
         c = UnixIO.read(`hexdump $f`)
         d = UnixIO.open(`hexdump`) do cin, cout
+            cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+            cin=IOTraits.BaseIO(cin)
             @sync begin
                 @async try
                     write(cin, UnixIO.open(f))
@@ -108,7 +109,7 @@ for _ in 1:1
                     UnixIO.printerr(exception)
                     @error "ERROR" exception
                 end
-                readall(cout)
+                read(cout)
             end
         end
                 
@@ -126,7 +127,6 @@ for _ in 1:1
         end
     end
 end
-=#
 
 
 @info "Test eachline()"

@@ -304,6 +304,20 @@ FIXME
    (i.e. wrap with buffered stream).
 
 
+### Notes
+
+TODO:
+Note on command/query separation.
+Refer to example below. If `bytesavailable(s.buffer)` does an internal
+buffre read then the `position(s.stream)` value will be wrong.
+
+```julia
+position(s::BufferedInput) = position(s.stream) - bytesavailable(s.buffer)
+```
+
+TODO:
+Note about back-pressure, the problem with reading too fast into a big buffer
+
 
 ### Methods of Base Functions for Streams
 
@@ -321,40 +335,58 @@ Base.isopen(s::Stream) = is_proxy(s) ? isopen(unwrap(s)) : false
 
 Base.close(s::Stream) = is_proxy(s) ? close(unwrap(s)) : nothing
 
-Base.wait(s::Stream; deadline=Inf) = is_proxy(s) ?
-                                     wait(unwrap(s); deadline) :
-                                     _wait(s, WaitingMechanism(s); deadline)
+Base.islocked(s::Stream) = is_proxy(s) ? islocked(unwrap(s)) :
+    @warn "Base.islocked(::$(typeof(s)) not defined!"
+
+Base.lock(s::Stream) = is_proxy(s) ? lock(unwrap(s)) :
+    @warn "Base.lock(::$(typeof(s)) not defined!"
+
+Base.unlock(s::Stream) = is_proxy(s) ? unlock(unwrap(s)) :
+    @warn "Base.unlock(::$(typeof(s)) not defined!"
+
+@db function Base.wait(s::Stream; deadline=Inf, timeout=Inf)
+    deadline = deadline_or_timeout(deadline, timeout)             ;@db deadline
+    is_proxy(s) ? wait(unwrap(s); deadline) :
+                 _wait(s, WaitingMechanism(s); deadline)
+end
 
 @db function Base.bytesavailable(s::Stream)
     @require is_input(s)
-    s = unwrap(s)
-    _bytesavailable(s, Availability(s), TransferSize(s))
+    @require isopen(s)
+    is_proxy(s) ? bytesavailable(unwrap(s)) :
+                  _bytesavailable(s, Availability(s), TransferSize(s))
 end
 
 @db function Base.length(s::Stream)
-    @require TotalSize(s) isa KnownTotalSize
+    @require isopen(s)
+    @require total_size_is_known(s)
     s = unwrap(s)
     _length(s, TotalSizeMechanism(s))
 end
 
 
 @db function Base.position(s::Stream)
+    @require isopen(s)
     @require CursorSupport(s) isa AbstractHasPosition
     s = unwrap(s)
     _position(s, CursorSupport(s))
 end
 
 @db function Base.readline(s::Stream; keep=false, timeout=Inf)
+    @require isopen(s)
     @require is_input(s)
     s = unwrap(s)
     _readline(s, ReadFragmentation(s); keep, timeout)
 end
 
 @db function Base.peek(s::Stream, ::Type{T}; timeout=Inf) where T
+    @require isopen(s)
     @require is_input(s)
     s = unwrap(s)
     _peek(s, PeekSupport(s), T; timeout)
 end
+
+pump(s::Stream; deadline) = is_proxy(s) ? pump(unwrap(s); deadline) : nothing
 
 
 
@@ -546,20 +578,21 @@ A transfer to a `URI` creates a new resource or replaces the resource
 """
 @db function transfer(stream, buf, n::Union{Integer,Missing}=missing;
                   start::Union{Integer, NTuple{2,Integer}}=UInt(1),
-                  timeout=Inf,
-                  deadline=Inf)
+                  deadline=Inf, timeout=Inf)
 
     @require isopen(stream)
     @require ismissing(n) || n > 0
-    @require all(start .> 0)
-    if timeout != Inf
-        deadline = time() + timeout
-    end
-    n = transfer(stream, buf, n, start, Float64(deadline))
+    @require all(start .> 0)               ;@db typeof(stream) deadline timeout
+    n = transfer(stream, buf, n, start, deadline_or_timeout(deadline, timeout))
     transfer_complete(stream, buf, n)
     @ensure n isa UInt
     @db return n
 end
+
+deadline_or_timeout(deadline, timeout) =
+    Float64((timeout == Inf) ? deadline : (time() + timeout))
+
+transfer(a...; timeout) = transfer(a...; deadline=time() + Float64(timeout))
 
 
 """
@@ -618,7 +651,7 @@ to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
 that the second transfer adheres to the specified deadline.
 
 """
-function transfer(stream, buffer, n, start, deadline::Float64)
+@db function transfer(stream, buffer, n, start, deadline::Float64)
 
     if Availability(stream) == UnknownAvailability() &&
     ioelsize(buffer) != 1 &&
@@ -628,7 +661,7 @@ function transfer(stream, buffer, n, start, deadline::Float64)
 
     r = transfer_available(stream, buffer, n, start)
     if r > 0 || iszero(deadline)
-        return r
+        @db return r
     end
     wait_for_transfer(stream, WaitingMechanism(stream),
                       buffer, n, start, deadline)
@@ -797,24 +830,26 @@ be selected according to Waiting Mechanism.
 `Base.lock` and `Base.unlock` must be implemented for each stream type.[^LOCK]
 
 [^LOCK]: These methods should do whatever is necessary to avoid race conditions
-between `Base.wait` and `transfer_available`.
+between `Base.wait` and `transfer_available`. (FIXME, ... and `bytesavailable`)
 In UnixIO.jl `Base.wait` waits for a `ThreadSynchronizer` and the underlying
 polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
 """
 @db function wait_for_transfer(stream, ::WaitingMechanism,
                                buf, n, start, deadline::Float64)
-    try 
-        lock(stream)
-        while time() < deadline && bytes_remaining(stream) != 0
+    @db time() deadline
+    @dblock stream begin
+        while !isfinished(stream)
+            pump(stream; deadline)
             wait(stream; deadline)
             r = transfer_available(stream, buf, n, start);
             if r > 0
                 @db return r
             end
+            if time() >= deadline
+                break
+            end
         end
         @db return UInt(0)
-    finally
-        unlock(stream)
     end
 end
 
@@ -922,7 +957,7 @@ ToBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
 abstract type TotalSize end
 struct UnknownTotalSize <: TotalSize end
 struct InfiniteTotalSize <: TotalSize end
-abstract type KnownTotalSize end
+abstract type KnownTotalSize <: TotalSize end
 struct VariableTotalSize <: KnownTotalSize end
 struct FixedTotalSize <: KnownTotalSize end
 const AnyTotalSize = TotalSize
@@ -954,6 +989,8 @@ Total Size              Description
 TotalSize(x) = TotalSize(typeof(x))
 TotalSize(T::Type) = is_proxy(T) ? TotalSize(unwrap(T)) :
                                    UnknownTotalSize()
+total_size_is_known(x) = TotalSize(x) isa KnownTotalSize
+
 
 abstract type SizeMechanism end
 struct NoSizeMechanism <: SizeMechanism end
@@ -1031,6 +1068,7 @@ abstract type Availability end
 struct AlwaysAvailable <: Availability end
 struct PartiallyAvailable <: Availability end
 struct UnknownAvailability <: Availability end
+const AnyAvailability = Availability
 
 
 """
@@ -1048,6 +1086,8 @@ Availability            Description
 
 `PartiallyAvailable()`  Some data may be immediately available from a buffer,
                         but `bytesavailable` can be less than `bytes_remaining`.
+                        `bytesavailable` may be 0 (e.g. when a buffer is empty)
+                        even if a subsequent transfer would yeild more data.
 
 `UnknownAvailability()` There is no mechanism for determining data availability.
                         The only way to know how much data is available is to
@@ -1059,6 +1099,9 @@ Availability(x) = Availability(typeof(x))
 Availability(T::Type) = is_proxy(T) ? Availability(unwrap(T)) :
                                       UnknownAvailability()
 
+availability_is_unknown(x) = Availability(x) == UnknownAvailability()
+availability_is_known(x) = !availability_is_unknown(x)
+
 @db function _bytesavailable(s, ::UnknownAvailability, ::AnyTransferSize)
     missing
 end
@@ -1068,7 +1111,7 @@ end
 end
 
 @db function _bytesavailable(s, ::AlwaysAvailable, ::FixedTransferSize)
-   max_transfer_size(s)
+    max_transfer_size(s)
 end
 
 
@@ -1076,6 +1119,27 @@ end
     _bytesavailable(s, TransferSizeMechanism(s))
 end
 
+
+@db function wait_for_n_bytes(s, n; deadline=Inf)
+    @require availability_is_known(s)
+    if bytesavailable(s) >= n
+        @db return
+    end
+
+    while time() < deadline
+        pump(s; deadline)
+        @dblock s begin
+            if bytesavailable(s) >= n
+                @db return
+            end
+            wait(s; deadline)
+        end
+    end
+    nothing
+end
+
+wait_for_n_bytes(a...; timeout) =
+    wait_for_n_bytes(a...; deadline = time() + timeout)
 
 
 # Transfer Function Dispatch
@@ -1122,14 +1186,17 @@ For example, the methods for `UsingPtr` and `UsingIndex` below work for
 both input and output. (Another consideration is supporting interfaces with
 `IODirection` `Exchange`).
 """
-transfer_available(stream, buf, n, start) = 
+@db function transfer_available(stream, buf, n, start)
     transfer_available(stream, TransferDirection(stream), buf, n, start)
+end
 
-transfer_available(stream, ::In, buf, n, start) =
+@db function transfer_available(stream, ::In, buf, n, start)
     transfer_available(stream, In(), buf, ToBufferInterface(buf), n, start)
+end
 
-transfer_available(stream, ::Out, buf, n, start) =
+@db function transfer_available(stream, ::Out, buf, n, start)
     transfer_available(stream, Out(), buf, FromBufferInterface(buf), n, start)
+end
 
 
 
@@ -1237,11 +1304,13 @@ After this both `n` and `start` are always `UInt`s.
     transfer_available(stream, direction, buf, interface, UInt(n), start)
 end
 
-transfer_available(stream, direction, buf, interface, n::Missing, start::UInt) =
+@db function transfer_available(stream, direction, buf, interface, n::Missing, start::UInt)
     transfer_available(stream, direction, buf, interface, typemax(UInt), start)
+end
 
-transfer_available(stream, direction, buf, interface, n::Integer, start::Integer) = 
+@db function transfer_available(stream, direction, buf, interface, n::Integer, start::Integer)
     transfer_available(stream, direction, buf, interface, UInt(n), UInt(start))
+end
 
 
 idoc"""
@@ -1292,7 +1361,7 @@ idoc"""
 Iterate over `buf` (skip items until `start` index is reached).
 Transfer each item one at a time.
 """
-@db function transfer_available(stream, ::In, buf, ::FromIteration,
+@db function transfer_available(stream, ::Out, buf, ::FromIteration,
                                 n::UInt, start::UInt)
     count::UInt = 0
     for x in buf
@@ -1363,10 +1432,11 @@ end
     return count
 end
 
-transfer_available(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt) =
+@db function transfer_available(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt)
     transfer_available(s2, In(), s1, ToStream(), n, start)
+end
 
-function transfer_available(s, direction, io, ::Union{ToIO,FromIO},
+@db function transfer_available(s, direction, io, ::Union{ToIO,FromIO},
                             n::UInt, start::UInt)
     s2 = BaseIOStream{typeof(io), direction == In() ? Out : In}(io)
     transfer_available(s, direction, s2, n, start)
@@ -1425,7 +1495,7 @@ abstract type TransferCost end
 struct HighTransferCost <: TransferCost end
 struct LowTransferCost <: TransferCost end
 TransferCost(s) = TransferCost(typeof(s))
-TransferCost(T::Type) = is_proxy(T) ? TransferCost(T) :
+TransferCost(T::Type) = is_proxy(T) ? TransferCost(unwrap(T)) :
                                       HighTransferCost()
 
 
@@ -1527,7 +1597,7 @@ struct TimeoutStream{T<:Stream} <: Stream
     stream::T
     deadline::Float64
     function TimeoutStream(stream::T; timeout, deadline) where T
-        @require timeout < Inf || deadline < Inf
+        @require (timeout == Inf) ⊻ (deadline == Inf)
         if timeout < Inf
             deadline = time() + timeout
         end
@@ -1543,9 +1613,24 @@ timeout_stream(s; timeout=Inf, deadline=Inf) =
 StreamDelegation(::Type{<:TimeoutStream}) = DelegatedToSubStream()
 
 @db function transfer(s::TimeoutStream{T}, buffer,
-                      n::Union{Missing, Integer}; kw...) where T
-    @info "transfer(t::TimeoutStream, ...)"
-    transfer(s.stream, buffer, n; deadline = s.deadline, kw...)
+                      n::Union{Missing, Integer}; deadline=Inf, kw...) where T
+    @db s.deadline
+    transfer(s.stream, buffer, n; deadline = min(deadline, s.deadline), kw...)
+end
+
+@db function pump(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+    deadline = deadline_or_timeout(deadline, timeout)
+    pump(s.stream; deadline = min(deadline, s.deadline))
+end
+
+@db function Base.wait(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+    deadline = deadline_or_timeout(deadline, timeout)
+    wait(s.stream; deadline = min(deadline, s.deadline))
+end
+
+@db function Base.eof(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+    deadline = deadline_or_timeout(deadline, timeout)
+    eof(s.stream; deadline = min(deadline, s.deadline))
 end
 
 unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
@@ -1558,27 +1643,45 @@ unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
 """
 How many bytes remain before the end of `stream`?
 """
-function bytes_remaining(s::Stream)
+@db function bytes_remaining(s::Stream)
     @require is_input(s)
+    @require isopen(s)
     bytes_remaining(s, TotalSize(s), CursorSupport(s))
 end
 
-bytes_remaining(s, ::UnknownTotalSize, ::Any) = nothing
-bytes_reamaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
-bytes_remaining(s, ::KnownTotalSize, ::AbstractHasPosition) =
-    length(s) - position(s)
+bytes_remaining(s, ::UnknownTotalSize, ::Any) = missing
+bytes_remaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
 
+@db function bytes_remaining(s, ::KnownTotalSize, ::AbstractHasPosition)
+    length(s) - position(s)
+end
+
+#TODO: note about dispatch sequencing:
+#   - first isproxy/unwrap
+#   - then apply traits
+
+#FIXME rename isfinished -> isconnected ???
+
+@db function isfinished(s::Stream)
+    @require isopen(s)
+    is_input(s) || @db return false
+    is_proxy(s) ? isfinished(unwrap(s)) : 
+                  isfinished(s, TotalSize(s))
+end
+
+isfinished(s, ::UnknownTotalSize) = false
+isfinished(s, ::AnyTotalSize) = bytes_remaining(s) == 0
 
 
 """
 `readbyte` returns one byte
-(or `nothing` at end of stream or if `timeout` expires).
+(or `nothing` at end of stream or if `deadline` expires).
 
 Specialized based on Transfer Cost.
 """
-function readbyte(s::Stream; timeout=Inf)
+function readbyte(s::Stream; deadline=Inf)
     @require is_input(s)
-    readbyte(s, TransferCost(s); timeout)
+    readbyte(s, TransferCost(s); deadline)
 end
 
 readbyte(s, ::HighTransferCost; kw...) =
@@ -1592,15 +1695,15 @@ but warn if a special Read Fragmentation trait is available.[^WARNINGS]
 
 [^WARNINGS]: ⚠️ FIXME: Warnings should be configurable via Preferences.jl
 """
-function readbyte(stream, ::LowTransferCost; timeout)
+function readbyte(stream, ::LowTransferCost; deadline)
     if ReadFragmentation(stream) == ReadsLines()
         @warn "read(::$(typeof(stream)), UInt8): " *
               "$(typeof(stream)) implements `IOTraits.ReadsLines`." *
               "Reading one byte at a time may not be efficient." *
               "Consider using `readline` instead."
     end
-    x = Ref{UInt8}()
-    n = GC.@preserve x transfer(stream => pointer(x), 1)
+    x = Vector{UInt8}(undef, 1)
+    n = GC.@preserve x transfer(stream => pointer(x), 1; deadline)
     n == 1 || return nothing
     return x[]
 end
@@ -1646,6 +1749,7 @@ stopping only if end of file is reached.
 Return the number of items transferred.
 """
 @db function transferall(stream, buf, n=length(buf); deadline=Inf, timeout=Inf)
+    @require deadline == Inf || timeout == Inf
     stream = timeout_stream(stream; timeout, deadline)
     ntransferred::UInt = 0
     while ntransferred < n
@@ -1786,7 +1890,7 @@ default_buffer_size(stream) = DataRate(stream)
 Transfer bytes from the wrapped IO to the internal buffer.
 """
 @db function refill_internal_buffer(s::GenericBufferedInput,
-                                    n=s.buffer_size; kw...)
+                                    n=s.buffer_size; deadline=Inf)
     # If needed, expand the buffer.
     sbuf = s.buffer
     @assert sbuf.append
@@ -1795,27 +1899,41 @@ Transfer bytes from the wrapped IO to the internal buffer.
 
     # Transfer from the stream to the buffer.
     p = pointer(sbuf.data, sbuf.size+1)
-    n = GC.@preserve sbuf transfer(s.stream, p, n; kw...)
+    n = GC.@preserve sbuf transfer(s.stream, p, n; deadline)
     sbuf.size += n
     nothing
 end
 
-function readbyte(s::GenericBufferedInput; timeout)
+
+@db function pump(s::GenericBufferedInput; deadline=Inf)
+    refill_internal_buffer(s; deadline)
+end
+
+
+function readbyte(s::GenericBufferedInput; deadline)
     sbuf = s.buffer
     if bytesavailable(sbuf) == 0
-        refill_internal_buffer(s; timeout)
+        refill_internal_buffer(s; deadline)
     end
     if bytesavailable(sbuf) != 0
         return read(sbuf, UInt8)
     end
-    @invoke readbyte(s::Stream; timeout)
+    @invoke readbyte(s::Stream; deadline)
 end
 
+
 @db function Base.peek(s::GenericBufferedInput, ::Type{T}; timeout=Inf) where T
-    while bytesavailable(s.buffer) < sizeof(T)
-        refill_internal_buffer(s; kw...)
+    wait_for_n_bytes(sizeof(T); timeout)
+    if bytesavailable(s) < sizeof(T)
+        @db return nothing
     end
     peek(s.buffer, T)
+end
+
+
+@db function isfinished(s::GenericBufferedInput)
+    isfinished(s.stream) &&
+    bytesavailable(s.buffer) == 0
 end
 
 
@@ -1824,7 +1942,7 @@ end
 end
 
 @db function Base.readline(s::GenericBufferedInput; keep=false, timeout=Inf)
-    _readline(s, ReadsBytes(); keep=false, timeout=Inf)
+    _readline(s, ReadsBytes(); keep, timeout)
 end
 
 ## Buffered Input
@@ -1872,7 +1990,7 @@ loop will eventually get the data it needs.
     @assert ioelsize(buf) < s.buffer_size
 
     if bytesavailable(s) < ioelsize(buf)
-        refill_internal_buffer(s)
+        refill_internal_buffer(s; deadline=0) # FIXME ?)
     end
 
     @invoke transfer_available(s::Stream, direction,
@@ -1883,11 +2001,8 @@ end
 
 
 @db function Base.bytesavailable(s::BufferedInput) 
-    n = bytesavailable(s.buffer) 
-    if n == 0
-        n = bytesavailable(s.stream) 
-    end
-    @db return n
+    @require isopen(s)
+    @db return bytesavailable(s.buffer) 
 end
 
 
@@ -1939,8 +2054,12 @@ end
 
 
 @db function Base.bytesavailable(s::LazyBufferedInput)
-    bytesavailable(s.buffer) + 
-    bytesavailable(s.stream)
+    @require isopen(s)
+    n = bytesavailable(s.buffer)
+    if availability_is_known(s.stream)
+        n += bytesavailable(s.stream)
+    end
+    @db return n
 end
 
 
@@ -1973,6 +2092,8 @@ Base.isopen(io::BaseIO) = isopen(io.stream)
 Base.close(io::BaseIO) = close(io.stream)
 Base.bytesavailable(io::BaseIO) = bytesavailable(io.stream)
 Base.position(io::BaseIO) = position(io.stream)
+Base.eof(io::BaseIO; deadline=Inf, timeout=Inf) =
+    eof(io.stream; deadline, timeout)
 
 
 ## Function `eof`
@@ -1980,46 +2101,64 @@ Base.position(io::BaseIO) = position(io.stream)
 idoc"""
 `eof` is specialised on Total Size.
 """
-@db function Base.eof(io::BaseIO; timeout=Inf)
-    @require is_input(io.stream)
-    if !isopen(io.stream)
+@db function Base.eof(s::Stream; deadline=Inf, timeout=Inf)
+    @require is_input(s)
+    if !isopen(s)
         @db return true
     end
-    if bytesavailable(io.stream) > 0
+    deadline = deadline_or_timeout(deadline, timeout)
+    _eof(s, Availability(s); deadline)
+end
+
+
+@db function _eof(s, ::UnknownAvailability; deadline::Float64)
+    @dblock s wait(s; deadline)
+    return false
+end
+
+
+@db function _eof(s, ::AnyAvailability; deadline::Float64)
+    if bytesavailable(s) > 0
         @db return false
     end
-    if bytes_remaining(io.stream) == 0
-        @db return true
+    @db deadline
+    # VV handled by isfinished ?
+#    if total_size_is_known(s) && bytes_remaining(s) == 0
+#        @db return true
+#    end
+    while isopen(s) && !isfinished(s) && time() < deadline
+        pump(s; deadline)
+        @dblock s begin
+            if bytesavailable(s) > 0
+                @db return false
+            end
+            wait(s; deadline)
+        end
     end
-    stream = unwrap(io.stream)
-    lock(stream)
-    try
-        deadline = timeout < Inf ? time() + timeout : Inf
-        wait(stream; deadline)
-    finally
-        unlock(stream)
-    end
-    @db return bytesavailable(stream) == 0
+    @db return true
 end
 
 
 ## Function `read(io, T)`
 
-function Base.read(io::BaseIO, ::Type{UInt8}; timeout=Inf)
-    x = readbyte(io.stream; timeout)
+function Base.read(io::BaseIO, ::Type{UInt8}; deadline=Inf)
+    x = readbyte(io.stream; deadline)
     x != nothing || throw(EOFError())
     return x
 end
+
+#Base.read(io::BaseIO, ::Type{T}; timeout) where T =
+#    read(io, a...; deadline = time() + timeout)
 
 
 idoc"""
 Read as String. \
 Wrap with `TimeoutStream` if timeout is requested.
 """
-function Base.read(io::BaseIO, ::Type{String}; timeout=Inf)
+function Base.read(io::BaseIO, ::Type{String}; deadline=Inf)
     @require is_input(io.stream)
-    stream = timeout_stream(io.stream; timeout)
-    String(_read(stream, TotalSize(stream), CursorSupport(stream)))
+    stream = timeout_stream(io.stream; deadline)
+    String(readall(stream))
 end
 
 
@@ -2114,6 +2253,7 @@ Otherwise, the amount of data immediately available can be queried using the
 `bytesavailable` function.
 """
 @db function Base.readavailable(io::BaseIO; timeout=0)
+    @require isopen(io.stream)
     @require is_input(io.stream)
     if Availability(io.stream) == UnknownAvailability()
         n = default_buffer_size(io.stream)
@@ -2121,7 +2261,7 @@ Otherwise, the amount of data immediately available can be queried using the
         n = bytesavailable(io.stream)
     end
     buf = Vector{UInt8}(undef, n)
-    n = transfer(stream, buf, n; timeout)
+    n = transfer(io.stream, buf, n; timeout)
     resize!(buf, n)
 end
 
@@ -2141,7 +2281,7 @@ If there is no special Read Fragmentation method,
 invoke the default `Base.IO` method.
 """
 @db function _readline(stream, ::AnyReadFragmentation; keep=false, timeout=Inf)
-    stream = timeout_stream(stream; timeout)
+    stream = timeout_stream(stream; timeout)                ;@db timeout stream
     @invoke Base.readline(BaseIO(stream)::IO; keep)
 end
 
@@ -2163,12 +2303,12 @@ Note that in canonical mode a line can be terminated by `CEOF` rather than
 "\n", but `read(2)` does not return the `CEOF` character (e.g. when the
 shell sends a "bash\$ " prompt without a newline).
 """
-function _readline(stream, ::ReadsLines; keep::Bool=false, timeout=Inf)
+@db function _readline(stream, ::ReadsLines; keep::Bool=false, timeout=Inf)
 
     v = Base.StringVector(max_line)
     n = transfer(stream => v; timeout)
     if n == 0
-        return ""
+        @db return ""
     end
 
     # Trim end of line characters.
@@ -2177,7 +2317,7 @@ function _readline(stream, ::ReadsLines; keep::Bool=false, timeout=Inf)
         n -= 1
     end
 
-    return String(resize!(v, n))
+    @db return String(resize!(v, n))
 end
 
 const max_line = 1024 # UnixIO.C.MAX_CANON
@@ -2198,6 +2338,13 @@ end
     @require is_output(io.stream)
     @require isopen(io.stream)
     transferall(io.stream, buf, nbytes)
+end
+
+
+@db function Base.write(io::BaseIO, x::UInt8)
+    @require is_output(io.stream)
+    @require isopen(io.stream)
+    transfer(x => io.stream)
 end
 
 

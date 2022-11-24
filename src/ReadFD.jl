@@ -16,7 +16,7 @@ end
 
 Reading from a pseudoterminal device is a special case.
 
-On Linux `read(2)` return `EIO` when called before a client has connected.
+On Linux `read(2)` returns `EIO` when called before a client has connected.
 If a client connects, writes some data and then disconnects before `read(2)`
 is called: `read(2)` returns the data and then returns `EIO` if called again.
 
@@ -24,7 +24,7 @@ On macOS `read(2)` returns `0` when called before a client has connected.
 If a client connects, writes some data and then disconnects before `read(2)`
 is called: `read(2)` simply returns `0` and the data is lost.
 
-To avoid this situation a a duplicate client fd is held open for the lifetime
+To avoid this situation a duplicate client fd is held open for the lifetime
 of the pseudoterminal device (`fd.extra[:pt_clientfd]`). This has the effect that
 `read(2)` will always return `EAGAIN` if there is no data available.
 (The reader then waits for `poll(2)` to indicate when data is ready as usual.)

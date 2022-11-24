@@ -305,7 +305,7 @@ function debug_write(fd, p, l)
             l -= n;
             p += n;
         elseif n == -1
-            @assert errno() in (C.EAGAIN, C.EINTR)
+            @assert Base.Libc.errno() in (C.EAGAIN, C.EINTR)
         end
     end
     C.tcdrain(fd)
@@ -437,7 +437,7 @@ macro debug_function(n::Int, ex::Expr, lineno::String)
     end
     @assert call.head == :call
 
-    @info "@db Wrapping $call"
+    #@info "@db Wrapping $call"
 
     # Split function Expr into parts.
     name = string(call.args[1])

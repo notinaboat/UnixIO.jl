@@ -1,5 +1,6 @@
 using Test
 using UnixIO
+using UnixIO.IOTraits
 using UnixIO: dbstring, C
 using AsyncLog
 using LoggingTestSets
@@ -26,6 +27,9 @@ function ptdump(f, cmd, cin, cout)
             if x != ""
                 break
             end
+        end
+        if !endswith(x, "\n")
+            x *= readline(cout; keep=true, timeout=0.1)
         end
         if x == ""
             return nothing
@@ -78,7 +82,7 @@ mktempdir() do d
         println("go!")
         while true
             l = readline(io; keep=true)
-            b = bytesavailable(io.buffer)
+            b = bytesavailable(io)
             UnixIO.println(length(l), ":", repr(l), ":", b)
         end
         """)
@@ -101,8 +105,8 @@ mktempdir() do d
         end
 
         fout("Hello1\n")
-        fout("Hello2\n")
         @test fin() == """7:"Hello1\\n":0\n"""
+        fout("Hello2\n")
         @test fin() == """7:"Hello2\\n":0\n"""
 
         fout("Hel")
@@ -168,13 +172,15 @@ mktempdir() do d
 
     @info "readline() from pseudoterminal with fragmented writes."
     UnixIO.ptopen(`$binfile`; opts...) do cin, cout
+        cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+        cin=IOTraits.BaseIO(cin)
         write(cin, "Hello1\n")
         @test readline(cout; keep=true) == "7:Hello1\\n\n"
         write(cin, "Hello2\n")
         @test readline(cout; keep=true) == "7:Hello2\\n\n"
 
         write(cin, "Hel")
-        UnixIO.@cerr C.tcdrain(cin.fd)
+        UnixIO.@cerr C.tcdrain(cin.stream.fd)
 
         # Even after draining and waiting, the client read() has not returned
         # because of canonical mode.
@@ -192,6 +198,8 @@ mktempdir() do d
 
     @info "readline() from socket with fragmented writes."
     UnixIO.open(`$binfile`; opts...) do cin, cout
+        cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+        cin=IOTraits.BaseIO(cin)
         write(cin, "Hello1\n")
         @test readline(cout; keep=true) == "7:Hello1\\n\n"
         write(cin, "Hello2\n")
@@ -237,6 +245,8 @@ mktempdir() do d
     binfile=joinpath(d, "tmp")
     UnixIO.system("gcc -o $binfile $cfile")
     UnixIO.ptopen(`$binfile`; opts...) do cin, cout
+        cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+        cin=IOTraits.BaseIO(cin)
         @test readline(cout; keep=true) == "Hello1\r\n"
         @test readline(cout; keep=true) == "Hello2\r\n"
         @test readline(cout; keep=true) == "Hello3"
@@ -252,6 +262,8 @@ bash = "echo -n 'Hel'               ;" *
        "sleep 1                     ;" *
        "echo -n '\nHello3'          ;"
 UnixIO.ptopen(`bash -c "$bash"`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     @test readline(cout) == "Hello1"
     @test readline(cout) == "Hello2"
     @test readline(cout) == "Hello3"
@@ -262,12 +274,14 @@ end
 
 @info "readline() from socket with fragmented packets."
 UnixIO.open(`cat`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
 
     write(cin, "Hello1\nHel")
     @test readline(cout) == "Hello1"
 
     # In socket mode, the partial line is in the fd buffer.
-    @test String(take!(copy(cout.buffer))) == "Hel"
+    @test String(take!(copy(cout.stream.buffer))) == "Hel"
 
     write(cin, "lo2")
     r = Ref{Any}(nothing)
@@ -287,6 +301,8 @@ end
 
 @info "readline() from pseudoterminal with fragmented writes (via cat)."
 UnixIO.ptopen(`cat`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     @sync begin
         @async begin
             write(cin, "Hello0\nHello1\nHel")
@@ -300,10 +316,10 @@ UnixIO.ptopen(`cat`; opts...) do cin, cout
         @test readline(cout; keep=true) == "Hello0\n"
         # In canonical mode, the partial "Hel" line is buffered by the OS
         # in cat's output buffer so only "Hello2\n" line is in the fd buffer.
-        @test bytesavailable(cout.buffer) == 7
-        @test String(take!(copy(cout.buffer))) == "Hello1\n"
+        @test bytesavailable(cout.stream.buffer) == 7
+        @test String(take!(copy(cout.stream.buffer))) == "Hello1\n"
         @test readline(cout; keep=true) == "Hello1\n"
-        @test bytesavailable(cout.buffer) == 0
+        @test bytesavailable(cout.stream.buffer) == 0
         @test readline(cout; keep=true) == "Hello2\n"
         @test readline(cout; keep=true) == "Hello3\n"
         # At end of transmission the partial line is returned:
@@ -315,6 +331,8 @@ end
 UnixIO.ptopen(`cat`; opts...) do cin, cout
         
     UnixIO.tcsetattr(a -> a.c_lflag = 0, cout) # not C.ICANON
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     
     @sync begin
         @async begin
@@ -330,7 +348,7 @@ UnixIO.ptopen(`cat`; opts...) do cin, cout
         @test readline(cout; keep=true) == "Hello0\n"
         @test readline(cout; keep=true) == "Hello1\n"
         # In non canonical mode, the partial line is in the fd buffer:
-        @test bytesavailable(cout.buffer) == 3
+        @test bytesavailable(cout.stream.buffer) == 3
         # `CEOF` and sends a line with no "\n" (e.g. like the "bash$ " prompt)
         @test readline(cout; keep=true) == "Hello2\x04Hello3\n"
         # At end of transmission the partial line is returned:
@@ -343,6 +361,8 @@ hexdump_output = "00000000  48 65 6c 6c 6f 0a 48 65  6c 6c 6f 0a              |H
 
 @info "Short hexdump via socketpair."
 p, out = UnixIO.open(`hexdump -C`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     write(cin, "Hello\nHello\n")
     close(cin)
     read(cout, String)
@@ -351,6 +371,8 @@ end
 
 @info "Short hexdump via pseudoterminal."
 p, out = UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     println(cin, "Hello")
     println(cin, "Hello")
     close(cin)
@@ -360,6 +382,8 @@ end
 
 @info "Short pseudoterminal hexdump, read before writet."
 p, out = UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     @sync begin
         @async begin
             println(cin, "Hello")
@@ -373,6 +397,8 @@ end
 
 @info "Short pseudoterminal hexdump, interleaved read/write."
 p, out = UnixIO.ptopen(`hexdump -C`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     @sync begin
         println(cin, "Hello")
         @async begin
@@ -388,6 +414,8 @@ end
 @info "Interactive bash script via pseudoterminal."
 #env = merge(ENV, Dict("TERM" => "dumb"))
 UnixIO.ptopen(`bash`; opts...) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
     ptdump(`bash`, cin, cout) do fin, fout
         # Wait for "bash-3.2$" prompt.
         while !contains(fin(), r"\$") end
@@ -413,6 +441,8 @@ end
 env = merge(ENV, Dict("TERM" => "dumb"))
 
 UnixIO.ptopen(`$(Base.julia_cmd()) --color=yes`; env=env) do cin, cout
+    cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
+    cin=IOTraits.BaseIO(cin)
 
     ptdump(Base.julia_cmd(), cin, cout) do fin, fout
 

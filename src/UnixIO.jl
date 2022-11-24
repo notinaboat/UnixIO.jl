@@ -137,8 +137,10 @@ mutable struct FD{D<:TransferDirection,T<:FDType} <: IOTraits.Stream
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
-    ready::Base.ThreadSynchronizer
-    closed::Base.ThreadSynchronizer
+    #ready::Base.ThreadSynchronizer  FIXME seperate lock for io interleaving vs poll/wait ???
+    #closed::Base.ThreadSynchronizer
+    ready::Base.GenericCondition{Base.ReentrantLock}
+    closed::Base.GenericCondition{Base.ReentrantLock}
     gothup::Bool
     extra::ImmutableDict{Symbol,Any}
 
@@ -151,8 +153,10 @@ mutable struct FD{D<:TransferDirection,T<:FDType} <: IOTraits.Stream
         new{D,_T}(RawFD(fd),
                   false,
                   0,
-                  Base.ThreadSynchronizer(),
-                  Base.ThreadSynchronizer(),
+                  #Base.ThreadSynchronizer(),
+                  #Base.ThreadSynchronizer(),
+                  Base.GenericCondition{Base.ReentrantLock}(),
+                  Base.GenericCondition{Base.ReentrantLock}(),
                   false,
                   ImmutableDict{Symbol,Any}())
     end
@@ -195,7 +199,9 @@ struct CanonicalMode   <: S_IFCHR end
 IOTraits._wait(fd::FD, ::WaitUsingEPoll; deadline=Inf) = wait_for_event(epoll_queue, fd; deadline)
 IOTraits._wait(fd::FD, ::WaitUsingPosixPoll; deadline=Inf) = wait_for_event(poll_queue, fd; deadline)
 
-IOTraits.bytes_remaining(fd::FD, ::UnknownTotalSize, ::Any) = fd.gothup ? 0 : nothing
+@db function  IOTraits.isfinished(fd::FD, ::UnknownTotalSize)
+    fd.gothup
+end
 
 function fdtype(fd)
 
@@ -352,7 +358,7 @@ IOTraits.CursorSupport(::Type{<:FD{In,<:File}}) = Seekable()
 
 IOTraits.Availability(::Type{<:FD{In,<:File}}) = AlwaysAvailable()
 IOTraits.Availability(::Type{<:FD{In,<:Stream}}) = PartiallyAvailable()
-
+IOTraits.Availability(::Type{<:FD{In,Pseudoterminal}}) = UnknownAvailability()
 
 
 README"## Opening and Closing Unix Files."
@@ -581,7 +587,8 @@ tiocgwinsz(tty::DuplexIO) = tiocgwinsz(tty.out)
     nothing
 end
 
-@db function Base.wait(fd::FD{In,Pseudoterminal})
+@db function IOTraits._wait(fd::FD{In,Pseudoterminal},
+        wm::T; deadline=Inf) where T <: typeof(WaitingMechanism(FD{In,Pseudoterminal}))
     assert_havelock(fd)
 
     process = fd.extra[:pt_client]
@@ -591,13 +598,16 @@ end
             @dblock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
         end
         try
-            event = @invoke wait(fd::FD{In})
-            if event != :poll_isalive
-                return event
+            event = @invoke IOTraits._wait(fd::FD{In}, wm::T; deadline)
+            if event != :poll_isalive                                ;@db event
+                @db return event
             end
             #FIXME no need to poll for PidFD?
-            if !isalive(check(process))
-                return nothing
+            @db process
+            @db fd
+            if !isalive(check(process))                      ;@db event process
+                fd.gothup = true # FIXME ?
+                @db return nothing
             end                                              ;@db event process
         finally
             close(timer)

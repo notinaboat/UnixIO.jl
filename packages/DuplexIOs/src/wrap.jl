@@ -1,3 +1,15 @@
+
+
+# Work-around for https://github.com/JuliaLang/julia/issues/19311
+function _unique(v)
+   result = []
+   for x in v
+       any(i->isequal(x, i), result) || push!(result, x)
+   end
+   result
+end
+
+
 """
 Types of arg 2 for methods of f.
 """
@@ -5,7 +17,7 @@ arg2_types(f) = (m.nargs < 3 || m.sig isa UnionAll ? missing :
                  m.sig.types[3] == Vararg          ? missing :
                                                      m.sig.types[3]
                  for m in methods(f)
-                ) |> skipmissing |> unique
+                ) |> skipmissing |> _unique
 
 
 """

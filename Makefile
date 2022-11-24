@@ -1,5 +1,5 @@
 PACKAGE := UnixIO
-export JULIA_PKG_OFFLINE = true
+#export JULIA_PKG_OFFLINE = true
 export JULIA_PROJECT = $(CURDIR)
 export JULIA_DEPOT_PATH = $(CURDIR)/../jl_depot
 export JULIA_NUM_THREADS = 8
