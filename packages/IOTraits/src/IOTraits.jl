@@ -304,19 +304,154 @@ FIXME
    (i.e. wrap with buffered stream).
 
 
-### Notes
+### Stream interface Functions
 
-TODO:
-Note on command/query separation.
-Refer to example below. If `bytesavailable(s.buffer)` does an internal
-buffre read then the `position(s.stream)` value will be wrong.
+#### Stream Data Transfer Core Functions
+
+--------------------------------------------------------------------------------
+Function                       Description
+----------------------------   -------------------------------------------------
+`transfer(stream, buf, [n])`   Transfer at least one and at most `n` items
+                               between `stream` and `buf`.
+                               Return the number of items transferred.
+                               See `TransferDirection`, `FromBufferInterface`
+                               and `ToBufferInterface` traits.
+
+`transfer_available(s, b, n)`    Transfer at most `n` items between `s` and `b`.
+
+`wait(stream; timeout=Inf)`    Wait until `stream` is ready to transfer data.
+                               `transfer` calls `wait` if there are no items
+                               available.
+                               See `WaitingMechanism` trait and
+                               `set_poll_mechanism`.
+
+`lock(stream)`                 Acquire a task-exclusive lock on `stream`.
+                               A `Stream` must be locked before `wait` is
+                               called.
+
+`unlock(stream)`               Reverse the effect of `lock`.
+
+`max_transfer_size(stream)`    
+                               See `TransferSize` trait.
+--------------------------------------------------------------------------------
+
+
+#### Stream Data Transfer Conveniance Methods
+
+--------------------------------------------------------------------------------
+Function                              Description
+------------------------------------- ------------------------------------------
+`transfer(...; timeout=Inf)`          Wait `timeout` seconds if no items
+                                      are available to transfer.
+
+`transfer(stream => buf)`             Transfer data from `stream` to `buf`.
+
+`transfer(buf => stream)`             Transfer data from `buf` to `stream`.
+
+`transfer(stream, buf; start=i)`      Transfer data starting at `buf` index `i`.
+
+`transfer(stream, buf; start=(i,j))`  Transfer data starting at
+                                      `stream` index `i` and `buf` index `j`.
+                                      See `StreamIndexing` trait.
+--------------------------------------------------------------------------------
+
+
+#### Stream Lifecycle State Functions
+
+A `Stream` begins its life in "connected" and "open" state.
+A `Stream` might be spontaneously "disconnected" by an external event
+(e.g. when a peer a hangs up a connection).
+A `Stream` can only be "closed" by the `close` function.
+
+
+--------------------------------------------------------------------------------
+Function                   Description
+-------------------------- -----------------------------------------------------
+`isconnected(stream)`      True if the underlying data source/sink is
+                           still available through `stream`.
+
+`isopen(stream)`           True unless `close(stream)` is called.
+
+`close(stream)`            Signal that the program is finished with `stream`.
+                           If stream is an output, call `flush(stream)`.
+                           Disconnect the underlying data source/sink. \
+                           After `close` is called, `isopen` and `isconnected`
+                           are both False. \
+                           Most `Stream` funtions have `isopen(stream)` as
+                           a precondition, so calling other stream functions
+                           after `close` is likely to cause an exception.
+--------------------------------------------------------------------------------
+
+
+#### Input Stream Query Functions
+
+--------------------------------------------------------------------------------
+Function                        Description
+------------------------------- ------------------------------------------------
+`length_is_known(stream)`       True if the total number of bytes available from
+                                the stream is known.
+                                See `TotalSize` trait.
+
+`length(stream)`                Total number of bytes available from the stream.
+                                `missing` if unknown.
+
+`position_is_known(stream)`     True if `position(stream)` is known.
+                                See `CursorSupport` trait.
+
+`position(stream)`              Byte position relative to start of `stream`.
+                                The first byte in `position` zero.
+                                `missing` if unknown.
+
+`bytesremaining(stream)`        Number of bytes remaining to be transferred from
+                                the stream. 
+                                `missing` if unknown.
+                                If `length_is_known` this is the same as
+                                `length(stream) - position(stream)`.
+
+`isfinished(stream)`            True if there are no bytes remaining to be
+                                transferred from the stream. \
+                                If `length_is_known` them this is the same as
+                                `bytesremaining(stream) == 0`, otherwise
+                                `isfinished` is only true when `isconnected`
+                                is false.
+
+`availability_is_known(stream)` True if the number of bytes immediately
+                                available for transfer is known.
+                                See `Availability` trait.
+
+`bytesavailable(stream)`        Number of bytes immediately ready for transfer.
+                                `missing` if unknown.
+                                See `TransferSizeMechanism` trait.
+--------------------------------------------------------------------------------
+
+Note that the query functions above are all side-effect free.
+
+Failure to ensure that query methods for all stream types are side-effect free
+can lead to subtle bugs.
+
+Consider the following method:
 
 ```julia
 position(s::BufferedInput) = position(s.stream) - bytesavailable(s.buffer)
 ```
 
+The current position is the number of bytes that have been taken from the
+stream, less the number of bytes buffered but not yet transferred to the user.
+Imagine that `bytesavailable(s.buffer)` was designed to refill the buffer 
+from the stream on demand before returning the number of buffered bytes.
+The `position(s::BufferedInput)` method would return an invalid result because
+the value of `position(s.stream)` is altered by the side-effect in
+`bytesavailable(s.buffer)`.
+
+
+
+### Notes
+
 TODO:
 Note about back-pressure, the problem with reading too fast into a big buffer
+
+
+### Methods of Base Functions for Streams
 
 
 ### Methods of Base Functions for Streams
@@ -359,7 +494,7 @@ end
 
 @db function Base.length(s::Stream)
     @require isopen(s)
-    @require total_size_is_known(s)
+    @require length_is_known(s)
     s = unwrap(s)
     _length(s, TotalSizeMechanism(s))
 end
@@ -577,20 +712,22 @@ A transfer to a `URI` creates a new resource or replaces the resource
 (i.e. HTTP PUT semantics).
 """
 @db function transfer(stream, buf, n::Union{Integer,Missing}=missing;
-                  start::Union{Integer, NTuple{2,Integer}}=UInt(1),
-                  deadline=Inf, timeout=Inf)
+                      start::Union{Integer, NTuple{2,Integer}}=UInt(1),
+                      deadline=Inf, timeout=Inf)
 
     @require isopen(stream)
     @require ismissing(n) || n > 0
     @require all(start .> 0)               ;@db typeof(stream) deadline timeout
-    n = transfer(stream, buf, n, start, deadline_or_timeout(deadline, timeout))
+    n = transfer_imp(stream, buf, n, start, deadline_or_timeout(deadline, timeout))
     transfer_complete(stream, buf, n)
     @ensure n isa UInt
     @db return n
 end
 
 deadline_or_timeout(deadline, timeout) =
-    Float64((timeout == Inf) ? deadline : (time() + timeout))
+    Float64((timeout == 0) ?   0 :
+            (timeout == Inf) ? deadline :
+                               (time() + timeout))
 
 transfer(a...; timeout) = transfer(a...; deadline=time() + Float64(timeout))
 
@@ -651,7 +788,7 @@ to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
 that the second transfer adheres to the specified deadline.
 
 """
-@db function transfer(stream, buffer, n, start, deadline::Float64)
+@db function transfer_imp(stream, buffer, n, start, deadline::Float64)
 
     if Availability(stream) == UnknownAvailability() &&
     ioelsize(buffer) != 1 &&
@@ -662,6 +799,9 @@ that the second transfer adheres to the specified deadline.
     r = transfer_available(stream, buffer, n, start)
     if r > 0 || iszero(deadline)
         @db return r
+    end
+    if deadline == 0.0
+        @db return 0
     end
     wait_for_transfer(stream, WaitingMechanism(stream),
                       buffer, n, start, deadline)
@@ -989,7 +1129,7 @@ Total Size              Description
 TotalSize(x) = TotalSize(typeof(x))
 TotalSize(T::Type) = is_proxy(T) ? TotalSize(unwrap(T)) :
                                    UnknownTotalSize()
-total_size_is_known(x) = TotalSize(x) isa KnownTotalSize
+length_is_known(x) = TotalSize(x) isa KnownTotalSize
 
 
 abstract type SizeMechanism end
@@ -1080,12 +1220,12 @@ The `Availability` trait describes when data is available from a stream.
 Availability            Description
 ----------------------- --------------------------------------------------------
 `AlwaysAvailable()`     Data is always immediately available.
-                        i.e. `bytesavailable` === `bytes_remaining`.
+                        i.e. `bytesavailable` === `bytesremaining`.
                         Applicable to some device files (dev/event, /dev/zero).
                         Applicable to local disk files.
 
 `PartiallyAvailable()`  Some data may be immediately available from a buffer,
-                        but `bytesavailable` can be less than `bytes_remaining`.
+                        but `bytesavailable` can be less than `bytesremaining`.
                         `bytesavailable` may be 0 (e.g. when a buffer is empty)
                         even if a subsequent transfer would yeild more data.
 
@@ -1107,7 +1247,7 @@ availability_is_known(x) = !availability_is_unknown(x)
 end
 
 @db function _bytesavailable(s, ::AlwaysAvailable, ::UnlimitedTransferSize)
-    bytes_remaining(s)
+    bytesremaining(s)
 end
 
 @db function _bytesavailable(s, ::AlwaysAvailable, ::FixedTransferSize)
@@ -1186,16 +1326,16 @@ For example, the methods for `UsingPtr` and `UsingIndex` below work for
 both input and output. (Another consideration is supporting interfaces with
 `IODirection` `Exchange`).
 """
-@db function transfer_available(stream, buf, n, start)
-    transfer_available(stream, TransferDirection(stream), buf, n, start)
+@db function transfer_available(stream, buf, n, start=UInt(1))
+    transfer_available_imp(stream, TransferDirection(stream), buf, n, start)
 end
 
-@db function transfer_available(stream, ::In, buf, n, start)
-    transfer_available(stream, In(), buf, ToBufferInterface(buf), n, start)
+@db function transfer_available_imp(stream, ::In, buf, n, start)
+    transfer_available_imp(stream, In(), buf, ToBufferInterface(buf), n, start)
 end
 
-@db function transfer_available(stream, ::Out, buf, n, start)
-    transfer_available(stream, Out(), buf, FromBufferInterface(buf), n, start)
+@db function transfer_available_imp(stream, ::Out, buf, n, start)
+    transfer_available_imp(stream, Out(), buf, FromBufferInterface(buf), n, start)
 end
 
 
@@ -1207,7 +1347,7 @@ The specialised methods for various Buffer Interfaces eventually
 call this this IsBytePtr method, which in turn calls the low level
 `unsafe_transfer` implementation methods.
 """
-@db function transfer_available(stream, direction, buf::Ptr{UInt8}, ::IsBytePtr,
+@db function transfer_available_imp(stream, direction, buf::Ptr{UInt8}, ::IsBytePtr,
                                 n::UInt, start::UInt)
     r = unsafe_transfer(stream, direction, buf + (start-1), n)
     @ensure r isa UInt
@@ -1221,7 +1361,7 @@ It returns zero if there are not enough bytes available for a whole item.
 For streams with Unknown Transfer Size the requested transfer is attempted 
 but an error is thrown if a partial item is transferred.
 """
-@db function transfer_available(stream, direction, buf, ::IsItemPtr,
+@db function transfer_available_imp(stream, direction, buf, ::IsItemPtr,
                                 n::UInt, start::UInt)
     sz = ioelsize(buf)
     @assert sz > 1
@@ -1233,7 +1373,7 @@ but an error is thrown if a partial item is transferred.
     buf = Ptr{UInt8}(buf)
     start = 1 + ((start-1) * sz)
 
-    r = transfer_available(stream, direction, buf, IsBytePtr(), n * sz, start)
+    r = transfer_available_imp(stream, direction, buf, IsBytePtr(), n * sz, start)
     @ensure r isa UInt
 
     if r % sz != 0
@@ -1296,20 +1436,20 @@ If `n` is missing, use the whole length of the buffer.
 
 After this both `n` and `start` are always `UInt`s.
 """
-@db function transfer_available(stream, direction::AnyDirection,
+@db function transfer_available_imp(stream, direction::AnyDirection,
                                 buf, interface::Union{UsingPtr, UsingIndex},
                                 n::Missing, start::UInt)
     @require length(buf) > 0
     n = length(buf) - (start - 1)
-    transfer_available(stream, direction, buf, interface, UInt(n), start)
+    transfer_available_imp(stream, direction, buf, interface, UInt(n), start)
 end
 
-@db function transfer_available(stream, direction, buf, interface, n::Missing, start::UInt)
-    transfer_available(stream, direction, buf, interface, typemax(UInt), start)
+@db function transfer_available_imp(stream, direction, buf, interface, n::Missing, start::UInt)
+    transfer_available_imp(stream, direction, buf, interface, typemax(UInt), start)
 end
 
-@db function transfer_available(stream, direction, buf, interface, n::Integer, start::Integer)
-    transfer_available(stream, direction, buf, interface, UInt(n), UInt(start))
+@db function transfer_available_imp(stream, direction, buf, interface, n::Integer, start::Integer)
+    transfer_available_imp(stream, direction, buf, interface, UInt(n), UInt(start))
 end
 
 
@@ -1317,13 +1457,13 @@ idoc"""
 If the buffer is pointer-compatible convert it to a pointer.
 `unsafe_transfer` function.
 """
-@db function transfer_available(stream, ::AnyDirection, buf, ::UsingPtr,
+@db function transfer_available_imp(stream, ::AnyDirection, buf, ::UsingPtr,
                                 n::UInt, start::UInt)
     checkbounds(buf, (start-1) + n)
     GC.@preserve buf transfer_available(stream, pointer(buf, start), n, 1)
 end
 
-@db function transfer_available(stream, ::AnyDirection, buf::Ref, ::UsingPtr,
+@db function transfer_available_imp(stream, ::AnyDirection, buf::Ref, ::UsingPtr,
                                 n::UInt, start::UInt)
     p = Base.unsafe_convert(Ptr{eltype(buf)}, buf)
     GC.@preserve buf transfer_available(stream, p, n, 1)
@@ -1333,7 +1473,7 @@ end
 idoc"""
 If the buffer is not pointer-compatible, transfer one item at a time.
 """
-@db function transfer_available(stream, d::AnyDirection, buf, ::UsingIndex,
+@db function transfer_available_imp(stream, d::AnyDirection, buf, ::UsingIndex,
                                 n::UInt, start::UInt)
     T = ioeltype(buf)
     x = Vector{T}(undef, 1)
@@ -1361,7 +1501,7 @@ idoc"""
 Iterate over `buf` (skip items until `start` index is reached).
 Transfer each item one at a time.
 """
-@db function transfer_available(stream, ::Out, buf, ::FromIteration,
+@db function transfer_available_imp(stream, ::Out, buf, ::FromIteration,
                                 n::UInt, start::UInt)
     count::UInt = 0
     for x in buf
@@ -1387,11 +1527,11 @@ for (T, f) in [ToPut => put!,
               ToPush => push!,
               FromPop => pop!,
               FromTake => take!]
-    eval(:(transfer_available(s, dir, buf, ::$T, n::UInt, start::UInt) =
-           transfer_available(s, dir, buf,   $f, n, start)))
+    eval(:(transfer_available_imp(s, dir, buf, ::$T, n::UInt, start::UInt) =
+           transfer_available_imp(s, dir, buf,   $f, n, start)))
 end
 
-@db function transfer_available(stream, d::TransferDirection, buf, f::Function,
+@db function transfer_available_imp(stream, d::TransferDirection, buf, f::Function,
                                 n::UInt, start::UInt)
     @require start == 1
     T = ioeltype(buf)
@@ -1414,7 +1554,7 @@ end
 
 ## Transfer Specialisations for IO Buffers
 
-@db function transfer_available(s1, ::In, s2, ::ToStream,
+@db function transfer_available_imp(s1, ::In, s2, ::ToStream,
                                 n::UInt, start::UInt)
     buf = Vector{UInt8}(undef, min(n, max(default_buffer_size(s1),
                                           default_buffer_size(s2))))
@@ -1432,14 +1572,14 @@ end
     return count
 end
 
-@db function transfer_available(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt)
-    transfer_available(s2, In(), s1, ToStream(), n, start)
+@db function transfer_available_imp(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt)
+    transfer_available_imp(s2, In(), s1, ToStream(), n, start)
 end
 
-@db function transfer_available(s, direction, io, ::Union{ToIO,FromIO},
+@db function transfer_available_imp(s, direction, io, ::Union{ToIO,FromIO},
                             n::UInt, start::UInt)
     s2 = BaseIOStream{typeof(io), direction == In() ? Out : In}(io)
-    transfer_available(s, direction, s2, n, start)
+    transfer_available_imp(s, direction, s2, n, start)
 end
 
 
@@ -1643,16 +1783,16 @@ unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
 """
 How many bytes remain before the end of `stream`?
 """
-@db function bytes_remaining(s::Stream)
+@db function bytesremaining(s::Stream)
     @require is_input(s)
     @require isopen(s)
-    bytes_remaining(s, TotalSize(s), CursorSupport(s))
+    bytesremaining(s, TotalSize(s), CursorSupport(s))
 end
 
-bytes_remaining(s, ::UnknownTotalSize, ::Any) = missing
-bytes_remaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
+bytesremaining(s, ::UnknownTotalSize, ::Any) = missing
+bytesremaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
 
-@db function bytes_remaining(s, ::KnownTotalSize, ::AbstractHasPosition)
+@db function bytesremaining(s, ::KnownTotalSize, ::AbstractHasPosition)
     length(s) - position(s)
 end
 
@@ -1660,7 +1800,27 @@ end
 #   - first isproxy/unwrap
 #   - then apply traits
 
+#Classes of method:
+#   - Conveniance interfcae method
+#       - transforms inputs, implements default values
+#       - no side-effects other than calling a core method
+#   - Main interfcae method
+#       - checks preconditions
+#       - does not call other methods of same function
+#       - calls Main imeplemetation method
+#       - checks postcondition
+#   - Main implementation method
+#       - different non-exported name to interface method
+#       - implements trait-based fan-out to other implenentation methods
+#   
+
+
+
+
 #FIXME rename isfinished -> isconnected ???
+
+
+isconnected(s::Stream) = true
 
 @db function isfinished(s::Stream)
     @require isopen(s)
@@ -1669,8 +1829,8 @@ end
                   isfinished(s, TotalSize(s))
 end
 
-isfinished(s, ::UnknownTotalSize) = false
-isfinished(s, ::AnyTotalSize) = bytes_remaining(s) == 0
+isfinished(s, ::UnknownTotalSize) = !isconnected(s)
+isfinished(s, ::AnyTotalSize) = bytesremaining(s) == 0
 
 
 """
@@ -1702,8 +1862,8 @@ function readbyte(stream, ::LowTransferCost; deadline)
               "Reading one byte at a time may not be efficient." *
               "Consider using `readline` instead."
     end
-    x = Vector{UInt8}(undef, 1)
-    n = GC.@preserve x transfer(stream => pointer(x), 1; deadline)
+    x = Ref{UInt8}()
+    n = transfer(stream => x, 1; deadline)
     n == 1 || return nothing
     return x[]
 end
@@ -1983,7 +2143,7 @@ bytes available. Note that `refill_internal_buffer` may still not yield
 enough bytes. However, calling it here ensures that the enclosing retry
 loop will eventually get the data it needs.
 """
-@db function transfer_available(s::BufferedInput, direction,
+@db function transfer_available_imp(s::BufferedInput, direction,
                                 buf, interface::IsItemPtr,
                                 n::UInt, start::UInt)
     @assert ioelsize(buf) > 1
@@ -1993,7 +2153,7 @@ loop will eventually get the data it needs.
         refill_internal_buffer(s; deadline=0) # FIXME ?)
     end
 
-    @invoke transfer_available(s::Stream, direction,
+    @invoke transfer_available_imp(s::Stream, direction,
                                buf, interface::IsItemPtr,
                                n::UInt, start::UInt)
 end
@@ -2123,7 +2283,7 @@ end
     end
     @db deadline
     # VV handled by isfinished ?
-#    if total_size_is_known(s) && bytes_remaining(s) == 0
+#    if length_is_known(s) && bytesremaining(s) == 0
 #        @db return true
 #    end
     while isopen(s) && !isfinished(s) && time() < deadline

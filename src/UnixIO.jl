@@ -199,8 +199,8 @@ struct CanonicalMode   <: S_IFCHR end
 IOTraits._wait(fd::FD, ::WaitUsingEPoll; deadline=Inf) = wait_for_event(epoll_queue, fd; deadline)
 IOTraits._wait(fd::FD, ::WaitUsingPosixPoll; deadline=Inf) = wait_for_event(poll_queue, fd; deadline)
 
-@db function  IOTraits.isfinished(fd::FD, ::UnknownTotalSize)
-    fd.gothup
+@db function  IOTraits.isconnected(fd::FD)
+    !fd.gothup
 end
 
 function fdtype(fd)
