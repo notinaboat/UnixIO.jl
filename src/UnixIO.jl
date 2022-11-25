@@ -305,7 +305,7 @@ Base.assert_havelock(fd::FD) = Base.assert_havelock(fd.ready)
 Base.convert(::Type{Cint}, fd::FD) = Base.cconvert(Cint, fd.fd)
 Base.convert(::Type{Cuint}, fd::FD) = Cuint(convert(Cint, fd))
 Base.convert(::Type{RawFD}, fd::FD) = RawFD(fd.fd)
-Mmap.gethandle(fd::FD) = RawFD(fd.fd)
+#Mmap.gethandle(fd::FD) = RawFD(fd.fd)
 
 include("ReadFD.jl")
 include("WriteFD.jl")

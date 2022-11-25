@@ -14,7 +14,7 @@ end
 Types of arg 2 for methods of f.
 """
 arg2_types(f) = (m.nargs < 3 || m.sig isa UnionAll ? missing :
-                 m.sig.types[3] == Vararg          ? missing :
+                 typeof(m.sig.types[3]) == Core.TypeofVararg ? missing :
                                                      m.sig.types[3]
                  for m in methods(f)
                 ) |> skipmissing |> _unique
