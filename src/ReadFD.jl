@@ -57,7 +57,10 @@ end
 shutdown(fd::FD{In}) = shutdown(fd, C.SHUT_RD)
 
 @static if isdefined(Base, :shutdown)
-    Base.shutdown(fd::FD{In}) = UnixIO.shutdown(fd, C.SHUT_RD)
+    @db function Base.shutdown(fd::FD{In}) 
+        @db_not_tested
+        UnixIO.shutdown(fd, C.SHUT_RD)
+    end
 end
 
 #=
@@ -73,6 +76,7 @@ Base.bytesavailable(fd::FD, ::NoSizeMechanism) = bytesavailable(fd.buffer)
 =#
 
 @db 1 function IOTraits._bytesavailable(fd::FD, ::SupportsStatSize)
+    @db_not_tested
     pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
     if pos == -1
         return 0

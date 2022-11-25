@@ -2,6 +2,7 @@
 
 
 function fstat(fd)
+    @db_not_tested
     s = Ref(C.stat64())
 #    @cerr C.fstat64(fd, s)
      C.__fxstat64(0, fd, s)

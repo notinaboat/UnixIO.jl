@@ -241,7 +241,7 @@ IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
     IOTraits.preferred_poll_mechanism
 
 
-    # FIXME unify with open() ?
+# FIXME unify with open() ?
 @db 3 function FD(fd, flags = fcntl_getfl(fd); events=nothing)
     @nospecialize
 
@@ -861,6 +861,7 @@ String containing result of shell command. e.g.
     V: "0.1.0"
 """
 macro sh_str(s)
+    @assert false "not tested?"
     s = Meta.parse("\"$s\"")
     cmd = `bash -c "$s"`
     esc(:($cmd |> read |> String |> chomp))
@@ -1054,8 +1055,10 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
         if r == -1
             err = errno()
             if err == C.EINTR                                    ;@db 3 "EINTR"
+                @db_not_tested :a
                 continue
             elseif err == C.ECHILD
+                @db_not_tested :b
                 @db return nothing "ECHILD (No child process)"
             end
             systemerror(string("C.waitpid($(p.pid))"), err)
@@ -1067,14 +1070,17 @@ See [waitpid(3)](https://man7.org/linux/man-pages/man3/waitpid.3.html)
             elseif C.WIFSTOPPED(s)
                 p.stopped = true
                 p.signal = WSTOPSIG(s)
+                @db_not_tested :c
             elseif C.WIFCONTINUED(s)
                 p.stopped = false
                 p.signal = nothing
                 @assert p.exit_status == nothing
+                @db_not_tested :d
             elseif C.WIFSIGNALED(s)
                 p.signal = C.WTERMSIG(s)
             else
                 @error "Unhandedl termination status: $s" p
+                @db_not_tested :f
             end
             if !p.stopped
                 @dblock processes_lock delete!(processes, p)
@@ -1152,6 +1158,8 @@ end
 
 
 @db function waitpidfd(p::Process; deadline::Float64=Inf)
+
+    @db_not_tested
 
     waitpid(p; deadline=0.0)
 
@@ -1347,6 +1355,8 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
 @db function fork_and_exec(cmd::Cmd, infd::RawFD, outfd::RawFD, errfd::RawFD;
                            env=nothing)
     @nospecialize
+
+    @db_not_tested
 
     GC.@preserve cmd begin
 

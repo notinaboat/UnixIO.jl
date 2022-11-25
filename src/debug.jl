@@ -594,6 +594,15 @@ macro db_unindent(n)
 end
 
 
+macro db_not_tested(ex=true)
+#    DEBUG_LEVEL > 0 || return :()
+    lineno = debug_lineno_str(__source__)
+    esc(:(@assert ($ex == false) "Reached code marked as not tested: " *
+                                 $(string(ex)) * " " *
+                                 $lineno
+    ))
+end
+
 
 # Colors.
 

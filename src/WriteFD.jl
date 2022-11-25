@@ -20,6 +20,7 @@ Base.isreadable(::FD{Out}) = false
 
 
 @db 1 function Base.unsafe_write(fd::FD{Out}, buf::Ptr{UInt8}, nbytes::UInt)
+    @db_not_tested
     @require !fd.isclosed 
     nwritten = 0                   ;if nbytes < 100
                                         @db 1 repr(unsafe_string(buf, nbytes))
