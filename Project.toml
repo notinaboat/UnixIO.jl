@@ -1,12 +1,11 @@
 name = "UnixIO"
 uuid = "86724fa0-f1e0-464a-a4b2-d754f3ca1f13"
 authors = ["notinaboat <notinaboat@icloud.com>"]
-version = "0.3.2"
+version = "0.3.6"
 
 [deps]
 AsyncLog = "b136e949-d42a-4c20-998e-69d09231b44a"
 CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
-CInclude = "122a1be9-ad55-43c7-9e7c-9e9d38f5ac3b"
 CodeTracking = "da1fd8a2-8d9e-5ec2-8556-3022fb5608a2"
 Crayons = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
@@ -22,8 +21,9 @@ REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 ReadmeDocs = "c63066b3-de92-487d-9da7-7c375a07912b"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 TextWrap = "b718987f-49a8-5099-9789-dcd902bef87d"
-TypeTree = "04da0e3b-1cad-4b2c-a963-fc1602baf1af"
 UnixIOHeaders = "b158d995-0785-490a-9245-6a3aff8d8d72"
 
 [compat]
-julia = "^1.5.2"
+IOTraits = "0.3.3"
+UnixIOHeaders = ">= 0.2.0"
+julia = "^1.6.0"

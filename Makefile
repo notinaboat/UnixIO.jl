@@ -40,8 +40,7 @@ packages/IOTraits/README.md: packages/IOTraits/src/IOTraits.jl.md
 #	$(JL) -e "using IOTraits; IOTraits.dump_info()" >> $@.tmp
 	mv $@.tmp $@
 
-JL := ln -sf Manifest.toml.1.6 Manifest.toml; julia
-JL15 := ln -sf Manifest.toml.1.5 Manifest.toml; julia15
+JL := julia18
 
 .PHONY: README.md
 README.md:
@@ -56,9 +55,6 @@ README.md:
 test:
 	$(JL) test/runtests.jl
 
-test15:
-	$(JL15) test/runtests.jl
-
 testpt:
 	$(JL) test/pseudoterminal.jl
 
@@ -67,9 +63,6 @@ jl:
 
 revise:
 	$(JL) -i -e "using Revise; using $(PACKAGE)"
-
-jl15:
-	$(JL15)
 
 jlenv:
 	$(JL)

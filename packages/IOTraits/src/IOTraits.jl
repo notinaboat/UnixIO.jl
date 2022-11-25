@@ -898,6 +898,7 @@ const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
 _wait(x, ::WaitBySleeping; deadline=Inf) = sleep(0.1)
 
 
+@static if VERSION > v"1.6"
 """
 ## Preferred Polling Mechanism
 
@@ -935,6 +936,9 @@ poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
 
 const preferred_poll_mechanism =
     poll_mechanism(@load_preference("waiting_mechanism"))
+else
+const preferred_poll_mechanism = default_poll_mechanism
+end
 
 
 
