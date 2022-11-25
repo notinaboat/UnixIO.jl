@@ -585,6 +585,7 @@ tiocgwinsz(tty::DuplexIO) = tiocgwinsz(tty.out)
     nothing
 end
 
+
 @db function IOTraits._wait(fd::FD{In,Pseudoterminal},
         wm::T; deadline=Inf) where T <: typeof(WaitingMechanism(FD{In,Pseudoterminal}))
     assert_havelock(fd)
@@ -658,47 +659,13 @@ See [shutdown(2)](https://man7.org/linux/man-pages/man2/shutdown.2.html)
           C.shutdown(fd, how))
 end
 
+shutdown(fd::FD{Out}) = shutdown(fd, C.SHUT_WR)
+shutdown(fd::FD{In}) = shutdown(fd, C.SHUT_RD)
 
 
 README"## Reading from Unix Files."
 
 
-#=
-@doc README"""
-### `UnixIO.read` -- Read bytes into a buffer.
-
-    UnixIO.read(fd, buf, [count=length(buf)];
-                [timeout=Inf] ) -> number of bytes read
-
-Attempt to read up to count bytes from file descriptor `fd`
-into the buffer starting at `buf`.
-See [read(2)](https://man7.org/linux/man-pages/man2/read.2.html)
-"""
-@db 2 function read(fd::FD{In}, buf::Ptr{UInt8}, count::Csize_t;
-                    timeout=fd.timeout)
-
-    # First read from buffer.
-    n = bytesavailable(fd.buffer)
-    if n > 0                                          ;@db 2 "read from buffer"
-        n = min(n, count)
-        unsafe_read(fd.buffer, buf, n)
-    end
-
-    # Then read from file.
-    if count > n
-        n += @with_timeout(fd, timeout, transfer(fd, buf+n, count-n))
-    end
-    @ensure n <= count
-    @db 2 return n
-end
-
-@db 2 function read(fd::FD, v::AbstractVector{UInt8},
-                    index=1, count=length(v)-(index-1); kw...)
-    checkbounds(v, index + count - 1)
-    buf = pointer(v, index)
-    @db 2 return GC.@preserve v read(fd, buf, Csize_t(count); kw...)
-end
-=#
 
 
 """
@@ -706,15 +673,14 @@ Read or write (FD{In} or FD{Out}) up to `count` bytes to or from `buf`.
 Retry on `C.EINTR`.
 Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
 """
-@inline @db 2 function IOTraits.unsafe_transfer(fd::FD,
-                                                dir::IOTraits.AnyDirection,
-                                                buf::Ptr{UInt8},
-                                                count::UInt)
+@inline @db 2 function IOTraits.unsafe_transfer!(fd::FD,
+                                                 buf::Ptr{UInt8},
+                                                 count::UInt)
     @require !fd.isclosed
     @require count > 0
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR),
-                  raw_transfer(fd, dir, buf, Csize_t(count)))
+                  raw_transfer(fd, TransferDirection(fd), buf, Csize_t(count)))
         n != -1 || @db 2 n errno() errname(errno())
         if n == -1
             @assert errno() == C.EAGAIN
@@ -726,7 +692,7 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
 end
 
 raw_transfer(fd, ::Out, buf, count) = C.write(fd, buf, count)
-raw_transfer(fd, ::In,  buf, count) =  C.read(fd, buf, count)
+raw_transfer(fd, ::In,  buf, count) = C.read(fd, buf, count)
 
 
 
@@ -917,8 +883,8 @@ julia> UnixIO.open(`hexdump -C`) do cmdin, cmdout
 0000000c
 ```
 """
-@db function open(f, cmd::Cmd; capture_stderr=false, env=nothing, kw...)
-    process = socketpair_spawn(cmd; env, capture_stderr)
+@db function open(f, cmd::Cmd; capture_stderr=false, env=nothing, fork=false, kw...)
+    process = socketpair_spawn(cmd; env, capture_stderr, fork)
     run_cmd_function(f, cmd, process; kw...)
 end
 
@@ -1014,7 +980,7 @@ end
 @db function read(cmd::Cmd; timeout=Inf, kw...)
     r = open(cmd; kw...) do cmdin, cmdout
         shutdown(cmdin)
-        readall(cmdout; timeout)
+        readall!(cmdout; timeout)
     end
     @db return r
 end
@@ -1247,11 +1213,11 @@ end
 end
 
 
-@db 3 function spawn_process(cmd, infd, outfd=infd, errfd=outfd; kw...)
-    if true #Sys.isapple
-        posix_spawn(cmd, infd, outfd, errfd; kw...)
-    else
+@db 3 function spawn_process(cmd, infd, outfd=infd, errfd=outfd; fork=false, kw...)
+    if fork
         fork_and_exec(cmd, infd, outfd, errfd; kw...)
+    else
+        posix_spawn(cmd, infd, outfd, errfd; kw...)
     end
 end
 
@@ -1353,8 +1319,6 @@ Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
 @db function fork_and_exec(cmd::Cmd, infd::RawFD, outfd::RawFD, errfd::RawFD;
                            env=nothing)
     @nospecialize
-
-    @db_not_tested
 
     GC.@preserve cmd begin
 

@@ -69,7 +69,7 @@ to various aspects of IO and to see where it leads.
 
 ## Overview
 
-The IOTraits interface is built around the function `transfer(stream, buffer)`.
+The IOTraits interface is built around the function `transfer!(stream, buffer)`.
 This function transfers data between a stream and a buffer.
 
 Traits are used to specify the behaviour of the stream and the buffer.
@@ -204,7 +204,7 @@ The IOTraits interface attempts to limit the number of behavioural permutations
 as much as possible by choosing a default behaviour for each aspect and
 supporting other behaviours only by addition of clean wrapper layers.
 
-**Allocation:** The `transfer` function never allocates buffers or resizes buffers
+**Allocation:** The `transfer!` function never allocates buffers or resizes buffers
 it simply transfers bytes to or from the buffer provided. Exceptions to this
 rule are possible through the [Buffer Interface Traits](#buffer-interface-traits)
 [^AS1]. The interface aims to support implementations that wish to avoid
@@ -216,24 +216,24 @@ in wrapper layers as needed.
 [^AS1]: e.g. if `ToBufferInterface(buffer) == ToPush()` data is pushed into the
 buffer, which may lead to resizing.
 
-**Termination:** The `transfer` function is specified to "transfer at most `n`
+**Termination:** The `transfer!` function is specified to "transfer at most `n`
 items" and "Return the number of items transferred".
 i.e. if some amount of data is available, return it right away rather than
 waiting for the entire requested amount. This behaviour can easily be wrapped
 with a retry layer to support cases where all `n` items are required.
 
-**Blocking:** By default the `transfer` function waits indefinitely for
+**Blocking:** By default the `transfer!` function waits indefinitely for
 data to be available. Control over this behaviour is provided by the optional
-`deadline=` argument. The `transfer` function stops waiting when `deadline > time()`.
+`deadline=` argument. The `transfer!` function stops waiting when `deadline > time()`.
 This interface allows non-blocking transfers (`deadline=0`), blocking transfers
 (`deadline=Inf`) or anything in between.[^AS2]
 
-[^AS2]: Note that `transfer` will always return data that is immediately
+[^AS2]: Note that `transfer!` will always return data that is immediately
 available irrespective of the deadline. i.e. There is no race condition when
 `deadline ~= time()`.
 
 The combination of the chosen termination and blocking behavior leads to
-two cases where `transfer` returns zero: End of stream (EOF), and deadline
+two cases where `transfer!` returns zero: End of stream (EOF), and deadline
 expired. This seems like a nice unification of the treatment of streams that
 have a distinct end and those that don't. The caller can specify
 a deadline that makes sense for their application and not have to worry about
@@ -304,23 +304,21 @@ FIXME
    (i.e. wrap with buffered stream).
 
 
-### Stream interface Functions
+### Stream Interface Functions
 
 #### Stream Data Transfer Core Functions
 
 --------------------------------------------------------------------------------
 Function                       Description
 ----------------------------   -------------------------------------------------
-`transfer(stream, buf, [n])`   Transfer at least one and at most `n` items
+`transfer!(stream, buf, [n])`  Transfer at least one and at most `n` items
                                between `stream` and `buf`.
                                Return the number of items transferred.
                                See `TransferDirection`, `FromBufferInterface`
                                and `ToBufferInterface` traits.
 
-`transfer_available(s, b, n)`  Transfer at most `n` items between `s` and `b`.
-
 `wait(stream; timeout=Inf)`    Wait until `stream` is ready to transfer data.
-                               `transfer` calls `wait` if there are no items
+                               `transfer!` calls `wait` if there are no items
                                available.
                                See `WaitingMechanism` trait and
                                `set_poll_mechanism`.
@@ -331,7 +329,7 @@ Function                       Description
 
 `unlock(stream)`               Reverse the effect of `lock`.
 
-`max_transfer_size(stream)`    Maximum number of bytes per call to `transfer.
+`max_transfer_size(stream)`    Maximum number of bytes per call to `transfer!`.
                                See `TransferSize` trait.
 --------------------------------------------------------------------------------
 
@@ -339,20 +337,43 @@ Function                       Description
 #### Stream Data Transfer Conveniance Methods
 
 --------------------------------------------------------------------------------
-Function                              Description
-------------------------------------- ------------------------------------------
-`transfer(...; timeout=Inf)`          Wait `timeout` seconds if no items
-                                      are available to transfer.
+Function                               Description
+-------------------------------------- -----------------------------------------
+`transfer!(...; timeout=Inf)`          Wait `timeout` seconds if no items
+                                       are available to transfer.
 
-`transfer(stream => buf)`             Transfer data from `stream` to `buf`.
+`transfer!(stream => buf, [n])`        Transfer data from `stream` to `buf`.
 
-`transfer(buf => stream)`             Transfer data from `buf` to `stream`.
+`transfer!(buf => stream, [n])`        Transfer data from `buf` to `stream`.
 
-`transfer(stream, buf; start=i)`      Transfer data starting at `buf` index `i`.
+`transfer!(stream, buf; start=i)`      Transfer data starting at `buf` index `i`.
 
-`transfer(stream, buf; start=(i,j))`  Transfer data starting at
-                                      `stream` index `i` and `buf` index `j`.
-                                      See `StreamIndexing` trait.
+`transfer!(stream, buf; start=(i,j))`  Transfer data starting at
+                                       `stream` index `i` and `buf` index `j`.
+                                       See `StreamIndexing` trait.
+
+`transferall!(stream, buf, [n])` \     Transfer all `n` items between
+`transferall!(stream => buf, [n])` \   `stream` and `buf`.
+`transferall!(buf => stream, [n])` \   
+
+`transferall!(...; timeout=Inf)`       Stop waiting for more items after
+                                       `timeout`.
+
+`readall!(stream) -> Vector{UInt8}`    Transfer all items from `stream` into
+                                       a new byte buffer.
+--------------------------------------------------------------------------------
+
+
+#### Stream Data Transfer Driver API
+
+--------------------------------------------------------------------------------
+Function                                Description
+--------------------------------------- ----------------------------------------
+
+`unsafe_transfer!(stream, p, n) -> n`   Transfer at least `n` bytes between
+                                        `stream` and `p::Ptr{UInt8}`.
+                                        Return the number of bytes transferred.
+
 --------------------------------------------------------------------------------
 
 
@@ -526,7 +547,7 @@ end
     _peek(s, PeekSupport(s), T; timeout)
 end
 
-pump(s::Stream; deadline) = is_proxy(s) ? pump(unwrap(s); deadline) : nothing
+pump!(s::Stream; deadline) = is_proxy(s) ? pump!(unwrap(s); deadline) : nothing
 
 
 
@@ -672,7 +693,7 @@ ioeltype(s) = isabstracttype(eltype(s)) ? UInt8 : eltype(s)
 # Data Transfer Function
 
 """
-    transfer(stream, buffer, [n]; start=1, deadline=Inf) -> n_transfered
+    transfer!(stream, buffer, [n]; start=1, deadline=Inf) -> n_transfered
 
 Transfer at most `n` items between `stream` and `buffer`.[^NITEMS]
 Return the number of items transferred.
@@ -716,14 +737,14 @@ to (or from) the identified resource.
 A transfer to a `URI` creates a new resource or replaces the resource
 (i.e. HTTP PUT semantics).
 """
-@db function transfer(stream, buf, n::Union{Integer,Missing}=missing;
-                      start::Union{Integer, NTuple{2,Integer}}=UInt(1),
-                      deadline=Inf, timeout=Inf)
+@db function transfer!(stream, buf, n::Union{Integer,Missing}=missing;
+                       start::Union{Integer, NTuple{2,Integer}}=UInt(1),
+                       deadline=Inf, timeout=Inf)
 
     @require isopen(stream)
     @require ismissing(n) || n > 0
     @require all(start .> 0)          ;@db typeof(stream) start deadline timeout
-    n = transfer_imp(stream, buf, n, start, deadline_or_timeout(deadline, timeout))
+    n = _transfer!(stream, buf, n, start, deadline_or_timeout(deadline, timeout))
     transfer_complete(stream, buf, n)
     @ensure n isa UInt
     @db return n
@@ -735,12 +756,12 @@ function deadline_or_timeout(deadline, timeout)
                                (time() + timeout))
 end
 
-transfer(a...; timeout) = transfer(a...; deadline=time() + Float64(timeout))
+transfer!(a...; timeout) = transfer!(a...; deadline=time() + Float64(timeout))
 
 
 """
-`transfer_complete` is called at the end of the top-level `transfer` method.
-A single call to the top-level `tansfer` method may result in many calls to
+`transfer_complete` is called at the end of the top-level `transfer!` method.
+A single call to the top-level `tansfer!` method may result in many calls to
 low level driver methods. e.g. to transfer every item in a collection.
 The `transfer_complete` hook can be used, for example, to flush an output
 buffer at end of a transfer.
@@ -749,29 +770,29 @@ transfer_complete(stream, buf, n) = nothing
 
 
 """
-### `transfer(a => b)`
+### `transfer!(a => b)`
 
-    transfer(stream => buffer, [n]; start=(1 => 1), kw...) -> n_transfered
-    transfer(buffer => stream, [n]; start=(1 => 1), kw...) -> n_transfered
+    transfer!(stream => buffer, [n]; start=(1 => 1), kw...) -> n_transfered
+    transfer!(buffer => stream, [n]; start=(1 => 1), kw...) -> n_transfered
 
-`stream` and `buffer` can be passed to `transfer` as a pair.
+`stream` and `buffer` can be passed to `transfer!` as a pair.
 `In` streams must be on the left.
 `Out` streams must be on the right.
 """
-function transfer(t::Pair{<:Stream, <:Any}, a...; start=(1 => 1), kw...)
+function transfer!(t::Pair{<:Stream, <:Any}, a...; start=(1 => 1), kw...)
     @require TransferDirection(t[1]) == In()
     if start isa Pair
         start = (start[1], start[2])
     end
-    transfer(t[1], t[2], a...; start, kw...)
+    transfer!(t[1], t[2], a...; start, kw...)
 end
 
-function transfer(t::Pair{<:Any,<:Stream}, a...; start=(1 => 1), kw...)
+function transfer!(t::Pair{<:Any,<:Stream}, a...; start=(1 => 1), kw...)
     @require TransferDirection(t[2]) == Out()
     if start isa Pair
         start = (start[2], start[1])
     end
-    transfer(t[2], t[1], a...; start=start, kw...)
+    transfer!(t[2], t[1], a...; start=start, kw...)
 end
 
 
@@ -779,7 +800,7 @@ end
 ## Waiting for the Deadline
 
 idoc"""
-The specification for `transfer` says: If no items are immediately available,
+The specification for `transfer!` says: If no items are immediately available,
 wait until `time() > deadline` for at least one item to be transferred.
 
 The method below starts by simply attempting the transfer.
@@ -788,13 +809,13 @@ If the initial transfer attempt yields no data, the `wait_for_transfer`
 method is selected based on Waiting Mechanism trait.
 
 If the buffer elements are larger than one byte and the stream has
-Unknown Availability then `transfer_available` can end up with a
+Unknown Availability then `attempt_transfer` can end up with a
 partial item in the buffer. In this situation a second attempt is needed
 to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
 that the second transfer adheres to the specified deadline.
 
 """
-@db 2 function transfer_imp(stream, buffer, n, start, deadline::Float64)
+@db 2 function _transfer!(stream, buffer, n, start, deadline::Float64)
 
     if Availability(stream) == UnknownAvailability() &&
     ioelsize(buffer) != 1 &&
@@ -802,7 +823,7 @@ that the second transfer adheres to the specified deadline.
         stream = timeout_stream(stream; deadline)
     end
 
-    r = transfer_available(stream, buffer, n, start)
+    r = attempt_transfer(stream, buffer, n, start)
     if r > 0 || iszero(deadline)
         @db 2 return r
     end
@@ -945,7 +966,7 @@ end
 ## Wait By Sleeping Method
 
 idoc"""
-The Wait By Sleeping method for `wait_for_transfer` calls `transfer_available`
+The Wait By Sleeping method for `wait_for_transfer` calls `attempt_transfer`
 in a loop until data is available or the deadline is reached.
 
 An exponentially increasing sleep delay minimises latency for short waits and
@@ -958,7 +979,7 @@ const delay_sequence =
 @db function wait_for_transfer(stream, ::WaitBySleeping,
                                buf, n, start, deadline::Float64)
     for delay in delay_sequence
-        r = transfer_available(stream, buf, n, start);
+        r = attempt_transfer(stream, buf, n, start);
         if r > 0
             @db return r
         end
@@ -980,7 +1001,7 @@ be selected according to Waiting Mechanism.
 `Base.lock` and `Base.unlock` must be implemented for each stream type.[^LOCK]
 
 [^LOCK]: These methods should do whatever is necessary to avoid race conditions
-between `Base.wait` and `transfer_available`. (FIXME, ... and `bytesavailable`)
+between `Base.wait` and `attempt_transfer`. (FIXME, ... and `bytesavailable`)
 In UnixIO.jl `Base.wait` waits for a `ThreadSynchronizer` and the underlying
 polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
 """
@@ -989,9 +1010,9 @@ polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
     @db time() deadline
     @dblock stream begin
         while !isfinished(stream)
-            pump(stream; deadline)
+            pump!(stream; deadline)
             wait(stream; deadline)
-            r = transfer_available(stream, buf, n, start);
+            r = attempt_transfer(stream, buf, n, start);
             if r > 0
                 @db return r
             end
@@ -1280,7 +1301,7 @@ end
     end
 
     while time() < deadline
-        pump(s; deadline)
+        pump!(s; deadline)
         @dblock s begin
             if bytesavailable(s) >= n
                 @db return
@@ -1299,12 +1320,12 @@ wait_for_n_bytes(a...; timeout) =
 # Transfer Function Dispatch
 
 """
-    transfer_available(stream, buf, n, start)
+    attempt_transfer(stream, buf, n, start)
 
 Transfer at most `n` items between `stream` and `buffer`.
 Return the number of items transferred.
 """
-function transfer_available end
+function attempt_transfer end
 
 idoc"""
 ## `start` Index Normalisation
@@ -1314,14 +1335,14 @@ The `StreamIndexing` trait is used to check that `stream` supports indexing.
 Indexable streams are replaced by a `Tuple` containing `stream` and the
 stream index.
 """
-@db function transfer_available(stream, buf, n, start::Tuple)
+@db function attempt_transfer(stream, buf, n, start::Tuple)
     @require StreamIndexing(stream) == IndexableIO() || start[1] == 1
     @require start >= (1,1)
     if start[1] != 1
         @db_not_tested
         stream = (stream, UInt(start[1]))
     end
-    transfer_available(stream, buf, n, UInt(start[2]))
+    attempt_transfer(stream, buf, n, UInt(start[2]))
 end
 
 idoc"""
@@ -1341,16 +1362,19 @@ For example, the methods for `UsingPtr` and `UsingIndex` below work for
 both input and output. (Another consideration is supporting interfaces with
 `IODirection` `Exchange`).
 """
-@db function transfer_available(stream, buf, n, start=UInt(1))
-    transfer_available_imp(stream, TransferDirection(stream), buf, n, start)
+@db function attempt_transfer(stream, buf, n, start=UInt(1))
+    buf_api = is_input(stream)  ? ToBufferInterface(buf) :
+              is_output(stream) ? FromBufferInterface(buf) :
+                                  ExchangeBufferInterface(buf)
+    _attempt_transfer(stream, buf, buf_api, n, start)
 end
 
-@db 2 function transfer_available_imp(stream, ::In, buf, n, start)
-    transfer_available_imp(stream, In(), buf, ToBufferInterface(buf), n, start)
+@db 2 function _attempt_transfer(stream, buf, n, start)
+    _attempt_transfer(stream, In(), buf, ToBufferInterface(buf), n, start)
 end
 
-@db 2 function transfer_available_imp(stream, ::Out, buf, n, start)
-    transfer_available_imp(stream, Out(), buf, FromBufferInterface(buf), n, start)
+@db 2 function _attempt_transfer(stream, ::Out, buf, n, start)
+    _attempt_transfer(stream, Out(), buf, FromBufferInterface(buf), n, start)
 end
 
 
@@ -1360,11 +1384,12 @@ end
 idoc"""
 The specialised methods for various Buffer Interfaces eventually
 call this this IsBytePtr method, which in turn calls the low level
-`unsafe_transfer` implementation methods.
+`unsafe_transfer!` implementation methods.
 """
-@db 2 function transfer_available_imp(stream, direction, buf::Ptr{UInt8}, ::IsBytePtr,
-                                n::UInt, start::UInt)
-    r = unsafe_transfer(stream, direction, buf + (start-1), n)
+@db 2 function _attempt_transfer(stream,
+                                 buf::Ptr{UInt8}, ::IsBytePtr,
+                                 n::UInt, start::UInt)
+    r = unsafe_transfer!(stream, buf + (start-1), n)
     @ensure r isa UInt
     @db 2 return r
 end
@@ -1376,8 +1401,8 @@ It returns zero if there are not enough bytes available for a whole item.
 For streams with Unknown Transfer Size the requested transfer is attempted 
 but an error is thrown if a partial item is transferred.
 """
-@db 2 function transfer_available_imp(stream, direction, buf, ::IsItemPtr,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer(stream,
+                                 buf, ::IsItemPtr, n::UInt, start::UInt)
     @db_not_tested
     sz = ioelsize(buf)
     @assert sz > 1
@@ -1389,12 +1414,12 @@ but an error is thrown if a partial item is transferred.
     buf = Ptr{UInt8}(buf)
     start = 1 + ((start-1) * sz)
 
-    r = transfer_available_imp(stream, direction, buf, IsBytePtr(), n * sz, start)
+    r = _attempt_transfer(stream, buf, IsBytePtr(), n * sz, start)
     @ensure r isa UInt
 
     if r % sz != 0
         @assert Availability(stream) == UnknownAvailability()
-        r += transferall(stream, buf + (start-1) + r, r % sz)
+        r += transferall!(stream, buf + (start-1) + r, r % sz)
     end
     if r % sz != 0
         throw(IOTraitsError(stream,
@@ -1412,16 +1437,16 @@ end
 
 
 """
-At least one of the following `unsafe_transfer` methods must be implemented
+At least one of the following `unsafe_transfer!` methods must be implemented
 for each type `T <: IOTraits.Stream`:
 
-    unsafe_transfer(s::T, ::IOTraits.In,           buffer::Ptr{UInt8}, n::UInt)
-    unsafe_transfer(s::T, ::IOTraits.Out,          buffer::Ptr{UInt8}, n::UInt)
-    unsafe_transfer(s::T, ::IOTraits.Exchange,     buffer::Ptr{UInt8}, n::UInt)
-    unsafe_transfer(s::T, ::IOTraits.AnyDirection, buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.In,           buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.Out,          buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.Exchange,     buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.AnyDirection, buffer::Ptr{UInt8}, n::UInt)
 
-`unsafe_transfer` should transfer at most `n` items between `stream` and
-`buffer` and return the number of items transferred (or zero if no items are
+`unsafe_transfer!` should transfer at most `n` bytes between `stream` and
+`buffer` and return the number of items transferred (or zero if no bytes are
 immediately available)[^BLOCKING].
 
 [^BLOCKING]: ⚠️ Note that the `BaseIOStream` methods defined here do
@@ -1430,17 +1455,14 @@ not properly implement the specification because `unsafe_read` and
 for testing purposes only.  The transfer timeout feature will not
 work properly for `BaseIOStream`.
 """
-function unsafe_transfer end
+function unsafe_transfer! end
 
 
-unsafe_transfer(T::Type) = is_proxy(T) ? ReadFragmentation(unwrap(T)) :
-                                           ReadsBytes()
-
-unsafe_transfer(s::BaseIOStream, ::In, buf::Ptr{UInt8}, n::UInt) =
-    UInt(unsafe_read(s.io, buf, n))
-
-unsafe_transfer(s::BaseIOStream, ::Out, buf::Ptr{UInt8}, n::UInt) =
-    UInt(unsafe_write(s.io, buf, n))
+@db function unsafe_transfer!(s::BaseIOStream, buf::Ptr{UInt8}, n::UInt)
+    @db_not_tested
+    is_input(s) ? UInt(unsafe_read(s.io, buf, n)) :
+                  UInt(unsafe_write(s.io, buf, n))
+end
 
 
 ## Transfer Specialisations for Indexable Buffers
@@ -1450,57 +1472,62 @@ If `n` is missing, use the whole length of the buffer.
 
 After this both `n` and `start` are always `UInt`s.
 """
-@db 2 function transfer_available_imp(stream, direction::AnyDirection,
-                                buf, interface::Union{UsingPtr, UsingIndex},
-                                n::Missing, start::UInt)
+@db 2 function _attempt_transfer(stream,
+                                 buf, interface::Union{UsingPtr, UsingIndex},
+                                 n::Missing, start::UInt)
     @require length(buf) > 0
     n = length(buf) - (start - 1)
-    transfer_available_imp(stream, direction, buf, interface, UInt(n), start)
+    _attempt_transfer(stream, buf, interface, UInt(n), start)
 end
 
-@db 2 function transfer_available_imp(stream, direction, buf, interface, n::Missing, start::UInt)
-    transfer_available_imp(stream, direction, buf, interface, typemax(UInt), start)
+@db 2 function _attempt_transfer(stream,
+                                 buf, interface, n::Missing, start::UInt)
+    _attempt_transfer(stream, buf, interface, typemax(UInt), start)
 end
 
-@db 2 function transfer_available_imp(stream, direction, buf, interface, n::Integer, start::Integer)
-    transfer_available_imp(stream, direction, buf, interface, UInt(n), UInt(start))
+@db 2 function _attempt_transfer(stream,
+                                 buf, interface, n::Integer, start::Integer)
+    _attempt_transfer(stream, buf, interface, UInt(n), UInt(start))
 end
 
 
 idoc"""
 If the buffer is pointer-compatible convert it to a pointer.
-`unsafe_transfer` function.
 """
-@db 2 function transfer_available_imp(stream, ::AnyDirection, buf, ::UsingPtr,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer(stream,
+                                 buf, ::UsingPtr, n::UInt, start::UInt)
     checkbounds(buf, (start-1) + n)
-    GC.@preserve buf transfer_available(stream, pointer(buf, start), n, 1)
+    GC.@preserve buf attempt_transfer(stream, pointer(buf, start), n, 1)
 end
 
-@db 2 function transfer_available_imp(stream, ::AnyDirection, buf::Ref, ::UsingPtr,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer(stream,
+                                 buf::Ref, ::UsingPtr, n::UInt, start::UInt)
     p = Base.unsafe_convert(Ptr{eltype(buf)}, buf)
-    GC.@preserve buf transfer_available(stream, p, n, 1)
+    GC.@preserve buf attempt_transfer(stream, p, n, 1)
 end
 
 
 idoc"""
 If the buffer is not pointer-compatible, transfer one item at a time.
 """
-@db 2 function transfer_available_imp(stream, d::AnyDirection, buf, ::UsingIndex,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer(stream,
+                                 buf, ::UsingIndex, n::UInt, start::UInt)
     @db_not_tested
     T = ioeltype(buf)
     x = Vector{T}(undef, 1)
     count::UInt = 0
     for i in eachindex(view(buf, start:(start-1)+n))
-        d == In() || (x[1] = buf[i])
-        n = transfer(stream, x; deadline=0)
+        if is_output(stream)
+            x[1] = buf[i]
+        end
+        n = transfer!(stream, x; deadline=0)
         if n == 0
             @db_not_tested
             break
         end
-        d == Out() || (buf[i] = x[1])
+        if is_input(stream)
+            buf[i] = x[1]
+        end
         count += n
         stream = next_stream_index(stream, T)
     end
@@ -1517,8 +1544,9 @@ idoc"""
 Iterate over `buf` (skip items until `start` index is reached).
 Transfer each item one at a time.
 """
-@db 2 function transfer_available_imp(stream, ::Out, buf, ::FromIteration,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer(stream,
+                                 buf, ::FromIteration, n::UInt, start::UInt)
+    @require is_output(stream)
     count::UInt = 0
     for x in buf
         if start > 1
@@ -1526,7 +1554,7 @@ Transfer each item one at a time.
             @db_not_tested
             continue
         end
-        n = transfer(stream, [x]; deadline=0)
+        n = transfer!(stream, [x]; deadline=0)
         if n == 0
             @db_not_tested
             break
@@ -1545,25 +1573,29 @@ for (T, f) in [ToPut => put!,
               ToPush => push!,
               FromPop => pop!,
               FromTake => take!]
-    eval(:(transfer_available_imp(s, dir, buf, ::$T, n::UInt, start::UInt) =
-           transfer_available_imp(s, dir, buf,   $f, n, start)))
+    eval(:(_attempt_transfer(s, buf, ::$T, n::UInt, start::UInt) =
+           _attempt_transfer_f(s, buf, $f, n, start)))
 end
 
-@db 2 function transfer_available_imp(stream, d::TransferDirection, buf, f::Function,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer_f(stream,
+                                   buf, f::Function, n::UInt, start::UInt)
     @db_not_tested
     @require start == 1
     T = ioeltype(buf)
     x = Vector{T}(undef, 1)
     count::UInt = 0
     while count < n
-        d == In() || (x[1] = f(buf))
-        r = transfer(stream, x; deadline=0)
+        if is_output(stream)
+            (x[1] = f(buf))
+        end
+        r = transfer!(stream, x; deadline=0)
         if r == 0
             @db_not_tested
             break
         end
-        d == Out() || f(buf, x[1])
+        if is_input(stream)
+            f(buf, x[1])
+        end
         count += r
         stream = next_stream_index(stream, T)
     end
@@ -1574,19 +1606,20 @@ end
 
 ## Transfer Specialisations for IO Buffers
 
-@db 2 function transfer_available_imp(s1, ::In, s2, ::ToStream,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer(s1, s2, ::ToStream, n::UInt, start::UInt)
+    @require is_input(s1)
+    @require is_output(s2)
     @db_not_tested
     buf = Vector{UInt8}(undef, min(n, max(default_buffer_size(s1),
                                           default_buffer_size(s2))))
     count::UInt = 0
     while count < n
-        r = transfer(s1 => buf; deadline=0)
+        r = transfer!(s1 => buf; deadline=0)
         if r == 0
             @db_not_tested
             break
         end
-        r2 = transfer(buf => s2, r)
+        r2 = transfer!(buf => s2, r)
         @assert r2 == r
         # FIXME should query available capacity and not read more than that?
         count += r
@@ -1594,16 +1627,26 @@ end
     return count
 end
 
-@db 2 function transfer_available_imp(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt)
+
+@db 2 function _attempt_transfer(s1, s2, ::FromStream, n::UInt, start::UInt)
+    @require is_output(s1)
+    @require is_input(s2)
     @db_not_tested
-    transfer_available_imp(s2, In(), s1, ToStream(), n, start)
+    _attempt_transfer(s2, In(), s1, ToStream(), n, start)
 end
 
-@db 2 function transfer_available_imp(s, direction, io, ::Union{ToIO,FromIO},
-                            n::UInt, start::UInt)
+
+@db 2 function _attempt_transfer(s, io::T, ::ToIO, n::UInt, start::UInt) where T
     @db_not_tested
-    s2 = BaseIOStream{typeof(io), direction == In() ? Out : In}(io)
-    transfer_available_imp(s, direction, s2, n, start)
+    @require is_input(s)
+    _attempt_transfer(s, BaseIOStream{T, Out}(io), ToStream(), n, start)
+end
+
+
+@db 2 function _attempt_transfer(s, io::T, ::FromIO, n::UInt, start::UInt) where T
+    @db_not_tested
+    @require is_output(s)
+    _attempt_transfer(s, BaseIOStream{T, In}(io), FromStream(), n, start)
 end
 
 
@@ -1752,7 +1795,7 @@ _peek(s, ::NotPeekable, T) = trait_error(s, Peekable)
 
 The temporary `TimeoutStream` wrapper adds an immutable transfer deadline to a
 stream. It is used in cases where a stream interface function needs to
-make multiple calls to `transfer` (e.g. `readall`).
+make multiple calls to `transfer!` (e.g. `readall!`).
 
 Note that the `timeout_stream` function simply returns `stream` if
 `timeout` and `deadline` are both `Inf`.
@@ -1776,16 +1819,16 @@ timeout_stream(s; timeout=Inf, deadline=Inf) =
 
 StreamDelegation(::Type{<:TimeoutStream}) = DelegatedToSubStream()
 
-@db function transfer(s::TimeoutStream{T}, buffer,
-                      n::Union{Missing, Integer}; deadline=Inf, kw...) where T
+@db function transfer!(s::TimeoutStream{T}, buffer,
+                       n::Union{Missing, Integer}; deadline=Inf, kw...) where T
     @db s.deadline
-    transfer(s.stream, buffer, n; deadline = min(deadline, s.deadline), kw...)
+    transfer!(s.stream, buffer, n; deadline = min(deadline, s.deadline), kw...)
 end
 
-@db function pump(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+@db function pump!(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
     @db_not_tested
     deadline = deadline_or_timeout(deadline, timeout)
-    pump(s.stream; deadline = min(deadline, s.deadline))
+    pump!(s.stream; deadline = min(deadline, s.deadline))
 end
 
 @db function Base.wait(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
@@ -1799,8 +1842,8 @@ end
     eof(s.stream; deadline = min(deadline, s.deadline))
 end
 
-unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
-    unsafe_transfer(s.stream, direction, buffer, n)
+unsafe_transfer!(s::TimeoutStream, buffer, n) =
+    unsafe_transfer!(s.stream, buffer, n)
 
 
 
@@ -1890,7 +1933,7 @@ function readbyte(stream, ::LowTransferCost; deadline)
         @db_not_tested
     end
     x = Ref{UInt8}()
-    n = transfer(stream => x, 1; deadline)
+    n = transfer!(stream => x, 1; deadline)
     n == 1 || return nothing
     return x[]
 end
@@ -1898,18 +1941,19 @@ end
 
 
 """
-`readall` reads until the end of `stream` (or until `timeout` expires)
+`readall!` reads until the end of `stream` (or until `timeout` expires)
 and returns `Vector{UInt8}`.
 
 Specialise on Total Size and Cursor Support.
 """
-@db function readall(s::Stream; timeout=Inf)
+@db function readall!(s::Stream; timeout=Inf)
     @require is_input(s)
-    readall(s, TotalSize(s), CursorSupport(s); timeout)
+    @require TotalSize(s) != InfiniteTotalSize() || timeout < Inf
+    _readall!(s, TotalSize(s), CursorSupport(s); timeout)
 end
 
 
-@db function readall(stream, ::UnknownTotalSize, ::NoCursors; timeout=Inf)
+@db function _readall!(stream, ::UnknownTotalSize, ::NoCursors; timeout=Inf)
     n = default_buffer_size(stream)
     buf = Vector{UInt8}(undef, n)
     stream = timeout_stream(stream; timeout)
@@ -1919,10 +1963,10 @@ end
 end
 
 
-@db function readall(stream, ::KnownTotalSize, ::AbstractHasPosition; timeout=Inf)
+@db function _readall!(stream, ::KnownTotalSize, ::AbstractHasPosition; timeout=Inf)
     n = length(stream) - position(stream)
     buf = Vector{UInt8}(undef, n)
-    transferall(stream, buf, n; timeout)
+    transferall!(stream, buf, n; timeout)
     @db return buf
 end
 
@@ -1935,12 +1979,14 @@ stopping only if end of file is reached.
 
 Return the number of items transferred.
 """
-@db function transferall(stream, buf, n=length(buf); deadline=Inf, timeout=Inf)
+@db function transferall!(stream, buf, n=length(buf); deadline=Inf, timeout=Inf)
     @require deadline == Inf || timeout == Inf
+    @require TotalSize(stream) != InfiniteTotalSize() || (deadline + timeout < Inf)
+
     stream = timeout_stream(stream; timeout, deadline)
     ntransferred::UInt = 0
     while ntransferred < n
-        r = transfer(stream, buf, n - ntransferred; start = ntransferred + 1)
+        r = transfer!(stream, buf, n - ntransferred; start = ntransferred + 1)
                                             # FIXME ^^^^^ passing start is not allowed for ToPut etc
         if r == 0
             @db_not_tested
@@ -1952,16 +1998,16 @@ Return the number of items transferred.
     @db return ntransferred
 end
 
-@db function transferall(t::Pair{<:Stream,<:Any}, a...; kw...)
+@db function transferall!(t::Pair{<:Stream,<:Any}, a...; kw...)
     @db_not_tested
     @require TransferDirection(t[1]) == In()
-    transferall(t[1], t[2], a...; kw...)
+    transferall!(t[1], t[2], a...; kw...)
 end
 
-@db function transferall(t::Pair{<:Any,<:Stream}, a...; kw...)
+@db function transferall!(t::Pair{<:Any,<:Stream}, a...; kw...)
     @db_not_tested
     @require TransferDirection(t[2]) == Out()
-    transferall(t[2], t[1], a...; kw...)
+    transferall!(t[2], t[1], a...; kw...)
 end
 
 
@@ -1978,7 +2024,7 @@ struct NullIn <: Stream end
 
 TransferDirection(::Type{NullIn}) = In()
 
-transfer(io::NullIn, buf::Ptr{UInt8}, n; kw...) = n
+transfer!(io::NullIn, buf::Ptr{UInt8}, n; kw...) = n
 
 
 #=
@@ -2092,13 +2138,13 @@ Transfer bytes from the wrapped IO to the internal buffer.
 
     # Transfer from the stream to the buffer.
     p = pointer(sbuf.data, sbuf.size+1)
-    n = GC.@preserve sbuf transfer(s.stream, p, n; deadline)
+    n = GC.@preserve sbuf transfer!(s.stream, p, n; deadline)
     sbuf.size += n
     nothing
 end
 
 
-@db function pump(s::GenericBufferedInput; deadline=Inf)
+@db function pump!(s::GenericBufferedInput; deadline=Inf)
     refill_internal_buffer(s; deadline)
 end
 
@@ -2179,9 +2225,9 @@ bytes available. Note that `refill_internal_buffer` may still not yield
 enough bytes. However, calling it here ensures that the enclosing retry
 loop will eventually get the data it needs.
 """
-@db 2 function transfer_available_imp(s::BufferedInput, direction,
-                                buf, interface::IsItemPtr,
-                                n::UInt, start::UInt)
+@db 2 function _attempt_transfer(s::BufferedInput,
+                                 buf, interface::IsItemPtr,
+                                 n::UInt, start::UInt)
     @assert ioelsize(buf) > 1
     @assert ioelsize(buf) < s.buffer_size
     @db_not_tested
@@ -2191,9 +2237,9 @@ loop will eventually get the data it needs.
         refill_internal_buffer(s; deadline=0) # FIXME ?)
     end
 
-    @invoke transfer_available_imp(s::Stream, direction,
-                               buf, interface::IsItemPtr,
-                               n::UInt, start::UInt)
+    @invoke _attempt_transfer(s::Stream,
+                              buf, interface::IsItemPtr,
+                              n::UInt, start::UInt)
 end
 
 
@@ -2206,7 +2252,7 @@ end
 
 
 
-@db function unsafe_transfer(s::BufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
+@db function unsafe_transfer!(s::BufferedInput, buf::Ptr{UInt8}, n::UInt)
 
     @db_not_tested
     sbuf = s.buffer
@@ -2265,7 +2311,7 @@ end
 end
 
 
-@db function unsafe_transfer(s::LazyBufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
+@db function unsafe_transfer!(s::LazyBufferedInput, buf::Ptr{UInt8}, n::UInt)
 
     # First take bytes from the buffer.
     sbuf = s.buffer
@@ -2277,7 +2323,7 @@ end
 
     # Then read from the wrapped IO.
     if n > count
-        count += unsafe_transfer(s.stream, In(), buf + count, n - count)
+        count += unsafe_transfer!(s.stream, buf + count, n - count)
     end
 
     @ensure count <= n
@@ -2330,7 +2376,7 @@ end
 #        @db return true
 #    end
     while isopen(s) && !isfinished(s) && time() < deadline
-        pump(s; deadline)
+        pump!(s; deadline)
         @dblock s begin
             if bytesavailable(s) > 0
                 @db return false
@@ -2360,7 +2406,7 @@ Wrap with `TimeoutStream` if timeout is requested.
 function Base.read(io::BaseIO, ::Type{String}; deadline=Inf)
     @require is_input(io.stream)
     stream = timeout_stream(io.stream; deadline)
-    String(readall(stream))
+    String(readall!(stream))
 end
 
 
@@ -2387,7 +2433,7 @@ end
             resize!(buf, lb)
         end
         @assert lb > nread
-        n = transfer(stream => buf, lb - nread; start = nread + 1)
+        n = transfer!(stream => buf, lb - nread; start = nread + 1)
         if n == 0 || !all
             break
         end
@@ -2401,7 +2447,7 @@ end
 
 ## Function `read(stream)`
 
-Base.read(io::BaseIO; timeout=Inf) = readall(io.stream; timeout)
+Base.read(io::BaseIO; timeout=Inf) = readall!(io.stream; timeout)
 
 
 
@@ -2430,7 +2476,7 @@ function Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt;
     nread = 0
     @debug "Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)"
     while nread < nbytes
-        n = transfer(stream => (buf + nread), nbytes - nread)
+        n = transfer!(stream => (buf + nread), nbytes - nread)
         if n == 0
             @db_not_tested
             throw(EOFError())
@@ -2466,7 +2512,7 @@ Otherwise, the amount of data immediately available can be queried using the
         n = bytesavailable(io.stream)
     end
     buf = Vector{UInt8}(undef, n)
-    n = transfer(io.stream, buf, n; timeout)
+    n = transfer!(io.stream, buf, n; timeout)
     resize!(buf, n)
 end
 
@@ -2511,7 +2557,7 @@ shell sends a "bash\$ " prompt without a newline).
 @db function _readline(stream, ::ReadsLines; keep::Bool=false, timeout=Inf)
 
     v = Base.StringVector(max_line)
-    n = transfer(stream => v; timeout)
+    n = transfer!(stream => v; timeout)
     if n == 0
         @db_not_tested
         @db return ""
@@ -2545,21 +2591,21 @@ end
 @db function Base.unsafe_write(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)
     @require is_output(io.stream)
     @require isopen(io.stream)
-    transferall(io.stream, buf, nbytes)
+    transferall!(io.stream, buf, nbytes)
 end
 
 
 @db function Base.write(io::BaseIO, x::UInt8)
     @require is_output(io.stream)
     @require isopen(io.stream)
-    transfer(x => io.stream)
+    transfer!(x => io.stream)
 end
 
 
 
 # Exports
 
-export TraitsIO, TransferDirection, transfer, transferall, readall
+export TraitsIO, TransferDirection, transfer!, transferall!, readall!
 
 export BufferedInput, LazyBufferedInput
 

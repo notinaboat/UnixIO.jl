@@ -137,8 +137,8 @@ uio = UnixIO.open("runtests.jl")
       [x for x in eachline(uio)]
 
 
-@info "Test open(:Cmd)"
-@test UnixIO.open(`hexdump`) do cmdin, cmdout
+@info "Test open(:Cmd) using fork/exec"
+@test UnixIO.open(`hexdump`; fork=true) do cmdin, cmdout
     cmdin = IOTraits.BaseIO(cmdin) # FIXME
     cmdout = IOTraits.BaseIO(cmdout) # FIXME
     @async try

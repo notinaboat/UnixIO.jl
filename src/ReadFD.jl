@@ -3,14 +3,6 @@ Read-only Unix File Descriptor.
 """
 
 
-#=
-@db 2 function raw_transfer(fd::FD{In}, ::IOTraits.In, buf, count)
-    n = C.read(fd.fd, buf, count)
-    @db 2 return n
-end
-=#
-
-
 """
 ### Reading from a pseudoterminal device.
 
@@ -46,35 +38,6 @@ is still alive and returning `0` if it has terminated.
 end
 
 
-#=
-@db function Base.close(fd::FD{In})
-    take!(fd.buffer)
-    @invoke Base.close(fd::FD)
-end
-=#
-
-
-shutdown(fd::FD{In}) = shutdown(fd, C.SHUT_RD)
-
-@static if isdefined(Base, :shutdown)
-    @db function Base.shutdown(fd::FD{In}) 
-        @db_not_tested
-        UnixIO.shutdown(fd, C.SHUT_RD)
-    end
-end
-
-#=
-
-Base.isreadable(fd::FD{In}) = Base.isopen(fd)
-
-Base.iswritable(::FD{In}) = false
-
-
-Base.bytesavailable(fd::FD{In}) = bytesavailable(fd, TransferSizeMechanism(fd))
-
-Base.bytesavailable(fd::FD, ::NoSizeMechanism) = bytesavailable(fd.buffer)
-=#
-
 @db 1 function IOTraits._bytesavailable(fd::FD, ::SupportsStatSize)
     @db_not_tested
     pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
@@ -94,120 +57,6 @@ end
     @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
 end
 
-#=
-Base.eof(fd::FD{In}; kw...) = eof(fd, TotalSize(fd); kw...)
-
-Base.eof(fd::FD, ::InfiniteTotalSize; kw...) = @assert false  
-    # FIXME should block
-
-Base.eof(fd::FD, ::KnownTotalSize; kw...) = bytesavailable(fd) == 0
-
-@db 1 function Base.eof(fd::FD, ::UnknownTotalSize; kw...)
-    if bytesavailable(fd.buffer) > 0
-        @db 1 return false
-    end
-    event = @dblock fd wait(fd)                                    ;@db 1 event
-    if event == C.POLLIN
-        @db 1 return false
-    end
-    if !fd.isclosed
-        Base.write(fd.buffer, readavailable(fd; kw...))
-    end
-    @db 1 return bytesavailable(fd.buffer) == 0
-end
-=#
-
-
-#=
-@db 1 function Base.unsafe_read(fd::FD{In}, buf::Ptr{UInt8}, nbytes::UInt;
-                                timeout=fd.timeout)
-    @require !fd.isclosed
-
-    @with_timeout fd timeout begin
-        nread = 0
-        while nread < nbytes
-            n = UnixIO.read(fd, buf + nread, nbytes - nread)
-            if n == 0
-                throw(EOFError())
-            end
-            nread += n
-        end
-        @ensure nread == nbytes
-        nothing
-    end
-end
-=#
-
-#=
-@db 2 function Base.read(fd::FD{In}, ::Type{UInt8}; kw...)
-    @require !fd.isclosed
-    eof(fd; kw...) && throw(EOFError())
-    if bytesavailable(fd.buffer) == 0
-        Base.write(fd.buffer, readavailable(fd; kw...))
-    end
-    r = Base.read(fd.buffer, UInt8)
-    @db 2 return r                                "$(repr(Char(r))) $(repr(r))"
-end
-=#
-
-
-#=
-Base.readbytes!(fd::FD{In}, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
-    readbytes!(fd, buf, UInt(nbytes); kw...)
-
-
-@db 1 function Base.readbytes!(fd::FD{In}, buf::Vector{UInt8}, nbytes::UInt;
-                               all::Bool=true, timeout=fd.timeout)
-    @require !fd.isclosed
-
-    @with_timeout fd timeout begin
-        lb::Int = length(buf)
-        nread = 0
-        while nread < nbytes
-            @assert nread <= lb
-            if (lb - nread) == 0
-                lb = lb == 0 ? nbytes : min(lb * 10, nbytes)
-                resize!(buf, lb)                         ;@db 1 "resize -> $lb"
-            end
-            @assert lb > nread
-            n = UnixIO.read(fd, buf, nread + 1, lb - nread)
-            if n == 0 || !all
-                break
-            end
-            nread += n
-        end
-        @ensure nread <= nbytes
-        @db 1 return nread
-    end
-end
-=#
-
-
-const BUFFER_SIZE = 65536
-
-#=
-@db 5 function Base.readavailable(fd::FD{In}; timeout=0)
-    @require !fd.isclosed
-    n = bytesavailable(fd)
-    if n == 0
-        n = BUFFER_SIZE
-    end
-    buf = Vector{UInt8}(undef, n)
-    n = UnixIO.read(fd, buf; timeout)                          ;@db 5 n
-    resize!(buf, n)
-end
-=#
-
-
-#=
-@db 2 function Base.readline(fd::FD{In}; timeout=fd.timeout, kw...)
-    @with_timeout fd timeout begin
-        @db 2 return IOTraits.readline(fd, ReadFragmentation(fd); kw...)
-    end
-end
-=#
-
-#Base.readline(fd::FD, ::ReadsBytes; kw...) = @invoke readline(fd::IO; kw...)
 
 #=
 @db 1 function Base.readline(fd::ReadFD{<:S_IFCHR};
@@ -288,22 +137,6 @@ end
 =#
 
 
-#=
-@db 2 function Base.readuntil(fd::FD{In}, d::AbstractChar;
-                              timeout=fd.timeout, kw...)
-    @with_timeout(fd, timeout,
-                  @invoke Base.readuntil(fd::IO, d::AbstractChar; kw...))
-end
-
-@db 2 function Base.read(fd::FD{In}, n::Integer=typemax(Int);
-                         timeout=fd.timeout)
-    @with_timeout(fd, timeout, @invoke Base.read(fd::IO, n::Integer))
-end
-
-@db 2 function Base.read(fd::FD{In}, x::Type{String}; kw...)
-    String(Base.read(fd; kw...))
-end
-=#
 
 
 # End of file: ReadFD.jl
