@@ -412,7 +412,6 @@ end
 
 
 @info "Interactive bash script via pseudoterminal."
-#env = merge(ENV, Dict("TERM" => "dumb"))
 UnixIO.ptopen(`bash`; opts...) do cin, cout
     cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
     cin=IOTraits.BaseIO(cin)
@@ -420,17 +419,16 @@ UnixIO.ptopen(`bash`; opts...) do cin, cout
         # Wait for "bash-3.2$" prompt.
         while !contains(fin(), r"\$") end
 
-        fout(raw"""i=1""" * "\n")                 ;
-        @test contains(fin(), r"\$")
-        fout(raw"""while [ $i -lt 11 ]""" * "\n") ; @test fin() == "> "
-        fout(raw"""do""" * "\n")                  ; @test fin() == "> "
-        fout(raw"""    sleep 0.2""" * "\n")       ; @test fin() == "> "
-        fout(raw"""    echo "COUNT$i" """ * "\n") ; @test fin() == "> "
-        fout(raw"""    i=$(($i+1))""" * "\n")     ; @test fin() == "> "
+        fout(raw"""i=1""" * "\n")                 ; @test contains(fin(), r"\$")
+        fout(raw"""while [ $i -lt 11 ]""" * "\n") ; @test endswith(fin(), "> ")
+        fout(raw"""do""" * "\n")                  ; @test endswith(fin(), "> ")
+        fout(raw"""    sleep 0.2""" * "\n")       ; @test endswith(fin(), "> ")
+        fout(raw"""    echo "COUNT$i" """ * "\n") ; @test endswith(fin(), "> ")
+        fout(raw"""    i=$(($i+1))""" * "\n")     ; @test endswith(fin(), "> ")
         fout(raw"""done""" * "\n")
 
         for i in 1:10
-            @test fin() == "COUNT$i\n"
+            @test endswith(fin(), "COUNT$i\n")
         end
         @test contains(fin(), r"\$")
     end

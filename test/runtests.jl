@@ -141,16 +141,18 @@ uio = UnixIO.open("runtests.jl")
 @test UnixIO.open(`hexdump`; fork=true) do cmdin, cmdout
     cmdin = IOTraits.BaseIO(cmdin) # FIXME
     cmdout = IOTraits.BaseIO(cmdout) # FIXME
-    @async try
-        write(cmdin, read(UnixIO.open("runtests.jl")))
-        close(cmdin)
-    catch err
-        UnixIO.printerr("ERROR: $err")
-        exception=(err, catch_backtrace())
-        UnixIO.printerr(exception)
-        @error "ERROR" exception
+    @sync begin
+        @async try
+            write(cmdin, read(UnixIO.open("runtests.jl")))
+            close(cmdin)
+        catch err
+            UnixIO.printerr("ERROR: $err")
+            exception=(err, catch_backtrace())
+            UnixIO.printerr(exception)
+            @error "ERROR" exception
+        end
+        read(cmdout)
     end
-    read(cmdout)
 end ==
 open(`hexdump`, open("runtests.jl"); read = true) do io
     read(io)

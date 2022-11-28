@@ -50,7 +50,7 @@ function find_system_header(header)
 end
 
 
-function macro_values(headers, cflags, names)
+function macro_values(headers, cflags, macro_names, struct_names)
 
     result = Dict{Symbol,Expr}()
 
@@ -59,20 +59,22 @@ function macro_values(headers, cflags, names)
         delim = "aARf6F3fWe6"
         write(cfile,
             ("#include \"$h\"\n" for h in headers)...,
-            ("\"$delim\"\n\"$n\"\n$n\n" for n in names)...
+            ("\"$delim\"\n\"$n\"\n$n\n" for n in macro_names)...,
+            ("\"$delim\"\n\"$(n)_size\"\nsizeof($n)\n" for n in struct_names)...
         )
-        write("cinclude_tmp.c", read(cfile, String))
+        write("cinclude_tmp.$(Sys.MACHINE).c", read(cfile, String))
         cmd = "cling --nologo -w $(join(cflags, " ")) < $cfile 2>/dev/null"
         cmd = `sh -c $cmd`
         @info cmd 
 
         output = split(String(read(cmd)), "(const char [12]) \"$delim\"\n"; keepempty=false)
+        #@show output
 
         for x in output
             n, v = split(x, "\n")
             n = match(r"[(][^)]*[)].*\"([^\"]*)\"", n)[1]
 
-#            @show x
+            #@show x
 
             v = replace(v, r"^[(][(]anonymous[)][)][^:]*: *" => "")
             m = match(r"^[(](.*)[)] (.*)$", v)
@@ -113,6 +115,11 @@ function macro_values(headers, cflags, names)
 
                 if t == :Float32
                     v = replace(v, r"f$" => "")
+                end
+
+                # '0x00' => 0x00
+                if t == :Cchar && startswith(v, "'")
+                    v = replace(v, "'" => "")
                 end
 
                 if expr == nothing
@@ -169,6 +176,7 @@ function parse_headers()
     ]
 
     Generators.add_definition(:__builtin_va_list => Generators.JuliaUnsupported())
+    Generators.add_definition(Symbol("") => Generators.JuliaUnsupported())
 
     ctx = Generators.create_context(headers, copy(cflags),
         Dict{String,Any}(
@@ -176,6 +184,8 @@ function parse_headers()
                 "is_local_header_only" => false,
                 "auto_mutability" => true,
                 "auto_mutability_includelist" => ["termios"],
+                "auto_mutability_ignorelist" => ["posix_spawnattr_t",
+                                                 "__sigset_t"],
                 "library_name" => ""
             ),
             "codegen" => Dict{String,Any}(
@@ -195,6 +205,7 @@ function parse_headers()
     exclude = r"""
         ^ (
           errno
+          | MSG_TRYHARD         # duplicate #define and enum
           | _.*
         ) $
     """x
@@ -203,19 +214,27 @@ function parse_headers()
                         || ! contains(string(node.id), exclude),
                    ctx.dag.nodes)
 
-    simple_macros = filter(x -> x isa ExprNode{Generators.MacroDefault}, nodes)
+    structs = filter(x -> (   x isa ExprNode{Generators.StructDefinition}
+                           || x isa ExprNode{Generators.StructAnonymous})
+                          && !startswith(string(x.id), "#"), nodes)
+    struct_names = [(n.id for n in structs)...]
 
+    simple_macros = filter(x -> x isa ExprNode{Generators.MacroDefault}, nodes)
     macro_names = [(n.id for n in simple_macros)...]
 
     macro_exprs = try
-        open(deserialize, ".macro_exprs_cache")
+        open(deserialize, ".macro_exprs_cache.$(Sys.MACHINE)")
     catch e
-        macro_exprs = macro_values(headers, cflags, macro_names)
-        open(".macro_exprs_cache"; write=true) do io
+        macro_exprs = macro_values(headers, cflags, macro_names, struct_names)
+        open(".macro_exprs_cache.$(Sys.MACHINE)"; write=true) do io
             serialize(io, macro_exprs)
         end
         macro_exprs
     end
+
+    exprs = [:(const $n = $(macro_exprs[n]))
+             for n in filter(x -> endswith(string(x), "_size"),
+                             keys(macro_exprs))]
 
     for node in simple_macros
         if node.id in keys(macro_exprs)
@@ -241,15 +260,16 @@ function parse_headers()
                 push!(node.exprs, x)
             end
         end
+        append!(exprs, node.exprs)
     end
 
-    return Iterators.flatten(node.exprs for node in nodes)
+    exprs
 end
 
 macro include_headers()
     quote
-        let exprs = collect(UnixIOHeaders.parse_headers())
-            write(joinpath(@__DIR__, "include_headers_dump.jl"),
+        let exprs = UnixIOHeaders.parse_headers()
+            write(joinpath(@__DIR__, "include_headers_dump.$(Sys.MACHINE).jl"),
                   join(string.(exprs), "\n"))
             #for ex in exprs
             #    @show ex
@@ -293,6 +313,8 @@ using Base: @ccall, @generated,
             GC, Sys,
             Vector,
             signed,
+            getproperty,
+            unsafe_store!,
             (&), (-), (+), (*), (<<), (>>), (>), (==), (|), (~)
 
 import Core.Intrinsics.bitcast
@@ -300,7 +322,9 @@ import Core.Intrinsics.bitcast
 using CEnum
 
 const NULL = 0
+if Sys.isapple()
 const __spawn_action = Cvoid
+end
 
 ioctl(fd, cmd, arg) = @ccall ioctl(fd::Cint, cmd::Cint, arg::Ptr{Cint})::Cint
 
@@ -334,10 +358,13 @@ if Sys.isapple()
 end
 # FIXME const SIG_DFL = sig_t(0)
 #
+if Sys.isapple()
+sigset_t() = sigset_t(0)
 sigaddset(arg1, arg2) = @ccall sigaddset(arg1::Ptr{sigset_t}, arg2::Cint)::Cint
 sigdelset(arg1, arg2) = @ccall sigdelset(arg1::Ptr{sigset_t}, arg2::Cint)::Cint
 sigfillset(arg1) = @ccall sigfillset(arg1::Ptr{sigset_t})::Cint
 sigemptyset(arg1) = @ccall sigemptyset(arg1::Ptr{sigset_t})::Cint
+end
 
 
 # Need multiple methods for `open` and `fcntl`:
@@ -365,7 +392,7 @@ cfsetspeed_m(p, speed) =
 
 
 # Not yet in glibc.
-const SYS_pidfd_open=434 # https://git.io/J4j1A
+#const SYS_pidfd_open=434 # https://git.io/J4j1A
 pidfd_open(pid, flags) = @ccall syscall(SYS_pidfd_open::Cint,
                                         pid::pid_t, flags::Cint)::Cint
 

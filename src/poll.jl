@@ -210,19 +210,14 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
     nothing
 end
 
+poll_event_type(::FD{In}) = C.POLLIN
+poll_event_type(::FD{Out}) = C.POLLOUT
+
 
 
 # Linux epoll(7)             https://man7.org/linux/man-pages/man7/epoll.7.html
 
-
-"""
-See `struct epoll_event` in "sys/epoll.h"
-"""
-struct epoll_event
-    events::UInt32
-    data::UInt64
-end
-
+if Sys.islinux()
 
 """
 See PollQueue above.
@@ -230,23 +225,25 @@ See PollQueue above.
 mutable struct EPollQueue
     fd::RawFD
     dict::Dict{RawFD,FD}
-    cvector::Vector{epoll_event}
+    cvector::Vector{C.epoll_event}
     lock::Threads.SpinLock
 end
 
 const epoll_queue = EPollQueue(RawFD(-1),
                                Dict{RawFD,FD}(),
-                               Vector{epoll_event}(undef, 10),
+                               Vector{C.epoll_event}(undef, 10),
                                Threads.SpinLock())
 
 @db function epoll_queue_init()
 
+    #=
     @assert Sys.ARCH != :x86_64 """
         FIXME: UnixIO does not support epoll on x86_64 because
         `struct epoll_event` has `__attribute__((packed))` on x86.
         See https://git.io/JCGMK and https://git.io/JCGDz
         This is not difficult to work around but is not handled yet.
     """
+    =#
     @assert C.EPOLLIN == C.POLLIN
     @assert C.EPOLLOUT == C.POLLOUT
     @assert C.EPOLLHUP == C.POLLHUP
@@ -266,9 +263,13 @@ See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
 """
 @db 4 function epoll_ctl(fd, op, events=0, data=fd; allow=())
                                                   @db 4 fd db_c(op,"EPOLL_CTL")
-    e = [epoll_event(events, fd)]             
-    GC.@preserve e @cerr(allow=allow,
-                         C.epoll_ctl(epoll_queue.fd, op, fd, pointer(e)))
+    e = Ref{C.epoll_event}()
+    p = Base.unsafe_convert(Ptr{C.epoll_event}, e)
+    GC.@preserve e begin
+        p.events = events
+        p.data.fd = fd
+        @cerr(allow=allow, C.epoll_ctl(epoll_queue.fd, op, fd, p))
+    end
 end
 
 epoll_ctl(fd::FD, op, events=0; kw...) =
@@ -298,9 +299,6 @@ end
     end
 end
 
-poll_event_type(::FD{In}) = C.POLLIN
-poll_event_type(::FD{Out}) = C.POLLOUT
-
 
 """
 Call `epoll_wait(7)` to wait for events.
@@ -312,13 +310,14 @@ Call `f(events, fd)` for each event.
               gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))    ;@db 6 n v
     if n >= 0
         for i in 1:n
-            fd = get(q.dict, RawFD(v[i].data), nothing)             ;@db 6 i fd
+            p = pointer(v, i)
+            fd = get(q.dict, RawFD(unsafe_load(p.data.fd)), nothing) ;@db 6 i fd
             if fd == nothing
                 @error "Ignoring epoll_wait() notification v[$i] = $(v[i]) " *
                        "for unknown FD (already deleted?)." v[i] q.dict
             else
                 unregister_for_events(q, fd)
-                f(v[i].events, fd)
+                f(unsafe_load(p.events), fd)
             end
         end
     end
@@ -336,6 +335,7 @@ end
 gc_safe_epoll_wait(epfd, events, maxevents, timeout_ms) = 
     @gc_safe C.epoll_wait(epfd, events, maxevents, timeout_ms)
 
+end # if Sys.islinux()
 
 
 # Pretty Printing.

@@ -1,5 +1,5 @@
 [IOTraits]
-waiting_mechanism = "poll"
+waiting_mechanism = "epoll"
 
 [Preconditions]
 check_postconditions = true

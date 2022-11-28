@@ -201,6 +201,8 @@ IOTraits._wait(fd::FD, ::WaitUsingPosixPoll; deadline=Inf) = wait_for_event(poll
     !fd.gothup
 end
 
+@assert C.termios_size == sizeof(C.termios)
+
 function fdtype(fd)
 
     s = stat(fd)
@@ -683,7 +685,8 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
                   raw_transfer(fd, TransferDirection(fd), buf, Csize_t(count)))
         n != -1 || @db 2 n errno() errname(errno())
         if n == -1
-            @assert errno() == C.EAGAIN
+            @assert errno() == C.EAGAIN ||
+                    errno() == C.EPIPE
             n = 0
         end
         @ensure n <= count
@@ -800,7 +803,7 @@ end
 function ptsname(fd)
     buf = Vector{UInt8}(undef, 100)
     p = pointer(buf)
-    GC.@preserve @cerr C.ptsname_r(fd, p, length(buf))
+    GC.@preserve buf @cerr C.ptsname_r(fd, p, length(buf))
     unsafe_string(p)
 end
 
@@ -1123,17 +1126,14 @@ end
 
 @db function waitpidfd(p::Process; deadline::Float64=Inf)
 
-    @db_not_tested
-
     waitpid(p; deadline=0.0)
 
     while deadline >= time() && isrunning(p)
         r = @cerr allow=C.ESRCH C.pidfd_open(p.pid, 0)
         if r != -1
             fd = FD{In,PidFD}(r)
-            fd.deadline = deadline
             try
-                @dblock fd wait(fd)
+                @dblock fd wait(fd; deadline)
             finally
                 close(fd)
             end
@@ -1256,8 +1256,13 @@ See [posix_spawn(3)](https://man7.org/linux/man-pages/man3/posix_spawn.3.html).
 
     # Allocate Attribute and File Action structs (destoryed in `finally`).
     pid = Ref{C.pid_t}()
+    @assert C.posix_spawnattr_t == Ptr{Cvoid} ||
+            sizeof(C.posix_spawnattr_t) == C.posix_spawnattr_t_size
     attr = Ref{C.posix_spawnattr_t}()
-    actions = Ref{C.posix_spawn_file_actions_t}()
+    @assert C.posix_spawn_file_actions_t == Ptr{Cvoid} ||
+            sizeof(C.posix_spawn_file_actions_t) ==
+                   C.posix_spawn_file_actions_t_size
+    actions = Ref(C.posix_spawn_file_actions_t())
     @cerr0 C.posix_spawnattr_init(attr)
     @cerr0 C.posix_spawn_file_actions_init(actions)
     try
@@ -1267,6 +1272,8 @@ See [posix_spawn(3)](https://man7.org/linux/man-pages/man3/posix_spawn.3.html).
                                                 C.POSIX_SPAWN_SETSID )
 
         # Set all signals to default behaviour.
+        @assert C.sigset_t == Cuint ||
+                sizeof(C.sigset_t) == C.__sigset_t_size
         sigset = Ref{C.sigset_t}()
         @cerr0 C.sigfillset(sigset)
         @cerr0 C.sigdelset(sigset, C.SIGKILL)

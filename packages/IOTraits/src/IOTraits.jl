@@ -955,8 +955,10 @@ poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
                        name == "sleep"  ? WaitBySleeping() :
                                           default_poll_mechanism
 
-const preferred_poll_mechanism =
-    poll_mechanism(@load_preference("waiting_mechanism"))
+const preferred_poll_mechanism = begin
+    pm = poll_mechanism(@load_preference("waiting_mechanism"))
+    isvalid(pm) ? pm : default_poll_mechanism
+end
 else
 const preferred_poll_mechanism = default_poll_mechanism
 end
@@ -1080,7 +1082,7 @@ Pointers can be used for `AbstractArray` buffers of Bits types.
 """
 FromBufferInterface(T::Type{<:AbstractArray}) = ArrayIOInterface(T)
 
-ArrayIOInterface(::Type) where T = UsingIndex()
+ArrayIOInterface(::Type) = UsingIndex()
 
 ArrayIOInterface(::Type{<:Array{T}}) where T =
     isbitstype(T) ? UsingPtr() : UsingIndex()
@@ -1893,7 +1895,7 @@ isconnected(s::Stream) = true
 
 @db function isfinished(s::Stream)
     @require isopen(s)
-    is_input(s) || @db return false
+    is_input(s) || @db return !isconnected(s)
     is_proxy(s) ? isfinished(unwrap(s)) : 
                   isfinished(s, TotalSize(s))
 end
@@ -1932,7 +1934,7 @@ function readbyte(stream, ::LowTransferCost; deadline)
               "Consider using `readline` instead."
         @db_not_tested
     end
-    x = Ref{UInt8}()
+    x = Ref(UInt8(0))
     n = transfer!(stream => x, 1; deadline)
     n == 1 || return nothing
     return x[]
@@ -1989,7 +1991,6 @@ Return the number of items transferred.
         r = transfer!(stream, buf, n - ntransferred; start = ntransferred + 1)
                                             # FIXME ^^^^^ passing start is not allowed for ToPut etc
         if r == 0
-            @db_not_tested
             break
         end
         ntransferred += r

@@ -300,7 +300,8 @@ Write directly to STDERR.
 """
 function debug_write(fd, p, l)
     while l > 0
-        n = C.write(fd, p, l)
+        n = @ccall write(fd::Cint, p::Ptr{Cvoid}, l::Csize_t)::Csize_t
+        
         if n > 0
             l -= n;
             p += n;
@@ -308,7 +309,7 @@ function debug_write(fd, p, l)
             @assert Base.Libc.errno() in (C.EAGAIN, C.EINTR)
         end
     end
-    C.tcdrain(fd)
+    @ccall tcdrain(fd::Cint)::Cint
 end
 debug_write(p, l) = debug_write(Base.STDERR_NO, p, l)
 debug_write(s::String) = GC.@preserve s debug_write(pointer(s), ncodeunits(s))
