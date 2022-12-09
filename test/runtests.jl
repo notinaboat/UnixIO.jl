@@ -64,11 +64,7 @@ uv = UInt8[]; readbytes!(uio, uv, 2)
 @test jv == uv
 @info "Test readbytes(100)"
 jv = UInt8[]; readbytes!(jio, jv, 100)
-@show typeof(uio) typeof(uv)
-@show which(readbytes!, (typeof(uio), typeof(uv), Int))
 uv = UInt8[]; readbytes!(uio, uv, 100)
-@show length(jv), length(uv)
-@show String(copy(jv)), String(copy(uv))
 @test jv == uv
 @info "Test readbytes(100)"
 readbytes!(jio, jv, 100)

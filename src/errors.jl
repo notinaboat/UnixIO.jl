@@ -32,6 +32,7 @@ Throw SystemError with `errno` info for failed C call.
 """
 systemerror(p, errno::Cint=errno(); kw...) =
     Base.systemerror(p, errno; extrainfo=errname(errno))
+systemerror(p, errno; kw...) = systemerror(p, Cint(errno); kw...)
 
 errname(n) = constant_name(n; prefix="E")
 

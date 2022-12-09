@@ -15,7 +15,7 @@ README_DOCS_DIR := ../ReadmeDocs
 HTTP_ROOT := $(CURDIR)
 HTML_TITLE_LINK := https://github.com/notinaboat/UnixIO.jl
 
-include $(README_DOCS_DIR)/Makefile.shared
+#include $(README_DOCS_DIR)/Makefile.shared
 
 HTML_FILES = packages/IOTraits/README.md.html
 .PHONY: docs

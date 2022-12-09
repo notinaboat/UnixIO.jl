@@ -108,8 +108,8 @@ Trait                      Description
 
 `WaitingMechanism`          How to wait for activity? \
                             (`WaitBySleeping`, `WaitUsingPosixPoll`,
-                             `WaitUsingEPoll`, `WaitUsingPidFD` or
-                             `WaitUsingKQueue`)
+                             `WaitUsingEPoll`, `WaitUsingPidFD`,
+                             `WaitUsingKQueue` or `WaitUsingIOURing`)
 
 FIXME update summaries
 --------------------------------------------------------------------------------
@@ -845,6 +845,8 @@ struct WaitUsingPosixPoll <: WaitingMechanism end
 struct WaitUsingEPoll     <: WaitingMechanism end
 struct WaitUsingPidFD     <: WaitingMechanism end
 struct WaitUsingKQueue    <: WaitingMechanism end
+struct WaitUsingIOURing   <: WaitingMechanism end
+
 
 
 """
@@ -878,6 +880,10 @@ Waiting Mechanism     Description
                       number of waiting streams.
                       See [`epoll(7)`][epoll]
 
+`WaitUsingIOURing`    Wait using the Linux `io_uring` mechanism.
+                      Works with local disk files.
+                      See [`io_uring(7)`][io_uring]
+
 `WaitUsingKQueue`     Wait using the BSD `kqueue` mechanism.
                       Like `epoll` but can also wait for files, processes,
                       signals etc. See [`kqueue(2)`][kqueue]
@@ -892,6 +898,7 @@ Waiting Mechanism     Description
 [epoll]: https://man7.org/linux/man-pages/man7/epoll.7.html
 [kqueue]: https://www.freebsd.org/cgi/man.cgi?kqueue
 [pidfd]: http://man7.org/linux/man-pages/man2/pidfd_open.2.html
+[io_uring]: https://manpages.debian.org/unstable/liburing-dev/io_uring.7.en.html
 
 [^SLEEP]: Sleeping may be the most efficient mechanism for small systems with
 simple IO requirements, for large systems where throughput is more important
@@ -899,6 +906,9 @@ than latency, or for systems that simply do not spend a lot of time
 waiting for IO. Sleeping allows other Julia tasks to run immediately, whereas
 the other polling mechanisms all have some amount of book-keeping and system
 call overhead.
+
+FIXME: Conditer WaitWithoutYeilding -- Block calling thread.
+ - Might be useful where low latency is important.
 """
 WaitingMechanism(x) = WaitingMechanism(typeof(x))
 WaitingMechanism(T::Type) = is_proxy(T) ? WaitingMechanism(unwrap(T)) :
@@ -907,11 +917,13 @@ WaitingMechanism(T::Type) = is_proxy(T) ? WaitingMechanism(unwrap(T)) :
 Base.isvalid(::WaitingMechanism) = true
 Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
 Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
+Base.isvalid(::WaitUsingIOURing) = Sys.islinux()
 Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
 
 firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
 
 const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
+                                          WaitUsingIOURing(),
                                           WaitUsingEPoll(),
                                           WaitUsingPosixPoll(),
                                           WaitBySleeping())
@@ -949,11 +961,12 @@ function set_poll_mechanism(x)
           "UnixIO must be recompiled for this setting to take effect."
 end
 
-poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
-                       name == "epoll"  ? WaitUsingEPoll() :
-                       name == "poll"   ? WaitUsingPosixPoll() :
-                       name == "sleep"  ? WaitBySleeping() :
-                                          default_poll_mechanism
+poll_mechanism(name) = name == "io_uring" ? WaitUsingIOURing() :
+                       name == "kqueue"   ? WaitUsingKQueue() :
+                       name == "epoll"    ? WaitUsingEPoll() :
+                       name == "poll"     ? WaitUsingPosixPoll() :
+                       name == "sleep"    ? WaitBySleeping() :
+                                            default_poll_mechanism
 
 const preferred_poll_mechanism = begin
     pm = poll_mechanism(@load_preference("waiting_mechanism"))
@@ -2629,7 +2642,7 @@ export ReadFragmentation,
 
 export WaitingMechanism,
        WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
-       WaitUsingKQueue
+       WaitUsingKQueue, WaitUsingIOURing
 
 export CursorSupport, AbstractHasPosition,
        NoCursors,

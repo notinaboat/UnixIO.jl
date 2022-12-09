@@ -57,6 +57,16 @@ end
     @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
 end
 
+# FIXME
+#
+# if S_ISBLK(st.st_mode)) {
+#        unsigned long long bytes;
+#        if (ioctl(fd, BLKGETSIZE64, &bytes) != 0) {
+#            perror("ioctl");
+#            return -1;
+#            }
+
+
 
 #=
 @db 1 function Base.readline(fd::ReadFD{<:S_IFCHR};

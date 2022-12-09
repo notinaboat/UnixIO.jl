@@ -196,6 +196,7 @@ struct CanonicalMode   <: S_IFCHR end
 
 IOTraits._wait(fd::FD, ::WaitUsingEPoll; deadline=Inf) = wait_for_event(epoll_queue, fd; deadline)
 IOTraits._wait(fd::FD, ::WaitUsingPosixPoll; deadline=Inf) = wait_for_event(poll_queue, fd; deadline)
+IOTraits._wait(fd::FD, ::WaitUsingIOURing; deadline=Inf) = wait_for_event(io_uring_queue, fd; deadline)
 
 @db function  IOTraits.isconnected(fd::FD)
     !fd.gothup
@@ -683,10 +684,11 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR),
                   raw_transfer(fd, TransferDirection(fd), buf, Csize_t(count)))
-        n != -1 || @db 2 n errno() errname(errno())
         if n == -1
-            @assert errno() == C.EAGAIN ||
-                    errno() == C.EPIPE
+            err = errno()
+            @db 2 n err errname(err)
+            @assert err == C.EAGAIN ||
+                    err == C.EPIPE
             n = 0
         end
         @ensure n <= count

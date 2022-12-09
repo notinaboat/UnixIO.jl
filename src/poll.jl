@@ -45,6 +45,7 @@ const poll_queue = PollQueue(Channel{FD}(Inf),
 
     if Sys.islinux()
         epoll_queue_init()
+        io_uring_queue_init()
     end
 end
 
@@ -213,6 +214,154 @@ end
 poll_event_type(::FD{In}) = C.POLLIN
 poll_event_type(::FD{Out}) = C.POLLOUT
 
+# Linux io_uring(7)
+# https://manpages.debian.org/unstable/liburing-dev/io_uring.7.en.html
+#
+# FIXME see : https://discourse.julialang.org/t/io-uring-support/48666
+
+if Sys.islinux()
+
+using LibURing
+using LibURing: io_uring_submit
+const io_uring_get_sqe = LibURing.io_uring_get_sqe
+const io_uring_prep_poll_add = LibURing.io_uring_prep_poll_add
+const io_uring_prep_poll_multishot = LibURing.io_uring_prep_poll_multishot
+const io_uring_prep_poll_remove = LibURing.io_uring_prep_poll_remove
+const io_uring_wait_cqe = LibURing.io_uring_wait_cqe
+const io_uring_cqe_seen = LibURing.io_uring_cqe_seen
+
+gc_safe_io_uring_wait_cqe(ring, cqe) = 
+    @gc_safe io_uring_wait_cqe(ring, cqe)
+
+mutable struct IOURingQueue
+    ring::Ref{LibURing.io_uring}
+    dict::Dict{RawFD,FD}
+    lock::Threads.SpinLock
+end
+
+const io_uring_queue = IOURingQueue(Ref{LibURing.io_uring}(),
+                                    Dict{RawFD,FD}(),
+                                    Threads.SpinLock())
+
+@db function io_uring_queue_init()
+
+    LibURing.io_uring_queue_init(10 #= Queue depth =#, io_uring_queue.ring, 0);
+    
+    Threads.@spawn io_uring_task(io_uring_queue)
+end
+
+"""
+Register `fd` to wake up `io_uring_wait_cqe` on `event`:
+"""
+@db 4 function register_for_events(q::IOURingQueue, fd::FD)
+    @dblock q.lock begin
+        if !haskey(q.dict, fd.fd)
+            q.dict[fd.fd] = fd
+            sqe = io_uring_get_sqe(q.ring)
+            @assert sqe != C_NULL
+            io_uring_prep_poll_multishot(sqe, fd.fd, poll_event_type(fd))
+            sqe.user_data = Base.cconvert(Cint, fd.fd)
+            n = io_uring_submit(q.ring)
+            n == 1 || systemerror("io_uring_prep_poll_multishot()", 0 - n)
+        else
+            @db 2 "Already registered!"
+        end
+    end
+end
+
+@db 4 function unregister_for_events(q::IOURingQueue, fd::FD)
+    @dblock q.lock begin
+        if haskey(q.dict, fd.fd)
+            delete!(q.dict, fd.fd)
+            sqe = io_uring_get_sqe(q.ring)
+            @assert sqe != C_NULL
+            p = Ptr{Nothing}(UInt(Base.cconvert(Cint, fd.fd)))
+            io_uring_prep_poll_remove(sqe, p)
+            n = io_uring_submit(q.ring)
+            n == 1 || systemerror("io_uring_prep_poll_remove()", 0 - n)
+        end
+    end
+end
+    
+
+@db 1 function io_uring_task(q)
+
+    if Threads.threadid() == 1
+        @warn "UnixIO.io_uring_task() is running on thread No. 1!\n" *
+              "Other Tasks on thread 1 may be blocked for up to 100ms while " *
+              "poll_task() is waiting for IO.\n" *
+              "Consider increasing JULIA_NUM_THREADS (`julia --threads N`)."
+
+        timeout_ms = 100
+    else
+        timeout_ms = 60_000
+    end
+
+    while true
+        try
+            cqe = Ref{Ptr{LibURing.io_uring_cqe}}()
+            @cerr gc_safe_io_uring_wait_cqe(q.ring, cqe)
+            cqe_copy = unsafe_load(cqe[])
+            try
+                if cqe_copy.res ∈ (-C.ENOENT, -C.ECANCELED, -C.EALREADY)
+                    @db 1 "io_uring_wait_cqe -> $(errname(-cqe_copy.res))" cqe_copy
+                    continue
+                elseif cqe_copy.res < 0
+                    msg = "io_uring_cqe.res = $(cqe_copy.res)"
+                    @db 1 msg cqe_copy
+                    systemerror(msg, 0 - cqe_copy.res)
+                elseif cqe_copy.res == 0
+                    @db 1 "io_uring_wait_cqe -> cqe_copy.res == 0"
+                    continue
+                else
+                    events = cqe_copy.res
+                    rawfd = RawFD(cqe_copy.user_data)
+                    fd = nothing
+                    @dblock q.lock begin
+                        fd = get(q.dict, rawfd, nothing)
+                    end
+                    if fd == nothing
+                        # FIXME ????
+#                        @error "Ignoring io_uring_wait_cqe() notification " *
+#                               "for unknown FD (already deleted?)." events rawfd
+                    else
+                        if events & (C.POLLHUP | C.POLLNVAL) != 0
+                            fd.gothup = true
+                            @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
+                        end
+                        if fd.nwaiting <= 0
+                            @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
+                        else
+                            @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
+                            @dblock fd notify(fd, events); # Wake: `wait_for_event()`
+                        end
+                    end
+                end
+            finally
+                io_uring_cqe_seen(q.ring, cqe[]);
+            end
+        catch err
+            notify_error(q, err)
+            exception=(err, catch_backtrace())
+            @error "Error in io_uring_task()" exception
+        end
+        yield()
+    end
+    @assert false
+end
+
+function notify_error(q::IOURingQueue, err)
+    #FIXME ??
+    @dblock q.lock begin
+        for fd in values(q.dict)
+            @lock fd Base.notify_error(fd.ready, err)
+        end
+    end
+end
+
+
+end # if Sys.islinux()
+
 
 
 # Linux epoll(7)             https://man7.org/linux/man-pages/man7/epoll.7.html
@@ -311,7 +460,9 @@ Call `f(events, fd)` for each event.
     if n >= 0
         for i in 1:n
             p = pointer(v, i)
-            fd = get(q.dict, RawFD(unsafe_load(p.data.fd)), nothing) ;@db 6 i fd
+            @dblock q.lock begin
+                fd = get(q.dict, RawFD(unsafe_load(p.data.fd)), nothing) ;@db 6 i fd
+            end
             if fd == nothing
                 @error "Ignoring epoll_wait() notification v[$i] = $(v[i]) " *
                        "for unknown FD (already deleted?)." v[i] q.dict
@@ -326,8 +477,10 @@ end
 
 
 function notify_error(q::EPollQueue, err)
-    for fd in values(q.dict)
-        @lock fd Base.notify_error(fd.ready, err)
+    @dblock q.lock begin
+        for fd in values(q.dict)
+            @lock fd Base.notify_error(fd.ready, err)
+        end
     end
 end
 

@@ -1,0 +1,8 @@
+name = "LibURing"
+uuid = "0de80037-07fc-49d2-a15d-861f8975cc75"
+authors = ["sam "]
+version = "0.1.0"
+
+[deps]
+CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
+Liburing_jll = "6524598b-69a8-53ae-b017-622bece5ca95"

@@ -1,8 +1,8 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.8.2"
+julia_version = "1.8.3"
 manifest_format = "2.0"
-project_hash = "4d62466076ad5e7b2abf8330ef1952ecd76dade2"
+project_hash = "3be5f6ad5cceed09b6c81a574436087b9e3c5f15"
 
 [[deps.ANSIColoredPrinters]]
 git-tree-sha1 = "574baf8110975760d391c710b6341da1afa48d8c"
@@ -46,6 +46,12 @@ deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg", "Zlib_jll", "libLLVM_jll"]
 git-tree-sha1 = "0dfffba1b32bb3e30cb0372bfe666a5ddffe37fb"
 uuid = "0ee61d77-7f21-5576-8119-9fcc46b10100"
 version = "13.0.1+3"
+
+[[deps.Cling_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "94f9bc1101643cc702aca061c0dd28964276a35c"
+uuid = "c300d64c-1c1d-5dc3-9d9e-1537157676b9"
+version = "0.9.0+0"
 
 [[deps.CodeTracking]]
 deps = ["InteractiveUtils", "UUIDs"]
@@ -167,8 +173,20 @@ deps = ["Artifacts", "Libdl", "MbedTLS_jll"]
 uuid = "29816b5a-b9ab-546f-933c-edad1886dfa8"
 version = "1.10.2+0"
 
+[[deps.LibURing]]
+deps = ["CEnum", "Liburing_jll"]
+path = "packages/LibURing"
+uuid = "0de80037-07fc-49d2-a15d-861f8975cc75"
+version = "0.1.0"
+
 [[deps.Libdl]]
 uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+
+[[deps.Liburing_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "7b62e7b05415ae6180d597a8b7cdc2b8deb2f41c"
+uuid = "6524598b-69a8-53ae-b017-622bece5ca95"
+version = "2.4.0+0"
 
 [[deps.LinearAlgebra]]
 deps = ["Libdl", "libblastrampoline_jll"]
@@ -337,7 +355,7 @@ uuid = "1986cc42-f94f-5a68-af5c-568840ba703d"
 version = "1.12.1"
 
 [[deps.UnixIOHeaders]]
-deps = ["CEnum", "Clang", "Serialization"]
+deps = ["CEnum", "Clang", "Cling_jll", "Serialization"]
 path = "packages/UnixIOHeaders"
 uuid = "b158d995-0785-490a-9245-6a3aff8d8d72"
 version = "0.2.0"
