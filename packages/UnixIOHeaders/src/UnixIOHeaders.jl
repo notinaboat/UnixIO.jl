@@ -11,9 +11,9 @@ function system_include_path()
         sdk = chomp(read(`xcrun --show-sdk-path`, String))
         path = [joinpath(sdk, "usr/include")]
     elseif Sys.islinux()
-        path = ["/usr/include"]
+        path = []
         try
-            x = eachline(`sh -c "gcc -xc -E -v /dev/null 2>&1"`)
+            x = eachline(`sh -c "gcc -xc -xc++ -E -v /dev/null 2>&1"`)
             line, state = iterate(x)
             while line != nothing &&
                   line != "#include <...> search starts here:"
@@ -50,6 +50,8 @@ function find_system_header(header)
 end
 
 
+using Cling_jll
+
 function macro_values(headers, cflags, macro_names, struct_names)
 
     result = Dict{Symbol,Expr}()
@@ -63,7 +65,8 @@ function macro_values(headers, cflags, macro_names, struct_names)
             ("\"$delim\"\n\"$(n)_size\"\nsizeof($n)\n" for n in struct_names)...
         )
         write("cinclude_tmp.$(Sys.MACHINE).c", read(cfile, String))
-        cmd = "cling --nologo -w $(join(cflags, " ")) < $cfile 2>/dev/null"
+        cling = Cling_jll.cling_path
+        cmd = "$cling --nologo -w $(join(cflags, " ")) < $cfile 2>/dev/null"
         cmd = `sh -c $cmd`
         @info cmd 
 
@@ -202,17 +205,21 @@ function parse_headers()
 
     build!(ctx, BUILDSTAGE_NO_PRINTING)
 
-    exclude = r"""
-        ^ (
-          errno
-          | MSG_TRYHARD         # duplicate #define and enum
-          | _.*
-        ) $
-    """x
+    # Filter out symbols that break wrapper generation.
+    nodes = filter(node -> node.id ∉ [
+        :imaxdiv,           # imaxdiv_t missing ??
+        :errno,             # not constant
+        :wait,              # fn/struct clash
+        :sigvec,            # "
+        :if_nameindex,      # "
+        :if_freenameindex,
+        :MSG_TRYHARD
+    ], ctx.dag.nodes)
 
+    # Filter out macros begining with underscore.
     nodes = filter(node -> ! (node isa ExprNode{Generators.MacroDefault})
-                        || ! contains(string(node.id), exclude),
-                   ctx.dag.nodes)
+                        || ! startswith(string(node.id), "_"),
+                   nodes)
 
     structs = filter(x -> (   x isa ExprNode{Generators.StructDefinition}
                            || x isa ExprNode{Generators.StructAnonymous})
@@ -271,10 +278,16 @@ macro include_headers()
         let exprs = UnixIOHeaders.parse_headers()
             write(joinpath(@__DIR__, "include_headers_dump.$(Sys.MACHINE).jl"),
                   join(string.(exprs), "\n"))
-            #for ex in exprs
-            #    @show ex
-            #    Base.eval(@__MODULE__, ex)
-            #end
+            #=
+            for ex in exprs
+                @show ex
+                try
+                    Base.eval(@__MODULE__, ex)
+                catch err
+                    @error err ex
+                end
+            end
+            =#
             Base.eval(@__MODULE__, Expr(:block, exprs...))
             x = UnixIOHeaders.find_constants(@__MODULE__)
             Base.eval(@__MODULE__, :(const constants = $x))
@@ -420,6 +433,6 @@ WCOREDUMP(x) = x & 0x80
 
 
 
-end # baremodule POSIX
+end # baremodule C
 
 end # module
