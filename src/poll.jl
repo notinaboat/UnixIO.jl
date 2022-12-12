@@ -42,11 +42,6 @@ const poll_queue = PollQueue(Channel{FD}(Inf),
 
     # Global Task to run `poll(2)`.
     Threads.@spawn poll_task(poll_queue)              ;@db "@spawn poll_task()"
-
-    if Sys.islinux()
-        epoll_queue_init()
-        io_uring_queue_init()
-    end
 end
 
 function wakeup_pipe()
@@ -214,8 +209,6 @@ end
 poll_event_type(::FD{In}) = C.POLLIN
 poll_event_type(::FD{Out}) = C.POLLOUT
 
-include("iouring.jl")
-include("epoll.jl")
 
 
 

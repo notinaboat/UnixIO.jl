@@ -115,6 +115,11 @@ include("stat.jl")
     @db 1 "                     6: Extra verbose."
 
     poll_queue_init()
+    if Sys.islinux()
+        epoll_queue_init()
+        io_uring_queue_init()
+    end
+
     atexit(kill_all_processes)
 
     global stdin
@@ -511,6 +516,8 @@ raw_transfer(fd, ::LibCTransfer, ::In,  buf, count) = C.read(fd, buf, count)
 
 include("timer.jl")
 include("poll.jl")
+include("iouring.jl")
+include("epoll.jl")
 include("aio.jl")
 
 
