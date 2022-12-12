@@ -108,6 +108,9 @@ end
 end
 
 
+waiting_fds(q::PollQueue) = q.fd_vector
+
+
 """
 Run `poll_wait()` in a loop.
 """
@@ -139,20 +142,15 @@ Run `poll_wait()` in a loop.
                 end
             end
         catch err
-            notify_error(q, err)
+            for fd in waiting_fds(q)
+                @lock fd.ready Base.notify_error(fd.ready, err)
+            end
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
         end
         yield()
     end
     @assert false
-end
-
-
-function notify_error(q::PollQueue, err)
-    for fd in q.fd_vector
-        @lock fd.ready Base.notify_error(fd.ready, err)
-    end
 end
 
 
@@ -216,255 +214,9 @@ end
 poll_event_type(::FD{In}) = C.POLLIN
 poll_event_type(::FD{Out}) = C.POLLOUT
 
-# Linux io_uring(7)
-# https://manpages.debian.org/unstable/liburing-dev/io_uring.7.en.html
-#
-# FIXME see : https://discourse.julialang.org/t/io-uring-support/48666
+include("iouring.jl")
+include("epoll.jl")
 
-if Sys.islinux()
-
-using LibURing
-using LibURing:
-    io_uring_submit,
-    io_uring_get_sqe,
-    io_uring_prep_read,
-    io_uring_prep_write,
-    io_uring_prep_poll_add,
-    io_uring_prep_poll_multishot,
-    io_uring_prep_poll_remove,
-    io_uring_wait_cqe,
-    io_uring_cqe_seen
-
-gc_safe_io_uring_wait_cqe(ring, cqe) = 
-    @gc_safe io_uring_wait_cqe(ring, cqe)
-
-mutable struct IOURingQueue
-    ring::Ref{LibURing.io_uring}
-    dict::Dict{UInt,FD}
-    lock::Threads.SpinLock
-end
-
-const io_uring_queue = IOURingQueue(Ref{LibURing.io_uring}(),
-                                    Dict{UInt,FD}(),
-                                    Threads.SpinLock())
-
-@db function io_uring_queue_init()
-
-    LibURing.io_uring_queue_init(10 #= Queue depth =#, io_uring_queue.ring, 0);
-    
-    Threads.@spawn poll_task(io_uring_queue)
-end
-
-
-const IO_URING_POLL_REQUEST = unsigned(1 << 63)
-const IO_URING_READ_REQUEST = unsigned(1 << 62)
-
-#FIXME what if two tasks are waiting for the same file descriptor.
-# (possibly from two different UnixIO.FD objects).
-# Need to handle this in `q.dict` ?
-
-"""
-Register `fd` to wake up `io_uring_wait_cqe` on `event`:
-"""
-@db 4 function register_for_events(q::IOURingQueue, fd)
-    fdkey = unsigned(IO_URING_POLL_REQUEST | Base.cconvert(Cint, fd.fd))
-    @dblock q.lock begin
-        if !haskey(q.dict, fdkey)
-            q.dict[fdkey] = fd
-            sqe = io_uring_get_sqe(q.ring)
-            @assert sqe != C_NULL
-            #io_uring_prep_poll_multishot(sqe, fd.fd, poll_event_type(fd))
-            io_uring_prep_poll_add(sqe, fd.fd, poll_event_type(fd))
-            sqe.user_data = fdkey
-            n = io_uring_submit(q.ring)
-            n == 1 || systemerror("io_uring_prep_poll_multishot()", 0 - n)
-        else
-            @db 2 "Already registered!"
-        end
-    end
-end
-
-@db 4 function unregister_for_events(q::IOURingQueue, fd)
-    fdkey = unsigned(IO_URING_POLL_REQUEST | Base.cconvert(Cint, fd.fd))
-    @dblock q.lock begin
-        # FIXME if haskey(q.dict, fd.fd)
-            delete!(q.dict, fdkey)
-            # FIXME sqe = io_uring_get_sqe(q.ring)
-            # FIXME @assert sqe != C_NULL
-            # FIXME p = Ptr{Nothing}(UInt(Base.cconvert(Cint, fd.fd)))
-            # FIXME io_uring_prep_poll_remove(sqe, p)
-            # FIXME n = io_uring_submit(q.ring)
-            # FIXME n == 1 || systemerror("io_uring_prep_poll_remove()", 0 - n)
-        # FIXME end
-    end
-end
-    
-
-@db 4 function poll_wait(f::Function, q::IOURingQueue, timeout_ms::Int)
-    cqeref = Ref{Ptr{LibURing.io_uring_cqe}}()
-    @cerr gc_safe_io_uring_wait_cqe(q.ring, cqeref)
-    cqe = cqeref[]
-    res = unsafe_load(cqe.res)
-    user_data = unsafe_load(cqe.user_data)
-    io_uring_cqe_seen(q.ring, cqe)
-    
-    if res ∈ (-C.ENOENT, -C.ECANCELED, -C.EALREADY)
-        @db 1 "io_uring_wait_cqe -> $(errname(-res))" res user_data
-    elseif res < 0
-        msg = "io_uring_cqe.res = $res"
-        @db 1 msg res user_data
-        systemerror(msg, 0 - res)
-    else
-        fd = nothing
-        @dblock q.lock begin
-            fd = get(q.dict, user_data, nothing)
-        end
-        if fd == nothing
-            # FIXME ????
-#                        @error "Ignoring io_uring_wait_cqe() notification " *
-#                               "for unknown FD (already deleted?)." events rawfd
-        elseif user_data & IO_URING_POLL_REQUEST != 0
-            f(res, fd)
-        elseif user_data & IO_URING_READ_REQUEST != 0
-            @db 2 "read $(res) -> notify($fd)"
-            @dblock fd notify(fd, res);
-            # Wake: `raw_transfer(fd, ::IOURingTransfer, ...)`
-        end
-    end
-end
-
-
-
-end # if Sys.islinux()
-
-
-
-# Linux epoll(7)             https://man7.org/linux/man-pages/man7/epoll.7.html
-
-if Sys.islinux()
-
-"""
-See PollQueue above.
-"""
-mutable struct EPollQueue
-    fd::RawFD
-    dict::Dict{RawFD,FD}
-    cvector::Vector{C.epoll_event}
-    lock::Threads.SpinLock
-end
-
-const epoll_queue = EPollQueue(RawFD(-1),
-                               Dict{RawFD,FD}(),
-                               Vector{C.epoll_event}(undef, 10),
-                               Threads.SpinLock())
-
-@db function epoll_queue_init()
-
-    #=
-    @assert Sys.ARCH != :x86_64 """
-        FIXME: UnixIO does not support epoll on x86_64 because
-        `struct epoll_event` has `__attribute__((packed))` on x86.
-        See https://git.io/JCGMK and https://git.io/JCGDz
-        This is not difficult to work around but is not handled yet.
-    """
-    =#
-    @assert C.EPOLLIN == C.POLLIN
-    @assert C.EPOLLOUT == C.POLLOUT
-    @assert C.EPOLLHUP == C.POLLHUP
-
-    # Global FD interface to Linux epoll(7).
-    epoll_queue.fd = RawFD(@cerr C.epoll_create1(C.EPOLL_CLOEXEC))
-
-    # Global Task to run `epoll_wait(7)`.
-    Threads.@spawn poll_task(epoll_queue)
-end
-
-
-
-"""
-Add, modify or delete epoll target FDs.
-See [epoll_ctl(7)(https://man7.org/linux/man-pages/man7/epoll_ctl.7.html)
-"""
-@db 4 function epoll_ctl(fd, op, events=0, data=fd; allow=())
-                                                  @db 4 fd db_c(op,"EPOLL_CTL")
-    e = Ref{C.epoll_event}()
-    p = Base.unsafe_convert(Ptr{C.epoll_event}, e)
-    GC.@preserve e begin
-        p.events = events
-        p.data.fd = fd
-        @cerr(allow=allow, C.epoll_ctl(epoll_queue.fd, op, fd, p))
-    end
-end
-
-epoll_ctl(fd::FD, op, events=0; kw...) =
-    epoll_ctl(convert(Cint, fd), op, events; kw...)
-
-
-"""
-Register `fd` to wake up `epoll_wait(7)` on `event`:
-"""
-@db 4 function register_for_events(q::EPollQueue, fd)
-    @dblock q.lock begin
-        if !haskey(q.dict, fd.fd)
-            q.dict[fd.fd] = fd
-            epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
-        else
-            @db 2 "Already registered!"
-        end
-    end
-end
-
-@db 4 function unregister_for_events(q::EPollQueue, fd)
-    @dblock q.lock begin
-        if haskey(q.dict, fd.fd)
-            delete!(q.dict, fd.fd)
-            epoll_ctl(fd, C.EPOLL_CTL_DEL)#; allow=C.ENOENT)
-        end
-    end
-end
-
-
-"""
-Call `epoll_wait(7)` to wait for events.
-Call `f(events, fd)` for each event.
-"""
-@db 4 function poll_wait(f::Function, q::EPollQueue, timeout_ms::Int)
-    v = q.cvector                                                 ;@db 6 q.dict
-    n = @cerr(allow=C.EINTR,
-              gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))    ;@db 6 n v
-    if n >= 0
-        for i in 1:n
-            p = pointer(v, i)
-            fd = nothing
-            @dblock q.lock begin
-                fd = get(q.dict, RawFD(unsafe_load(p.data.fd)), nothing) ;@db 6 i fd
-            end
-            if fd == nothing
-                @error "Ignoring epoll_wait() notification v[$i] = $(v[i]) " *
-                       "for unknown FD (already deleted?)." v[i] q.dict
-            else
-                unregister_for_events(q, fd)
-                f(unsafe_load(p.events), fd)
-            end
-        end
-    end
-    nothing
-end
-
-
-function notify_error(q::Union{EPollQueue,IOURingQueue}, err)
-    @dblock q.lock begin
-        for fd in values(q.dict)
-            @lock fd Base.notify_error(fd.ready, err)
-        end
-    end
-end
-
-
-gc_safe_epoll_wait(epfd, events, maxevents, timeout_ms) = 
-    @gc_safe C.epoll_wait(epfd, events, maxevents, timeout_ms)
-
-end # if Sys.islinux()
 
 
 # Pretty Printing.

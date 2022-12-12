@@ -3,39 +3,6 @@ Read-only Unix File Descriptor.
 """
 
 
-"""
-### Reading from a pseudoterminal device.
-
-Reading from a pseudoterminal device is a special case.
-
-On Linux `read(2)` returns `EIO` when called before a client has connected.
-If a client connects, writes some data and then disconnects before `read(2)`
-is called: `read(2)` returns the data and then returns `EIO` if called again.
-
-On macOS `read(2)` returns `0` when called before a client has connected.
-If a client connects, writes some data and then disconnects before `read(2)`
-is called: `read(2)` simply returns `0` and the data is lost.
-
-To avoid this situation a duplicate client fd is held open for the lifetime
-of the pseudoterminal device (`fd.extra[:pt_clientfd]`). This has the effect that
-`read(2)` will always return `EAGAIN` if there is no data available.
-(The reader then waits for `poll(2)` to indicate when data is ready as usual.)
-
-The remaining problem is that because `read(2)` will never return `0` there
-is no way to detect when the client has closed the terminal.
-This `raw_transfer` method handles this by checking if the client process
-is still alive and returning `0` if it has terminated.
-"""
-@db 2 function raw_transfer(fd::FD{In,Pseudoterminal}, ::IOTraits.In, buf, count)
-    n = C.read(fd.fd, buf, count)
-    if n == -1
-        err = errno()
-        if err == C.EAGAIN && !isalive(fd.extra[:pt_client])
-            @db 2 return 0 "Pseudoterminal client process died. -> HUP!"
-        end
-    end
-    @db 2 return n
-end
 
 
 @db 1 function IOTraits._bytesavailable(fd::FD, ::SupportsStatSize)
