@@ -722,7 +722,7 @@ end
 
 @db 1 function raw_transfer(fd, ::IOURingTransfer, ::In,  buf, count)
 
-    fdkey = IO_URING_READ_REQUEST | Base.cconvert(Cint, fd.fd)
+    fdkey = unsigned(IO_URING_READ_REQUEST | Base.cconvert(Cint, fd.fd))
 
     @dblock io_uring_queue.lock begin
         @require !haskey(io_uring_queue.dict, fdkey)

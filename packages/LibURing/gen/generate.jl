@@ -21,7 +21,8 @@ build!(Generators.create_context(
             "library_name" => "liburing"
         ),
         "codegen" => Dict{String,Any}(
-            "use_ccall_macro" => true
+            "use_ccall_macro" => true,
+            "field_access_method_list" => ["io_uring_cqe"]
         ),
     )
 ))

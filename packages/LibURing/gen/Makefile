@@ -1,2 +1,2 @@
 ../src/generated.jl: generate.jl
-	julia generate.jl
+	julia --Project generate.jl

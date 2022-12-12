@@ -184,6 +184,16 @@ struct io_uring_cqe
     big_cqe::Ptr{__u64}
 end
 
+
+function Base.getproperty(x::Ptr{io_uring_cqe}, f::Symbol)
+    f === :user_data && return Ptr{__u64}(x + 0)
+    f === :res && return Ptr{__s32}(x + 8)
+    f === :flags && return Ptr{__u32}(x + 12)
+    f === :big_cqe && return Ptr{Ptr{__u64}}(x + 16)
+    return getfield(x, f)
+end
+
+
 @cenum var"##Ctag#347"::UInt32 begin
     IORING_CQE_BUFFER_SHIFT = 16
 end
