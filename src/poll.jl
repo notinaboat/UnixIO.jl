@@ -74,6 +74,8 @@ Wait for an event to occur on `fd`.
 @db 2 function wait_for_event(queue, fd::FD; deadline=Inf)
     assert_havelock(fd)
 
+#    @info "wait_for_event" fd
+
     timer = register_timer(deadline) do
         @dblock fd notify(fd, :timeout)
     end
@@ -203,7 +205,7 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
             end
         end
     end
-    deleteat!(pollv, indexes_to_delete)                        ;@db 6 del pollv
+    deleteat!(pollv, indexes_to_delete)           ;@db 6 indexes_to_delete pollv
     deleteat!(fdv, indexes_to_delete)
 
     # Check for timeouts.
@@ -222,25 +224,28 @@ poll_event_type(::FD{Out}) = C.POLLOUT
 if Sys.islinux()
 
 using LibURing
-using LibURing: io_uring_submit
-const io_uring_get_sqe = LibURing.io_uring_get_sqe
-const io_uring_prep_poll_add = LibURing.io_uring_prep_poll_add
-const io_uring_prep_poll_multishot = LibURing.io_uring_prep_poll_multishot
-const io_uring_prep_poll_remove = LibURing.io_uring_prep_poll_remove
-const io_uring_wait_cqe = LibURing.io_uring_wait_cqe
-const io_uring_cqe_seen = LibURing.io_uring_cqe_seen
+using LibURing:
+    io_uring_submit,
+    io_uring_get_sqe,
+    io_uring_prep_read,
+    io_uring_prep_write,
+    io_uring_prep_poll_add,
+    io_uring_prep_poll_multishot,
+    io_uring_prep_poll_remove,
+    io_uring_wait_cqe,
+    io_uring_cqe_seen
 
 gc_safe_io_uring_wait_cqe(ring, cqe) = 
     @gc_safe io_uring_wait_cqe(ring, cqe)
 
 mutable struct IOURingQueue
     ring::Ref{LibURing.io_uring}
-    dict::Dict{RawFD,FD}
+    dict::Dict{Int,FD}
     lock::Threads.SpinLock
 end
 
 const io_uring_queue = IOURingQueue(Ref{LibURing.io_uring}(),
-                                    Dict{RawFD,FD}(),
+                                    Dict{Int,FD}(),
                                     Threads.SpinLock())
 
 @db function io_uring_queue_init()
@@ -250,17 +255,38 @@ const io_uring_queue = IOURingQueue(Ref{LibURing.io_uring}(),
     Threads.@spawn io_uring_task(io_uring_queue)
 end
 
+
+@db 4 function _io_uring_read(q::IOURingQueue, fd)
+
+    sqe = io_uring_get_sqe(q.ring)
+#    io_uring_prep_read(sqe, fd.fd<
+#                        void *buf,
+#                        unsigned nbytes,
+#                        __u64 offset);
+#
+#
+end
+
+const IO_URING_POLL_REQUEST = (1 << 63)
+const IO_URING_READ_REQUEST = (1 << 62)
+
+#FIXME what if two tasks are waiting for the same file descriptor.
+# (possibly from two different UnixIO.FD objects).
+# Need to handle this in `q.dict` ?
+
 """
 Register `fd` to wake up `io_uring_wait_cqe` on `event`:
 """
-@db 4 function register_for_events(q::IOURingQueue, fd::FD)
+@db 4 function register_for_events(q::IOURingQueue, fd)
+    fdkey = IO_URING_POLL_REQUEST | Base.cconvert(Cint, fd.fd)
     @dblock q.lock begin
-        if !haskey(q.dict, fd.fd)
-            q.dict[fd.fd] = fd
+        if !haskey(q.dict, fdkey)
+            q.dict[fdkey] = fd
             sqe = io_uring_get_sqe(q.ring)
             @assert sqe != C_NULL
-            io_uring_prep_poll_multishot(sqe, fd.fd, poll_event_type(fd))
-            sqe.user_data = Base.cconvert(Cint, fd.fd)
+            #io_uring_prep_poll_multishot(sqe, fd.fd, poll_event_type(fd))
+            io_uring_prep_poll_add(sqe, fd.fd, poll_event_type(fd))
+            sqe.user_data = fdkey
             n = io_uring_submit(q.ring)
             n == 1 || systemerror("io_uring_prep_poll_multishot()", 0 - n)
         else
@@ -269,17 +295,18 @@ Register `fd` to wake up `io_uring_wait_cqe` on `event`:
     end
 end
 
-@db 4 function unregister_for_events(q::IOURingQueue, fd::FD)
+@db 4 function unregister_for_events(q::IOURingQueue, fd)
+    fdkey = IO_URING_POLL_REQUEST | Base.cconvert(Cint, fd.fd)
     @dblock q.lock begin
-        if haskey(q.dict, fd.fd)
-            delete!(q.dict, fd.fd)
-            sqe = io_uring_get_sqe(q.ring)
-            @assert sqe != C_NULL
-            p = Ptr{Nothing}(UInt(Base.cconvert(Cint, fd.fd)))
-            io_uring_prep_poll_remove(sqe, p)
-            n = io_uring_submit(q.ring)
-            n == 1 || systemerror("io_uring_prep_poll_remove()", 0 - n)
-        end
+        # FIXME if haskey(q.dict, fd.fd)
+            delete!(q.dict, fdkey)
+            # FIXME sqe = io_uring_get_sqe(q.ring)
+            # FIXME @assert sqe != C_NULL
+            # FIXME p = Ptr{Nothing}(UInt(Base.cconvert(Cint, fd.fd)))
+            # FIXME io_uring_prep_poll_remove(sqe, p)
+            # FIXME n = io_uring_submit(q.ring)
+            # FIXME n == 1 || systemerror("io_uring_prep_poll_remove()", 0 - n)
+        # FIXME end
     end
 end
     
@@ -310,31 +337,33 @@ end
                     msg = "io_uring_cqe.res = $(cqe_copy.res)"
                     @db 1 msg cqe_copy
                     systemerror(msg, 0 - cqe_copy.res)
-                elseif cqe_copy.res == 0
-                    @db 1 "io_uring_wait_cqe -> cqe_copy.res == 0"
-                    continue
                 else
-                    events = cqe_copy.res
-                    rawfd = RawFD(cqe_copy.user_data)
                     fd = nothing
                     @dblock q.lock begin
-                        fd = get(q.dict, rawfd, nothing)
+                        fd = get(q.dict, cqe_copy.user_data, nothing)
                     end
                     if fd == nothing
                         # FIXME ????
 #                        @error "Ignoring io_uring_wait_cqe() notification " *
 #                               "for unknown FD (already deleted?)." events rawfd
-                    else
+                    elseif cqe_copy.user_data & IO_URING_POLL_REQUEST != 0
+                        events = cqe_copy.res
                         if events & (C.POLLHUP | C.POLLNVAL) != 0
                             fd.gothup = true
                             @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                         end
-                        if fd.nwaiting <= 0
+                        if events == 0
+                            @db 1 "io_uring_wait_cqe -> cqe_copy.res == 0"
+                        elseif fd.nwaiting <= 0
                             @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
                         else
                             @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
                             @dblock fd notify(fd, events); # Wake: `wait_for_event()`
                         end
+                    elseif cqe_copy.user_data & IO_URING_READ_REQUEST != 0
+                        @db 2 "read $(cqe_copy.res) -> notify($fd)"
+                        @dblock fd notify(fd, cqe_copy.res);
+                        # Wake: `raw_transfer(fd, ::IOURingTransfer, ...)`
                     end
                 end
             finally
@@ -428,7 +457,7 @@ epoll_ctl(fd::FD, op, events=0; kw...) =
 """
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
-@db 4 function register_for_events(q::EPollQueue, fd::FD)
+@db 4 function register_for_events(q::EPollQueue, fd)
     @dblock q.lock begin
         if !haskey(q.dict, fd.fd)
             q.dict[fd.fd] = fd
@@ -439,7 +468,7 @@ Register `fd` to wake up `epoll_wait(7)` on `event`:
     end
 end
 
-@db 4 function unregister_for_events(q::EPollQueue, fd::FD)
+@db 4 function unregister_for_events(q::EPollQueue, fd)
     @dblock q.lock begin
         if haskey(q.dict, fd.fd)
             delete!(q.dict, fd.fd)
@@ -460,6 +489,7 @@ Call `f(events, fd)` for each event.
     if n >= 0
         for i in 1:n
             p = pointer(v, i)
+            fd = nothing
             @dblock q.lock begin
                 fd = get(q.dict, RawFD(unsafe_load(p.data.fd)), nothing) ;@db 6 i fd
             end

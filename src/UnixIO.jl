@@ -241,6 +241,16 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
 IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
     IOTraits.preferred_poll_mechanism
 
+#IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:File}}) =
+#    IOTraits.firstvalid(WaitUsingIOURing(),
+#                        WaitBySleeping())
+
+
+IOTraits.TransferMechanism(::Type{<:FD{<:Any,<:File}}) = 
+    IOTraits.firstvalid(IOURingTransfer(),
+                        AIOTransfer(),
+                        LibCTransfer())
+
 
 # FIXME unify with open() ?
 @db 3 function FD(fd, flags = fcntl_getfl(fd); events=nothing)
@@ -683,7 +693,10 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
     @require count > 0
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR),
-                  raw_transfer(fd, TransferDirection(fd), buf, Csize_t(count)))
+                  raw_transfer(fd,
+                               TransferMechanism(fd),
+                               TransferDirection(fd),
+                               buf, Csize_t(count)))
         if n == -1
             err = errno()
             @db 2 n err errname(err)
@@ -696,13 +709,81 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
     end
 end
 
-raw_transfer(fd, ::Out, buf, count) = C.write(fd, buf, count)
-raw_transfer(fd, ::In,  buf, count) = C.read(fd, buf, count)
-
-
+raw_transfer(fd, ::LibCTransfer, ::Out, buf, count) = C.write(fd, buf, count)
+raw_transfer(fd, ::LibCTransfer, ::In,  buf, count) = C.read(fd, buf, count)
 
 include("timer.jl")
 include("poll.jl")
+
+function raw_transfer(fd, ::IOURingTransfer, ::Out, buf, count)
+    # FIXME
+    C.write(fd, buf, count)
+end
+
+@db 1 function raw_transfer(fd, ::IOURingTransfer, ::In,  buf, count)
+
+    fdkey = IO_URING_READ_REQUEST | Base.cconvert(Cint, fd.fd)
+
+    @dblock io_uring_queue.lock begin
+        @require !haskey(io_uring_queue.dict, fdkey)
+        io_uring_queue.dict[fdkey] = fd
+    end
+
+    try
+        sqe = io_uring_get_sqe(io_uring_queue.ring)
+        io_uring_prep_read(sqe, fd, buf, count, unsigned(-1) #= offset =#);
+        sqe.user_data = fdkey
+        n = io_uring_submit(io_uring_queue.ring)
+        n == 1 || systemerror("io_uring_prep_read()", 0 - n)
+
+        @db return @dblock fd wait(fd.ready)
+
+    finally
+        @dblock io_uring_queue.lock delete!(io_uring_queue.dict, fdkey)
+    end
+end
+
+
+function raw_transfer(fd, ::AIOTransfer, ::Out, buf, count)
+    # FIXME
+    C.write(fd, buf, count)
+end
+
+@db 1 function raw_transfer(fd, ::AIOTransfer, ::In,  buf, count)
+
+    cb = Ref{C.aiocb}()
+    cbp = Base.unsafe_convert(Ptr{C.aiocb}, cb)
+
+    offset = @cerr C.lseek(fd, 0, C.SEEK_CUR)
+
+    GC.@preserve cb begin
+        cbp.aio_fildes = fd
+        cbp.aio_offset = offset
+        cbp.aio_buf = buf
+        cbp.aio_nbytes = count
+        cbp.aio_reqprio = 0
+        cbp.aio_sigevent.sigev_notify = C.SIGEV_NONE
+        cbp.aio_lio_opcode = 0
+
+        @cerr0 C.aio_read(cbp)
+    
+        while true
+            n = C.aio_error(cbp)
+            if n == C.EINPROGRESS
+                sleep(0.1)
+            elseif n == C.ECANCELED
+                return 0
+            elseif n == 0
+                n = @cerr C.aio_return(cbp)
+                @cerr C.lseek(fd, offset + n, C.SEEK_SET)
+                return n
+            else
+                err = n
+                systemerror("C.aio_read()", err)
+            end
+        end
+    end
+end
 
 
 

@@ -12,7 +12,11 @@ using UnixIO: C
 - Close while transfer is waiting.
 
 """
- 
+
+@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.Stream})
+@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.File})
+@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.Stream})
+@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.File})
 
 cd(@__DIR__)
 

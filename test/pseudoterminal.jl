@@ -10,7 +10,7 @@ using Crayons
 
 function ptdump(f, cmd, cin, cout)
 
-    @info "ptdump" cmd cin cout
+    #@info "ptdump" cmd cin cout
 
     blue = crayon"fg:blue"
     red = crayon"bold fg:red"

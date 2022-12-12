@@ -106,6 +106,10 @@ Trait                      Description
 `CursorSupport`             Are `mark` and `seek` supported? \
                             (`NoCursors`, `Seekable` or `Markable`)
 
+`TransferMechanism`         How to transfer bytes?
+                            (`LibCTransfer`, `IOURingTransfer`,
+                             or `AIOTransfer`)
+
 `WaitingMechanism`          How to wait for activity? \
                             (`WaitBySleeping`, `WaitUsingPosixPoll`,
                              `WaitUsingEPoll`, `WaitUsingPidFD`,
@@ -501,7 +505,7 @@ Base.unlock(s::Stream) = is_proxy(s) ? unlock(unwrap(s)) :
     @warn "Base.unlock(::$(typeof(s)) not defined!"
 
 @db function Base.wait(s::Stream; deadline=Inf, timeout=Inf)
-    deadline = deadline_or_timeout(deadline, timeout)             ;@db deadline
+    deadline = deadline_or_timeout(deadline, timeout)     ;@db deadline - time()
     is_proxy(s) ? wait(unwrap(s); deadline) :
                  _wait(s, WaitingMechanism(s); deadline)
 end
@@ -836,6 +840,52 @@ that the second transfer adheres to the specified deadline.
 end
 
 
+# Transfer Mechanism Trait
+
+abstract type TransferMechanism end
+struct LibCTransfer    <: TransferMechanism end
+struct IOURingTransfer <: TransferMechanism end
+struct AIOTransfer     <: TransferMechanism end
+
+
+"""
+The `TransferMechanism` trait describes ways transferring bytes to/from
+a file descriptor.
+
+`TransferMechanism(stream)` returns one of:
+
+--------------------------------------------------------------------------------
+Transfer Mechanism    Description 
+--------------------- ----------------------------------------------------------
+`LibCTransfer`        Transfer bytes using [`read(2)`][read2] and
+                      [`write(2)`][write2].
+
+`IOURingTransfer`     Transfer bytes using
+                      [`io_uring_prep_read(3)`][prep_read],
+                      [`io_uring_prep_write(3)`][prep_write] and
+                      [`io_uring_wait_cqe(3)`][wait_cqe].
+
+`AIOTransfer`         Transfer bytes using
+                      [AIO](https://man7.org/linux/man-pages/man7/aio.7.html)
+                      POSIX asynchronous I/O.
+--------------------------------------------------------------------------------
+
+[read2]: https://man7.org/linux/man-pages/man2/read.2.html
+[write2]: https://man7.org/linux/man-pages/man2/write.2.html
+[prep_read]: https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_read.3.en.html
+[prep_write]: https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_write.3.en.html
+[wait_cqe]: https://manpages.debian.org/unstable/liburing-dev/io_uring_wait_cqe.3.en.html
+
+"""
+TransferMechanism(x) = TransferMechanism(typeof(x))
+TransferMechanism(T::Type) = is_proxy(T) ? TransferMechanism(unwrap(T)) :
+                                           LibCTransfer()
+Base.isvalid(::TransferMechanism) = true
+Base.isvalid(::IOURingTransfer) = Sys.islinux()
+Base.isvalid(::AIOTransfer) = Sys.isapple()
+
+# FIXME Dispatch I/O: https://developer.apple.com/documentation/dispatch/1388933-dispatch_read
+
 
 # Waiting Mechanism Trait
 
@@ -1020,9 +1070,9 @@ between `Base.wait` and `attempt_transfer`. (FIXME, ... and `bytesavailable`)
 In UnixIO.jl `Base.wait` waits for a `ThreadSynchronizer` and the underlying
 polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
 """
-@db function wait_for_transfer(stream, ::WaitingMechanism,
+@db function wait_for_transfer(stream, wm::WaitingMechanism,
                                buf, n, start, deadline::Float64)
-    @db time() deadline
+    @db deadline - time()
     @dblock stream begin
         while !isfinished(stream)
             pump!(stream; deadline)
@@ -1366,12 +1416,10 @@ From here on, `start` is always a simple `UInt` index into `buf`.
 
 ## Application of the Direction and Buffer Interface Traits
 
-Next, the `IODriection` and `BufferInterface` traits are inserted into the
-argument list.[^InOut]
+Next, the `BufferInterface` trait is inserted into the argument list.[^InOut]
 
-[^InOut]: Note that although the `IODirection` is now part of the argument
-list, premature specialisation on direction is avoided. Eventually
-most transfers will end up calling an OS `read` or `write` function.
+[^InOut]: Note that premature specialisation on direction is avoided.
+Eventually most transfers will end up calling an OS `read` or `write` function.
 However, much of the transfer logic is the same irrespective of direction.
 For example, the methods for `UsingPtr` and `UsingIndex` below work for
 both input and output. (Another consideration is supporting interfaces with
@@ -1382,14 +1430,6 @@ both input and output. (Another consideration is supporting interfaces with
               is_output(stream) ? FromBufferInterface(buf) :
                                   ExchangeBufferInterface(buf)
     _attempt_transfer(stream, buf, buf_api, n, start)
-end
-
-@db 2 function _attempt_transfer(stream, buf, n, start)
-    _attempt_transfer(stream, In(), buf, ToBufferInterface(buf), n, start)
-end
-
-@db 2 function _attempt_transfer(stream, ::Out, buf, n, start)
-    _attempt_transfer(stream, Out(), buf, FromBufferInterface(buf), n, start)
 end
 
 
@@ -1836,7 +1876,7 @@ StreamDelegation(::Type{<:TimeoutStream}) = DelegatedToSubStream()
 
 @db function transfer!(s::TimeoutStream{T}, buffer,
                        n::Union{Missing, Integer}; deadline=Inf, kw...) where T
-    @db s.deadline
+    @db s.deadline - time()
     transfer!(s.stream, buffer, n; deadline = min(deadline, s.deadline), kw...)
 end
 
@@ -2640,9 +2680,12 @@ export TransferSizeMechanism,
 export ReadFragmentation,
        ReadsBytes, ReadsLines, ReadsPackets, ReadsRequestedSize
 
+export TransferMechanism,
+       LibCTransfer, IOURingTransfer, AIOTransfer
+
 export WaitingMechanism,
-       WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
-       WaitUsingKQueue, WaitUsingIOURing
+       WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll,
+       WaitUsingPidFD, WaitUsingKQueue, WaitUsingIOURing
 
 export CursorSupport, AbstractHasPosition,
        NoCursors,

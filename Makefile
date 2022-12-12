@@ -55,6 +55,9 @@ README.md:
 test:
 	$(JL) test/runtests.jl
 
+testslowfs:
+	$(JL) test/slowfs_tests.jl
+
 testpt:
 	$(JL) test/pseudoterminal.jl
 
