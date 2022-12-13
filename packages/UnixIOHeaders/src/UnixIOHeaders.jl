@@ -160,7 +160,7 @@ function parse_headers()
         "<fcntl.h>",
         "<poll.h>",
         (Sys.islinux() ? ("<sys/epoll.h>",) : ())...,
-        #(Sys.isapple() ? ("<dispatch/dispatch.h>",) : ())...,
+        (Sys.isapple() ? ("<dispatch/dispatch.h>",) : ())...,
         (Sys.isapple() ? ("<sys/aio.h>",) : ())...,
         "<unistd.h>",
         "<sys/stat.h>",

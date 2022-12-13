@@ -2,7 +2,7 @@
 
 julia_version = "1.8.2"
 manifest_format = "2.0"
-project_hash = "8c00bfde8ca0cf9bebef4dfa6a3c7bb942a11cd0"
+project_hash = "94c6c51b4487b08e8fbf41a0aaea2fb3af4c2e14"
 
 [[deps.ANSIColoredPrinters]]
 git-tree-sha1 = "574baf8110975760d391c710b6341da1afa48d8c"
@@ -39,7 +39,7 @@ version = "0.4.2"
 deps = ["CEnum", "Clang_jll", "Downloads", "Pkg", "TOML"]
 path = "/Users/samoconnor/git/jlpi/jl_depot/dev/Clang"
 uuid = "40e3b903-d033-50b4-a0cc-940c62c95e31"
-version = "0.16.9"
+version = "0.16.10"
 
 [[deps.Clang_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg", "Zlib_jll", "libLLVM_jll"]
@@ -119,6 +119,12 @@ version = "0.1.1"
 
 [[deps.FileWatching]]
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
+
+[[deps.GrandCentralDispatch_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+path = "../jl_depot/dev/GrandCentralDispatch_jll"
+uuid = "9088da64-7981-5e30-b67a-79a746bc6592"
+version = "0.1.0+0"
 
 [[deps.IOCapture]]
 deps = ["Logging", "Random"]

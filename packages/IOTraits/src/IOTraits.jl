@@ -108,7 +108,7 @@ Trait                      Description
 
 `TransferMechanism`         How to transfer bytes?
                             (`LibCTransfer`, `IOURingTransfer`,
-                             or `AIOTransfer`)
+                             `GSDTransfer`, or `AIOTransfer`)
 
 `WaitingMechanism`          How to wait for activity? \
                             (`WaitBySleeping`, `WaitUsingPosixPoll`,
@@ -879,6 +879,7 @@ abstract type TransferMechanism end
 struct LibCTransfer    <: TransferMechanism end
 struct IOURingTransfer <: TransferMechanism end
 struct AIOTransfer     <: TransferMechanism end
+struct GSDTransfer     <: TransferMechanism end
 
 
 """
@@ -899,6 +900,8 @@ Transfer Mechanism    Description
                       [`io_uring_wait_cqe(3)`][wait_cqe].
 
 `AIOTransfer`         Transfer bytes using [AIO][aio] POSIX asynchronous I/O.
+
+`GSDTransfer`         Transfer bytes using [Grand Central Dispatch][GSD].
 --------------------------------------------------------------------------------
 
 [read2]: https://man7.org/linux/man-pages/man2/read.2.html
@@ -907,6 +910,7 @@ Transfer Mechanism    Description
 [prep_write]: https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_write.3.en.html
 [wait_cqe]: https://manpages.debian.org/unstable/liburing-dev/io_uring_wait_cqe.3.en.html
 [aio]: https://man7.org/linux/man-pages/man7/aio.7.html
+[GSD]: https://developer.apple.com/documentation/dispatch?language=objc
 
 """
 TransferMechanism(x) = TransferMechanism(typeof(x))
@@ -914,7 +918,8 @@ TransferMechanism(T::Type) = is_proxy(T) ? TransferMechanism(unwrap(T)) :
                                            LibCTransfer()
 Base.isvalid(::TransferMechanism) = true
 Base.isvalid(::IOURingTransfer) = Sys.islinux()
-Base.isvalid(::AIOTransfer) = Sys.isapple()
+Base.isvalid(::AIOTransfer) = false
+Base.isvalid(::GSDTransfer) = Sys.isapple()
 
 # FIXME Dispatch I/O: https://developer.apple.com/documentation/dispatch/1388933-dispatch_read
 
@@ -2717,7 +2722,7 @@ export TransferMode,
        BlockingTransfer, ImmediateTransfer, AsyncTransfer
 
 export TransferMechanism,
-       LibCTransfer, IOURingTransfer, AIOTransfer
+       LibCTransfer, IOURingTransfer, AIOTransfer, GSDTransfer
 
 export WaitingMechanism,
        WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll,

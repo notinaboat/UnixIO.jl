@@ -119,6 +119,10 @@ include("stat.jl")
         epoll_queue_init()
         io_uring_queue_init()
     end
+    if Sys.isapple()
+        gsd_queue_init()
+        #aio_queue_init()
+    end
 
     atexit(kill_all_processes)
 
@@ -264,6 +268,7 @@ IOTraits.TransferMode(T::Type{<:File}) = AsyncTransfer()
 
 IOTraits.TransferMechanism(T::Type{<:FD{<:Any,<:Any,AsyncTransfer}}) =
     IOTraits.firstvalid(IOURingTransfer(),
+                        GSDTransfer(),
                         AIOTransfer())
 
 
@@ -533,6 +538,7 @@ include("timer.jl")
 include("poll.jl")
 include("iouring.jl")
 include("epoll.jl")
+include("gsd.jl")
 include("aio.jl")
 
 
