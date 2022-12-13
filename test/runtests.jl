@@ -26,24 +26,24 @@ cd(@__DIR__)
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar")
     info, type = code_typed(f, ())[1]
-    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType}}},
-                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType}}}
+    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,ImmediateTransfer}}},
+                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,ImmediateTransfer}}}
 end
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDWR)
     info, type = code_typed(f, ())[1]
-    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType}}},
-                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType}}}
+    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,ImmediateTransfer}}},
+                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,ImmediateTransfer}}}
 end
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDONLY)
     info, type = code_typed(f, ())[1]
-    @test type == IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType}}}
+    @test type == IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,ImmediateTransfer}}}
 end
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_WRONLY)
     info, type = code_typed(f, ())[1]
-    @test type == IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType}}
+    @test type == IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,ImmediateTransfer}}
 end
 
 end # testset

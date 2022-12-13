@@ -840,6 +840,39 @@ that the second transfer adheres to the specified deadline.
 end
 
 
+# Transfer Mode Trait
+
+abstract type TransferMode end
+struct BlockingTransfer  <: TransferMode end
+struct ImmediateTransfer <: TransferMode end
+struct AsyncTransfer     <: TransferMode end
+
+
+"""
+The `TransferMode` trait describes the blocking behaviour of the underlying
+operating system calls used for a file descriptor.
+
+`TransferMode(stream)` returns one of:
+
+--------------------------------------------------------------------------------
+Transfer Mode         Description
+--------------------- ----------------------------------------------------------
+`BlockingTransfer`    System call does not return until the transfer is complete.
+
+`ImmediateTransfer`   System call transfers only as much data as it can without
+                      blocking, then returns
+                      (e.g. `O_NONBLOCK`).
+
+`AsyncTransfer`       System call schedules transfer for asynchronous execution,
+                      the returns
+                      (e.g. [`io_uring`][io_uring] or [POSIX AIO][aio]).
+--------------------------------------------------------------------------------
+"""
+TransferMode(x) = TransferMode(typeof(x))
+TransferMode(T::Type) = is_proxy(T) ? TransferMode(unwrap(T)) :
+                                      ImmediateTransfer()
+
+
 # Transfer Mechanism Trait
 
 abstract type TransferMechanism end
@@ -855,7 +888,7 @@ a file descriptor.
 `TransferMechanism(stream)` returns one of:
 
 --------------------------------------------------------------------------------
-Transfer Mechanism    Description 
+Transfer Mechanism    Description
 --------------------- ----------------------------------------------------------
 `LibCTransfer`        Transfer bytes using [`read(2)`][read2] and
                       [`write(2)`][write2].
@@ -865,9 +898,7 @@ Transfer Mechanism    Description
                       [`io_uring_prep_write(3)`][prep_write] and
                       [`io_uring_wait_cqe(3)`][wait_cqe].
 
-`AIOTransfer`         Transfer bytes using
-                      [AIO](https://man7.org/linux/man-pages/man7/aio.7.html)
-                      POSIX asynchronous I/O.
+`AIOTransfer`         Transfer bytes using [AIO][aio] POSIX asynchronous I/O.
 --------------------------------------------------------------------------------
 
 [read2]: https://man7.org/linux/man-pages/man2/read.2.html
@@ -875,6 +906,7 @@ Transfer Mechanism    Description
 [prep_read]: https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_read.3.en.html
 [prep_write]: https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_write.3.en.html
 [wait_cqe]: https://manpages.debian.org/unstable/liburing-dev/io_uring_wait_cqe.3.en.html
+[aio]: https://man7.org/linux/man-pages/man7/aio.7.html
 
 """
 TransferMechanism(x) = TransferMechanism(typeof(x))
@@ -971,6 +1003,7 @@ Base.isvalid(::WaitUsingIOURing) = Sys.islinux()
 Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
 
 firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
+firstvalid() = nothing
 
 const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
                                           WaitUsingIOURing(),
@@ -2679,6 +2712,9 @@ export TransferSizeMechanism,
 
 export ReadFragmentation,
        ReadsBytes, ReadsLines, ReadsPackets, ReadsRequestedSize
+
+export TransferMode,
+       BlockingTransfer, ImmediateTransfer, AsyncTransfer
 
 export TransferMechanism,
        LibCTransfer, IOURingTransfer, AIOTransfer

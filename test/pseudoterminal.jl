@@ -66,24 +66,36 @@ end
 
 opts = (check_status=false,)
 
-@info "Testing with Julia UnixIO pty clinet"
+@info "Testing with Julia UnixIO pty client"
 
 mktempdir() do d
     jlfile=joinpath(d, "tmp.jl")
     write(jlfile, """
         using UnixIO
         io = UnixIO.stdin
-        @show ENV["JULIA_UNIX_IO_DEBUG_LEVEL"]
-        @show UnixIO.DEBUG_LEVEL
-        @show typeof(io)
-        @assert io isa UnixIO.FD{UnixIO.In,UnixIO.CanonicalMode}
-        @assert !(io isa UnixIO.FD{UnixIO.In,UnixIO.Pseudoterminal})
-        @show UnixIO.ReadFragmentation(io)
+        try
+            @show ENV["JULIA_UNIX_IO_DEBUG_LEVEL"]
+            @show UnixIO.DEBUG_LEVEL
+            @show typeof(io)
+            @assert io isa UnixIO.FD{UnixIO.In,UnixIO.CanonicalMode}
+            @assert !(io isa UnixIO.FD{UnixIO.In,UnixIO.Pseudoterminal})
+            @show UnixIO.ReadFragmentation(io)
+            @assert UnixIO.ReadFragmentation(io) == UnixIO.IOTraits.ReadsLines()
+        catch err
+            exception=(err, catch_backtrace())
+            @error "Error in pty client" exception
+        end
         println("go!")
         while true
-            l = readline(io; keep=true)
-            b = bytesavailable(io)
-            UnixIO.println(length(l), ":", repr(l), ":", b)
+            try
+                l = readline(io; keep=true)
+                b = bytesavailable(io)
+                UnixIO.println(length(l), ":", repr(l), ":", b)
+            catch err
+                exception=(err, catch_backtrace())
+                @error "Error in pty client" exception
+                println("Error done.")
+            end
         end
         """)
 
@@ -94,41 +106,56 @@ mktempdir() do d
         @info "ptopen" cin cout
         cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
         cin=IOTraits.BaseIO(cin)
+        @info "ptopen BaseIO" cin cout
     ptdump(Base.julia_cmd(), cin, cout) do fin, fout
-        while true
-            l = fin()
-            if l == nothing
-                sleep(1)
-            elseif contains(l, r"go!")
-                break
+
+        function wait_for(x)
+            while true
+                l = fin()
+                if l == nothing
+                    sleep(1)
+                elseif contains(l, x)
+                    return
+                end
             end
         end
 
+        function fin_check_error()
+            l = fin()
+            if l != nothing && contains(l, "Error in pty client")
+                wait_for("Error done.")
+            end
+            l
+        end
+
+        wait_for("go!")
+
         fout("Hello1\n")
-        @test fin() == """7:"Hello1\\n":0\n"""
+        @test fin_check_error() == """7:"Hello1\\n":0\n"""
+
         fout("Hello2\n")
-        @test fin() == """7:"Hello2\\n":0\n"""
+        @test fin_check_error() == """7:"Hello2\\n":0\n"""
 
         fout("Hel")
 
         # Even after draining and waiting, the client read() has not returned
         # because of canonical mode.
-        @test fin() == nothing
+        @test fin_check_error() == nothing
         fout("lo3\n")
-        @test fin() == """7:"Hello3\\n":0\n"""
+        @test fin_check_error() == """7:"Hello3\\n":0\n"""
 
         # `CEOF` and sends a line with no "\n" (e.g. like the "bash$ " prompt)
         fout("Hello4")
         fout([UInt8(C.CEOF)])
-        @test fin() == """6:"Hello4":0\n"""
+        @test fin_check_error() == """6:"Hello4":0\n"""
         fout("Hello5\x04Hello6\n")
-        @test fin() == """6:"Hello5":0\n"""
-        @test fin() == """7:"Hello6\\n":0\n"""
+        @test fin_check_error() == """6:"Hello5":0\n"""
+        @test fin_check_error() == """7:"Hello6\\n":0\n"""
 
         fout("Hello7\r")
-        @test fin() == nothing
+        @test fin_check_error() == nothing
         fout("\x04")
-        @test fin() == """7:"Hello7\\r":0\n"""
+        @test fin_check_error() == """7:"Hello7\\r":0\n"""
     end
     end
 end

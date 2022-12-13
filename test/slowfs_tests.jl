@@ -39,6 +39,27 @@ end
 
 end #testset
 
+@testset LoggingTestSet "Slow FS - Disable AsyncTransfer" begin
+
+    t0 = nothing
+    for x in 1:2
+        t0 = time()
+        @time @sync for f in ["A", "B", "C", "D", "E", "F"]
+            @async begin
+                io = UnixIO.open("slowfs_mount/$f";
+                                 transfer_mode=UnixIO.IOTraits.ImmediateTransfer)
+                try
+                    @show read(io, String)
+                finally
+                    close(io)
+                end
+            end
+        end
+    end
+    @test time() - t0 > 6
+
+end #testset
+
 
 cd(slowfs_dir) do
     UnixIO.system(`make umount`)

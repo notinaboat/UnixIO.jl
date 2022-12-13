@@ -136,7 +136,7 @@ end
 
 abstract type FDType end
 
-mutable struct FD{D<:TransferDirection,T<:FDType} <: IOTraits.Stream
+mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.Stream
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
@@ -149,11 +149,22 @@ mutable struct FD{D<:TransferDirection,T<:FDType} <: IOTraits.Stream
 
     FD{D}(fd) where D = FD{D,Union{}}(fd)
 
-    function FD{D,T}(fd) where {D,T}
-        fcntl_setfl(fd, C.O_NONBLOCK)
+    FD{D,T}(fd) where {D,T} = FD{D,T,ImmediateTransfer}(fd)
+
+    function FD{D,T,M}(fd) where {D,T,M}
+        if M != BlockingTransfer
+            fcntl_setfl(fd, C.O_NONBLOCK)
+        end
         fcntl_setfd(fd, C.O_CLOEXEC)
         _T = (T != Union{}) ? T : fdtype(fd)
-        new{D,_T}(RawFD(fd),
+        if _T == nothing
+            error("Unable to determine type of file descriptor: $fd")
+        end
+        _M = (M != Union{}) ? M : typeof(TransferMode(_T))
+        if TransferMechanism(FD{D,_T,_M}) == nothing
+            error("No $_M Mechanism found for $_T file descriptor.")
+        end
+        new{D,_T,_M}(RawFD(fd),
                   false,
                   0,
                   #Base.ThreadSynchronizer(),
@@ -165,7 +176,8 @@ mutable struct FD{D<:TransferDirection,T<:FDType} <: IOTraits.Stream
     end
 end
 
-IOTraits.TransferDirection(::Type{<:FD{<:T}}) where T = T()
+IOTraits.TransferDirection(::Type{<:FD{<:D}}) where D = D()
+IOTraits.TransferMode(::Type{<:FD{D,T,M}}) where {D,T,M} = M()
 
 const AnyFD = Union{FD, RawFD, Cint}
 
@@ -248,11 +260,11 @@ IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
 #    IOTraits.firstvalid(WaitUsingIOURing(),
 #                        WaitBySleeping())
 
+IOTraits.TransferMode(T::Type{<:File}) = AsyncTransfer()
 
-IOTraits.TransferMechanism(::Type{<:FD{<:Any,<:File}}) = 
+IOTraits.TransferMechanism(T::Type{<:FD{<:Any,<:Any,AsyncTransfer}}) =
     IOTraits.firstvalid(IOURingTransfer(),
-                        AIOTransfer(),
-                        LibCTransfer())
+                        AIOTransfer())
 
 
 # FIXME unify with open() ?
@@ -284,7 +296,7 @@ Base.convert(::Type{RawFD}, fd::FD) = RawFD(fd.fd)
 include("ReadFD.jl")
 include("WriteFD.jl")
 
-IOTraits.ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
+IOTraits.ReadFragmentation(::Type{<:FD{In,CanonicalMode}}) = ReadsLines()
 
 
 trait_doc = """
@@ -370,23 +382,26 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 """
 @db 1 function open(type::Type{T},
                     pathname, flags=nothing, mode=0o644;
-                    timeout=Inf, tcattr=nothing) where T
+                    transfer_mode::Type{M}=Union{},
+                    timeout=Inf, tcattr=nothing) where {T,M}
 
     if flags == nothing # See Open Type test set.
         flags = C.O_RDWR
     end
 
-    flags |= C.O_NONBLOCK
+    if M != BlockingTransfer
+        flags |= C.O_NONBLOCK
+    end
 
     if flags & C.O_RDWR == C.O_RDWR
         flags &= ~C.O_RDWR
-        fout = FD{Out,T}(open_raw(pathname, flags | C.O_WRONLY, mode; tcattr))
-        fin = FD{In,T}(open_raw(pathname, flags; tcattr))
+        fout = FD{Out,T,M}(open_raw(pathname, flags | C.O_WRONLY, mode; tcattr))
+        fin = FD{In,T,M}(open_raw(pathname, flags; tcattr))
         io = DuplexIO(IOTraits.BaseIO(IOTraits.LazyBufferedInput(fin)),
                       IOTraits.BaseIO(fout))
     else
         D = (flags & C.O_WRONLY) != 0 ? Out : In
-        io = FD{D,T}(open_raw(pathname, flags, mode; tcattr))
+        io = FD{D,T,M}(open_raw(pathname, flags, mode; tcattr))
         if D == In
             io = IOTraits.LazyBufferedInput(io)
         end
