@@ -80,8 +80,8 @@ using ReadmeDocs               # for README""" ... """ doc strings.
 using MarkdownTableMaps        # for md_table_map
 using Preconditions            # for @require and @ensure contracts
 using AsyncLog                 # for @asynclog -- log errors in async tasks.
-#import TypeTree                # for pretty-printed type trees in doc strings.
-#const typetree = TypeTree.tt
+import TypeTree                # for pretty-printed type trees in doc strings.
+const typetree = TypeTree.tt
 
 
 
@@ -225,15 +225,7 @@ end
 
 function fdtype(fd)
 
-    s = stat(fd)
-    t = isfile(s)     ? S_IFREG  :
-        isblockdev(s) ? S_IFBLK  :
-        ischardev(s)  ? S_IFCHR  :
-        isdir(s)      ? S_IFDIR  :
-        isfifo(s)     ? S_IFIFO  :
-        islink(s)     ? S_IFLNK  :
-        issocket(s)   ? S_IFSOCK :
-                        Nothing
+    t = stattype(fd)
 
     if t == S_IFCHR && ispt(fd)
         t = Pseudoterminal
@@ -257,14 +249,8 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               issocket(s)   ? S_IFSOCK :
                                               Nothing)
 
-IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:Union{Stream, PidFD}}}) =
-    IOTraits.preferred_poll_mechanism
-
-#IOTraits.WaitingMechanism(::Type{<:FD{<:Any,<:File}}) =
-#    IOTraits.firstvalid(WaitUsingIOURing(),
-#                        WaitBySleeping())
-
-IOTraits.TransferMode(T::Type{<:File}) = AsyncTransfer()
+IOTraits.TransferMode(T::Type{S_IFREG}) = AsyncTransfer()
+IOTraits.TransferMode(T::Type{S_IFBLK}) = AsyncTransfer()
 
 IOTraits.TransferMechanism(T::Type{<:FD{<:Any,<:Any,AsyncTransfer}}) =
     IOTraits.firstvalid(IOURingTransfer(),
@@ -301,53 +287,39 @@ Base.convert(::Type{RawFD}, fd::FD) = RawFD(fd.fd)
 include("ReadFD.jl")
 include("WriteFD.jl")
 
-IOTraits.ReadFragmentation(::Type{<:FD{In,CanonicalMode}}) = ReadsLines()
-
-
 trait_doc = """
 
 # IO Traits
 
-| Type            | Read Fragmentation | Transfer Size         | Transfer Size Mechanism | Total Size          | Total Size Mechanism  | Cursor Support |
-| --------------- | ------------------ | --------------------- | ----------------------- | ------------------- | --------------------- | -------------- |
-| S_IFBLK         |                    |                       | Supports Stat Size      | Fixed Total Size    | Supports Stat Size    | Seekable       |
-| S_IFREG         |                    |                       | Supports Stat Size      | Variable Total Size | Supports Stat Size    | Seekable       |
-| S_IFIFO         |                    | Limited Transfer Size | Supports FIONREAD       |                     |                       |                | 
-| S_IFCHR         |                    |                       | Supports FIONREAD       |                     |                       |                |
-| S_IFSOCK        |                    | Limited Transfer Size | Supports FIONREAD       |                     |                       |                |
-| S_IFLNK         |                    |                       |                         |                     |                       |                | 
-| S_IFDIR         |                    |                       |                         |                     |                       |                | 
-| PidFD           |                    |                       |                         |                     |                       |                | 
-| Pseudoterminal  |                    |                       |                         |                     |                       |                | 
-| CanonicalMode   | Reads Lines        |                       |                         |                     |                       |                | 
+| Type            | Read Fragmentation | Availability         | Waiting Mechanism | Transfer Size           | Transfer Size Mechanism | Max Transfer Mechanism | Total Size          | Total Size Mechanism  | Cursor Support |
+| --------------- | ------------------ | -------------------- | ----------------- | ----------------------- | ----------------------- | ---------------------- | ------------------- | --------------------- | -------------- |
+| S_IFBLK         | Reads Bytes        | Always Available     |                   | Unlimited Transfer Size | Supports BLKGETSIZE     |                        | Fixed Total Size    | Supports BLKGETSIZE   | Seekable       |
+| S_IFREG         | Reads Bytes        | Always Available     |                   | Unlimited Transfer Size | Supports Stat Size      |                        | Variable Total Size | Supports Stat Size    | Seekable       |
+| S_IFIFO         | Reads Bytes        | Partially Available  | Preferred Poll    | Limited Transfer Size   | Supports FIONREAD       | Supports GETPIPE_SZ    |                     |                       |                | 
+| S_IFCHR         | Reads Bytes        | Partially Available  | Preferred Poll    | Unlimited Transfer Size | Supports FIONREAD       |                        |                     |                       |                |
+| S_IFSOCK        | Reads Bytes        | Partially Available  | Preferred Poll    | Limited Transfer Size   | Supports FIONREAD       | Supports SO_SNDBUF     |                     |                       |                |
+| S_IFLNK         |                    |                      |                   |                         |                         |                        | Zero Total Size     |                       |                | 
+| S_IFDIR         |                    |                      |                   |                         |                         |                        | Variable Total Size |                       |                | 
+| PidFD           |                    |                      | Preferred Poll    |                         |                         |                        | Zero Total Size     |                       |                | 
+| Pseudoterminal  | Reads Bytes        | Unknown Availability | Preferred Poll    | Unlimited Transfer Size |                         |                        |                     |                       |                | 
+| CanonicalMode   | Reads Lines        | Partially Available  | Preferred Poll    | Unlimited Transfer Size | Supports FIONREAD       |                        |                     |                       |                | 
 """
 
-#=
+PreferredPoll() = IOTraits.preferred_poll_mechanism
+
 for (i, n) in enumerate(md_table_columns(trait_doc))
     i > 1 || continue
     f = Symbol(replace(n, " " => ""))
     for (k, v) in md_table_map(trait_doc, 1 => i)
         if v != ""
             v = Symbol(replace(v, " " => ""))
+            @info "$f(::Type{<:FD{In,<:$(Symbol(k))}}) = $v()"
             ex = :(IOTraits.$f(::Type{<:FD{In,<:$(Symbol(k))}}) = $v())
             eval(ex)
         end
     end
 end
-=#
 
-
-
-IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:Stream}}) = SupportsFIONREAD()
-IOTraits.TotalSize(::Type{<:FD{In,<:File}}) = VariableTotalSize()
-IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:File}}) = SupportsStatSize()
-IOTraits.TotalSizeMechanism(::Type{<:FD{In,<:File}}) = SupportsStatSize()
-
-IOTraits.CursorSupport(::Type{<:FD{In,<:File}}) = Seekable()
-
-IOTraits.Availability(::Type{<:FD{In,<:File}}) = AlwaysAvailable()
-IOTraits.Availability(::Type{<:FD{In,<:Stream}}) = PartiallyAvailable()
-IOTraits.Availability(::Type{<:FD{In,Pseudoterminal}}) = UnknownAvailability()
 
 
 README"## Opening and Closing Unix Files."
@@ -374,16 +346,16 @@ See [open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 `open` returns `Unix.FD{FDType}`, where `FDType` is one of:
 
 ```
-(join(typetree(FDType; mod=UnixIO)))
+$(join(typetree(FDType; mod=UnixIO)))
 ```
 
 If the `FDType` argument is provided then `open` guarantees to return
 `UnixIO{FDType}` (or throw an `ArgumentError` if `FDType` is not applicable
 to `pathname`.
 
-_Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
+Note: `C.O_NONBLOCK` is always added to `flags` to ensure compatibility with
 [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html).
-A `RawFD` can be opened in blocking mode by calling `C.open` directly._
+A `RawFD` can be opened in blocking mode by calling `C.open` directly.
 """
 @db 1 function open(type::Type{T},
                     pathname, flags=nothing, mode=0o644;
@@ -400,10 +372,15 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly._
 
     if flags & C.O_RDWR == C.O_RDWR
         flags &= ~C.O_RDWR
-        fout = FD{Out,T,M}(open_raw(pathname, flags | C.O_WRONLY, mode; tcattr))
         fin = FD{In,T,M}(open_raw(pathname, flags; tcattr))
-        io = DuplexIO(IOTraits.BaseIO(IOTraits.LazyBufferedInput(fin)),
-                      IOTraits.BaseIO(fout))
+        #if isdir(stat(fin))
+        #    io = IOTraits.BaseIO(fin)
+        #else
+            fout = FD{Out,T,M}(open_raw(pathname, flags | C.O_WRONLY, mode;
+                                        tcattr))
+            io = DuplexIO(IOTraits.BaseIO(IOTraits.LazyBufferedInput(fin)),
+                          IOTraits.BaseIO(fout))
+        #end
     else
         D = (flags & C.O_WRONLY) != 0 ? Out : In
         io = FD{D,T,M}(open_raw(pathname, flags, mode; tcattr))
@@ -534,12 +511,19 @@ end
 raw_transfer(fd, ::LibCTransfer, ::Out, buf, count) = C.write(fd, buf, count)
 raw_transfer(fd, ::LibCTransfer, ::In,  buf, count) = C.read(fd, buf, count)
 
+raw_transfer(fd::FD{In,S_IFDIR}, ::LibCTransfer, ::In,  buf, count) =
+    error("Directory read not supported yet!")
+
 include("timer.jl")
 include("poll.jl")
-include("iouring.jl")
-include("epoll.jl")
-include("gsd.jl")
-include("aio.jl")
+if Sys.islinux()
+    include("iouring.jl")
+    include("epoll.jl")
+end
+if Sys.isapple()
+    include("gsd.jl")
+    #include("aio.jl")
+end
 
 
 

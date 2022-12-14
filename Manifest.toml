@@ -2,7 +2,7 @@
 
 julia_version = "1.8.2"
 manifest_format = "2.0"
-project_hash = "94c6c51b4487b08e8fbf41a0aaea2fb3af4c2e14"
+project_hash = "0a8e9e7c4c71984e938565a8753eb03804394f37"
 
 [[deps.ANSIColoredPrinters]]
 git-tree-sha1 = "574baf8110975760d391c710b6341da1afa48d8c"
@@ -346,6 +346,12 @@ uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 git-tree-sha1 = "9250ef9b01b66667380cf3275b3f7488d0e25faf"
 uuid = "b718987f-49a8-5099-9789-dcd902bef87d"
 version = "1.0.1"
+
+[[deps.TypeTree]]
+deps = ["InteractiveUtils"]
+git-tree-sha1 = "c1adbb6b9d9374babe8975a456f383a37a8e02ec"
+uuid = "04da0e3b-1cad-4b2c-a963-fc1602baf1af"
+version = "0.3.0"
 
 [[deps.UUIDs]]
 deps = ["Random", "SHA"]

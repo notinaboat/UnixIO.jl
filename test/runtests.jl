@@ -13,10 +13,10 @@ using UnixIO: C
 
 """
 
-@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.Stream})
-@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.File})
-@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.Stream})
-@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.File})
+@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK})
+@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFREG})
+@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK})
+@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFREG})
 
 cd(@__DIR__)
 

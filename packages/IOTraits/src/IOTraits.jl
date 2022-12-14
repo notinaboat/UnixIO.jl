@@ -92,8 +92,9 @@ Trait                      Description
                             `UsingIndex` or `UsingPtr`)
 
 `TotalSize`                How much data is available? \
-                           (`UnknownTotalSize`, `VariableTotalSize`,
-                            `FixedTotalSize`, or `InfiniteTotalSize`)
+                           (`ZeroTotalSize`, `UnknownTotalSize`,
+                            `VariableTotalSize`, `FixedTotalSize`,
+                            or `InfiniteTotalSize`)
 
 `TransferSize`              How much data can be moved in a single transfer? \
                             (`UnlimitedTransferSize`, `LimitedTransferSize`
@@ -521,6 +522,9 @@ end
 @db function Base.length(s::Stream)
     @require isopen(s)
     @require length_is_known(s)
+    if TotalSize(s) == ZeroTotalSize()
+        return 0
+    end
     s = unwrap(s)
     _length(s, TotalSizeMechanism(s))
 end
@@ -1232,6 +1236,7 @@ abstract type TotalSize end
 struct UnknownTotalSize <: TotalSize end
 struct InfiniteTotalSize <: TotalSize end
 abstract type KnownTotalSize <: TotalSize end
+struct ZeroTotalSize <: KnownTotalSize end
 struct VariableTotalSize <: KnownTotalSize end
 struct FixedTotalSize <: KnownTotalSize end
 const AnyTotalSize = TotalSize
@@ -1244,6 +1249,9 @@ The `TotalSize` trait describes how much data is available from a stream.
 --------------------------------------------------------------------------------
 Total Size              Description
 ----------------------- --------------------------------------------------------
+`ZeroTotalSize()`       The `length` function always returns zero.
+                        e.g. `S_IFLNK` or fd from [`pidfd_open(2)`][pidfd_open].
+
 `VariableTotalSize()`   The total amount of data available can be queried
                         using the `length` function. Note: the total size can
                         change. e.g. new lines might be appended to a log file.
@@ -1259,6 +1267,8 @@ Total Size              Description
 `UnknownTotalSize()`    No known data size limit. But end of file may be
                         reached. e.g. if the other end is closed.
 --------------------------------------------------------------------------------
+
+[pidfd_open]: https://man7.org/linux/man-pages/man2/pidfd_open.2.html
 """
 TotalSize(x) = TotalSize(typeof(x))
 TotalSize(T::Type) = is_proxy(T) ? TotalSize(unwrap(T)) :
@@ -1269,7 +1279,10 @@ length_is_known(x) = TotalSize(x) isa KnownTotalSize
 abstract type SizeMechanism end
 struct NoSizeMechanism <: SizeMechanism end
 struct SupportsStatSize <: SizeMechanism end
+struct SupportsBLKGETSIZE <: SizeMechanism end
 struct SupportsFIONREAD <: SizeMechanism end
+struct SupportsGETPIPE_SZ <: SizeMechanism end
+struct SupportsSO_SNDBUF <: SizeMechanism end
 TotalSizeMechanism(x) = TotalSizeMechanism(typeof(x))
 TotalSizeMechanism(T::Type) = is_proxy(T) ? TotalSizeMechanism(unwrap(T)) :
                                             NoSizeMechanism()
@@ -1317,7 +1330,7 @@ max_transfer_size(s) = max_transfer_size(s, TransferSize(s), TotalSize(s))
 max_transfer_size(s, ::AnyTransferSize, ::AnyTotalSize) = typemax(UInt)
 max_transfer_size(s, ::UnlimitedTransferSize, ::KnownTotalSize) = length(s)
 max_transfer_size(s, ::LimitedTransferSize, ::AnyTotalSize) = 
-    max_transfer_size(s, TransferSizeMechanism(s))
+    max_transfer_size(s, MaxTransferMechanism(s))
 
 
 
@@ -1333,6 +1346,12 @@ TransferSizeMechanism(s) = TransferSizeMechanism(typeof(s))
 TransferSizeMechanism(T::Type) = is_proxy(T) ?
                                  TransferSizeMechanism(unwrap(T)) :
                                  NoSizeMechanism()
+
+
+MaxTransferMechanism(s) = MaxTransferMechanism(typeof(s))
+MaxTransferMechanism(T::Type) = is_proxy(T) ?
+                                MaxTransferMechanism(unwrap(T)) :
+                                NoSizeMechanism()
 
 
 
@@ -1951,6 +1970,7 @@ How many bytes remain before the end of `stream`?
     bytesremaining(s, TotalSize(s), CursorSupport(s))
 end
 
+bytesremaining(s, ::ZeroTotalSize, ::Any) = 0
 bytesremaining(s, ::UnknownTotalSize, ::Any) = missing
 bytesremaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
 
@@ -2702,8 +2722,8 @@ export TraitsIO, TransferDirection, transfer!, transferall!, readall!
 export BufferedInput, LazyBufferedInput
 
 export TotalSize,
-       UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
-       FixedTotalSize
+       ZeroTotalSize, UnknownTotalSize, InfiniteTotalSize, KnownTotalSize,
+       VariableTotalSize, FixedTotalSize
 
 export Availability,
        AlwaysAvailable, PartiallyAvailable, UnknownAvailability

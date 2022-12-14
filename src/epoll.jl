@@ -1,7 +1,5 @@
 # Linux epoll(7)             https://man7.org/linux/man-pages/man7/epoll.7.html
 
-if Sys.islinux()
-
 """
 See PollQueue above.
 """
@@ -108,5 +106,3 @@ end
 
 gc_safe_epoll_wait(epfd, events, maxevents, timeout_ms) = 
     @gc_safe C.epoll_wait(epfd, events, maxevents, timeout_ms)
-
-end # if Sys.islinux()

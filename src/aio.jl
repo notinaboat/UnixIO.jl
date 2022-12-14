@@ -1,5 +1,3 @@
-#=
-
 struct AIOQueue
     fd_list::Vector{FD}
     aiocb_list::Vector{Ptr{C.aiocb}}
@@ -95,7 +93,9 @@ end
         @dblock q.lock begin
             push!(q.aiocb_list, cbp)
             push!(q.fd_list, fd)
+
             FIXME - no way to wake up existing call to `aio_suspend` !
+
         end
     
         n = wait(fd)
@@ -113,5 +113,3 @@ end
         end
     end
 end
-
-=#

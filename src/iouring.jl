@@ -8,8 +8,6 @@
 #
 # FIXME see : https://discourse.julialang.org/t/io-uring-support/48666
 
-if Sys.islinux()
-
 using LibURing
 using LibURing:
     io_uring_submit,
@@ -144,7 +142,3 @@ end
         @dblock io_uring_queue.lock delete!(io_uring_queue.dict, key)
     end
 end
-
-
-
-end # if Sys.islinux()

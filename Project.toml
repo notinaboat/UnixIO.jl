@@ -24,6 +24,7 @@ REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 ReadmeDocs = "c63066b3-de92-487d-9da7-7c375a07912b"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 TextWrap = "b718987f-49a8-5099-9789-dcd902bef87d"
+TypeTree = "04da0e3b-1cad-4b2c-a963-fc1602baf1af"
 UnixIOHeaders = "b158d995-0785-490a-9245-6a3aff8d8d72"
 
 [compat]
