@@ -17,24 +17,23 @@ isalive(p::Process) = p.exit_status == nothing &&
 didexit(p::Process) = p.exit_status != nothing
 waskilled(p::Process) = !isstopped(p) && p.signal != nothing
 
-IOTraits.WaitingMechanism(::Type{Process}) =
-    IOTraits.firstvalid(WaitUsingPidFD(),
-                        WaitBySleeping())
+IOTraits.WaitAPI(::Type{Process}) = IOTraits.firstvalid(WaitAPI{:PidFD}(),
+                                                        WaitAPI{:Sleep}())
 
 @db function Base.wait(p::Process; timeout=Inf,
                                    deadline=timeout+time())
     if !isrunning(p)
         @db return p "Already stopped or terminated"
     end
-    wait(p, WaitingMechanism(p); deadline)
+    wait(p, WaitAPI(p); deadline)
     @ensure time() >= deadline || !isrunning(p)
     return p
 end
 
 check(p::Process) = wait(p; deadline=0.0)
 
-Base.wait(p::Process, ::WaitBySleeping; kw...) = waitpid(p; kw...)
-Base.wait(p::Process, ::WaitUsingPidFD; kw...)= waitpidfd(p; kw...)
+Base.wait(p::Process, ::WaitAPI{:Sleep}; kw...) = waitpid(p; kw...)
+Base.wait(p::Process, ::WaitAPI{:PidFD}; kw...)= waitpidfd(p; kw...)
 
 
 
@@ -128,7 +127,7 @@ exponential_delay() =
         if r != -1
             fd = FD{In,PidFD}(r)
             try
-                @dblock fd wait(fd; deadline)
+                @dblock fd.ready wait(fd; deadline)
             finally
                 close(fd)
             end

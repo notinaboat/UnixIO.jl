@@ -2,6 +2,7 @@ using Test
 using LoggingTestSets
 using AsyncLog
 using UnixIO
+using Preconditions
 using UnixIO.IOTraits
 using UnixIO: C
 
@@ -13,10 +14,10 @@ using UnixIO: C
 
 """
 
-@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK})
-@show UnixIO.IOTraits.WaitingMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFREG})
-@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK})
-@show UnixIO.IOTraits.TransferMechanism(UnixIO.FD{UnixIO.In, UnixIO.S_IFREG})
+@show UnixIO.IOTraits.WaitAPI(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK})
+@show UnixIO.IOTraits.WaitAPI(UnixIO.FD{UnixIO.In, UnixIO.S_IFREG})
+@show UnixIO.IOTraits.TransferAPI(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK, TransferMode{:Immediate}})
+@show UnixIO.IOTraits.TransferAPI(UnixIO.FD{UnixIO.In, UnixIO.S_IFREG, TransferMode{:Async}})
 
 cd(@__DIR__)
 
@@ -26,24 +27,24 @@ cd(@__DIR__)
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar")
     info, type = code_typed(f, ())[1]
-    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,ImmediateTransfer}}},
-                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,ImmediateTransfer}}}
+    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,TransferMode{:Immediate}}}},
+                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,TransferMode{:Immediate}}}}
 end
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDWR)
     info, type = code_typed(f, ())[1]
-    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,ImmediateTransfer}}},
-                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,ImmediateTransfer}}}
+    @test type == DuplexIO{IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,TransferMode{:Immediate}}}},
+                           IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,TransferMode{:Immediate}}}}
 end
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_RDONLY)
     info, type = code_typed(f, ())[1]
-    @test type == IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,ImmediateTransfer}}}
+    @test type == IOTraits.BaseIO{LazyBufferedInput{UnixIO.FD{UnixIO.In,UnixIO.FDType,TransferMode{:Immediate}}}}
 end
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar", C.O_WRONLY)
     info, type = code_typed(f, ())[1]
-    @test type == IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,ImmediateTransfer}}
+    @test type == IOTraits.BaseIO{UnixIO.FD{UnixIO.Out,UnixIO.FDType,TransferMode{:Immediate}}}
 end
 
 end # testset
@@ -51,7 +52,6 @@ end # testset
 @info "Test read(::Cmd)"
 @test UnixIO.read(`uname -a`) ==
              read(`uname -a`)
-
 
 @info "Test open, readline, read, readbytes!, eof, isopen (with file)"
 jio = open("runtests.jl")

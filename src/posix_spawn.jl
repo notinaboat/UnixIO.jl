@@ -5,10 +5,10 @@ Run `cmd` using `posix_spawn`.
 Connect child process (STDIN, STDOUT, STDERR) to (`in`, `out`, `err`).
 See [posix_spawn(3)](https://man7.org/linux/man-pages/man3/posix_spawn.3.html).
 """
-@db function posix_spawn(cmd::Cmd, infd::Union{String,RawFD},
-                                   outfd::Union{String,RawFD,Nothing}=nothing,
-                                   errfd::Union{String,RawFD,Nothing}=nothing;
-                                   env=nothing)
+@db 3 function posix_spawn(cmd::Cmd, infd::Union{String,RawFD},
+                                     outfd::Union{String,RawFD,Nothing}=nothing,
+                                     errfd::Union{String,RawFD,Nothing}=nothing;
+                                     env=nothing)
     @nospecialize
 
     # Find path to binary.
@@ -84,7 +84,7 @@ See [posix_spawn(3)](https://man7.org/linux/man-pages/man3/posix_spawn.3.html).
         end
         @assert pid[] > 0
 
-        @db return pid[]
+        @db 3 return pid[]
 
     finally
         @cerr0 C.posix_spawn_file_actions_destroy(actions)

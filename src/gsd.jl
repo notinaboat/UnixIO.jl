@@ -56,7 +56,7 @@ const gsd_queue = GSDQueue(C_NULL)
 end
 
 
-function raw_transfer(fd, ::GSDTransfer, ::Out, buf, count)
+function raw_transfer(fd, ::TransferAPI{:GSD}, ::Out, buf, count)
     # FIXME
     C.write(fd, buf, count)
 end
@@ -64,7 +64,7 @@ end
 
 gsd_notify(handle) = ccall(:uv_async_send, Cvoid, (Ptr{Cvoid},), handle)
 
-@db 1 function raw_transfer(fd, ::GSDTransfer, ::In,  buf, count)
+@db 1 function raw_transfer(fd, ::TransferAPI{:GSD}, ::In,  buf, count)
 
     result = Ref(Cint(0))
     err = Ref(Cint(0))

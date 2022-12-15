@@ -1,6 +1,5 @@
 [IOTraits]
-waiting_mechanism = "io_uring"
-#waiting_mechanism = "epoll"
+poll_interface = "IOURing"
 
 [Preconditions]
 check_postconditions = true

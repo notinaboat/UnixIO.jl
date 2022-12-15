@@ -144,19 +144,17 @@ mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.St
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
-    #ready::Base.ThreadSynchronizer  FIXME seperate lock for io interleaving vs poll/wait ???
-    #closed::Base.ThreadSynchronizer
-    ready::Base.GenericCondition{Base.ReentrantLock}
-    closed::Base.GenericCondition{Base.ReentrantLock}
+    ready::Threads.Condition
+    closed::Threads.Condition
     gothup::Bool
     extra::ImmutableDict{Symbol,Any}
 
     FD{D}(fd) where D = FD{D,Union{}}(fd)
 
-    FD{D,T}(fd) where {D,T} = FD{D,T,ImmediateTransfer}(fd)
+    FD{D,T}(fd) where {D,T} = FD{D,T,TransferMode{:Immediate}}(fd)
 
     function FD{D,T,M}(fd) where {D,T,M}
-        if M != BlockingTransfer
+        if M != TransferMode{:Blocking}
             fcntl_setfl(fd, C.O_NONBLOCK)
         end
         fcntl_setfd(fd, C.O_CLOEXEC)
@@ -165,16 +163,14 @@ mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.St
             error("Unable to determine type of file descriptor: $fd")
         end
         _M = (M != Union{}) ? M : typeof(TransferMode(_T))
-        if TransferMechanism(FD{D,_T,_M}) == nothing
-            error("No $_M Mechanism found for $_T file descriptor.")
+        if TransferAPI(FD{D,_T,_M}) == nothing
+            error("No $_M API found for $_T file descriptor.")
         end
         new{D,_T,_M}(RawFD(fd),
                   false,
                   0,
-                  #Base.ThreadSynchronizer(),
-                  #Base.ThreadSynchronizer(),
-                  Base.GenericCondition{Base.ReentrantLock}(),
-                  Base.GenericCondition{Base.ReentrantLock}(),
+                  Threads.Condition(),
+                  Threads.Condition(),
                   false,
                   ImmutableDict{Symbol,Any}())
     end
@@ -215,10 +211,6 @@ struct PidFD           <: FDType end
 struct Pseudoterminal  <: S_IFCHR end
 struct CanonicalMode   <: S_IFCHR end
 
-IOTraits._wait(fd::FD, ::WaitUsingEPoll; deadline=Inf) = wait_for_event(epoll_queue, fd; deadline)
-IOTraits._wait(fd::FD, ::WaitUsingPosixPoll; deadline=Inf) = wait_for_event(poll_queue, fd; deadline)
-IOTraits._wait(fd::FD, ::WaitUsingIOURing; deadline=Inf) = wait_for_event(io_uring_queue, fd; deadline)
-
 @db function  IOTraits.isconnected(fd::FD)
     !fd.gothup
 end
@@ -249,13 +241,13 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                               issocket(s)   ? S_IFSOCK :
                                               Nothing)
 
-IOTraits.TransferMode(T::Type{S_IFREG}) = AsyncTransfer()
-IOTraits.TransferMode(T::Type{S_IFBLK}) = AsyncTransfer()
+IOTraits.TransferMode(T::Type{S_IFREG}) = TransferMode{:Async}()
+IOTraits.TransferMode(T::Type{S_IFBLK}) = TransferMode{:Async}()
 
-IOTraits.TransferMechanism(T::Type{<:FD{<:Any,<:Any,AsyncTransfer}}) =
-    IOTraits.firstvalid(IOURingTransfer(),
-                        GSDTransfer(),
-                        AIOTransfer())
+IOTraits.TransferAPI(T::Type{<:FD{<:Any,<:Any,TransferMode{:Async}}}) =
+    IOTraits.firstvalid(TransferAPI{:IOURing}(),
+                        TransferAPI{:GSD}(),
+                        TransferAPI{:AIO}())
 
 
 # FIXME unify with open() ?
@@ -275,7 +267,6 @@ debug_tiny(x::FD) = string(x)
 Base.stat(fd::FD) = stat(fd.fd)
 Base.lock(fd::FD) = lock(fd.ready)
 Base.unlock(fd::FD) = unlock(fd.ready)
-Base.notify(fd::FD, a...) = notify(fd.ready, a...)
 Base.islocked(fd::FD) = islocked(fd.ready)
 Base.assert_havelock(fd::FD) = Base.assert_havelock(fd.ready)
 
@@ -289,37 +280,30 @@ include("WriteFD.jl")
 
 trait_doc = """
 
-# IO Traits
+# IO Input Traits
 
-| Type            | Read Fragmentation | Availability         | Waiting Mechanism | Transfer Size           | Transfer Size Mechanism | Max Transfer Mechanism | Total Size          | Total Size Mechanism  | Cursor Support |
-| --------------- | ------------------ | -------------------- | ----------------- | ----------------------- | ----------------------- | ---------------------- | ------------------- | --------------------- | -------------- |
-| S_IFBLK         | Reads Bytes        | Always Available     |                   | Unlimited Transfer Size | Supports BLKGETSIZE     |                        | Fixed Total Size    | Supports BLKGETSIZE   | Seekable       |
-| S_IFREG         | Reads Bytes        | Always Available     |                   | Unlimited Transfer Size | Supports Stat Size      |                        | Variable Total Size | Supports Stat Size    | Seekable       |
-| S_IFIFO         | Reads Bytes        | Partially Available  | Preferred Poll    | Limited Transfer Size   | Supports FIONREAD       | Supports GETPIPE_SZ    |                     |                       |                | 
-| S_IFCHR         | Reads Bytes        | Partially Available  | Preferred Poll    | Unlimited Transfer Size | Supports FIONREAD       |                        |                     |                       |                |
-| S_IFSOCK        | Reads Bytes        | Partially Available  | Preferred Poll    | Limited Transfer Size   | Supports FIONREAD       | Supports SO_SNDBUF     |                     |                       |                |
-| S_IFLNK         |                    |                      |                   |                         |                         |                        | Zero Total Size     |                       |                | 
-| S_IFDIR         |                    |                      |                   |                         |                         |                        | Variable Total Size |                       |                | 
-| PidFD           |                    |                      | Preferred Poll    |                         |                         |                        | Zero Total Size     |                       |                | 
-| Pseudoterminal  | Reads Bytes        | Unknown Availability | Preferred Poll    | Unlimited Transfer Size |                         |                        |                     |                       |                | 
-| CanonicalMode   | Reads Lines        | Partially Available  | Preferred Poll    | Unlimited Transfer Size | Supports FIONREAD       |                        |                     |                       |                | 
+| FD Type         | Read Unit | Availability  | Transfer Size | Total Size | Cursors  | Wait API | Read Size API | Max Read API | Length API |
+| --------------- | --------- | ------------- | ------------- | ---------- | -------- | -------- | ------------- | ------------ | ---------- |
+| S_IFDIR         |           |               |               | Variable   |          |          |               |              |            | 
+| S_IFLNK         |           |               |               | Zero       |          |          |               |              |            | 
+| S_IFREG         | Byte      | Always        | Unlimited     | Variable   | Seekable |          | FStat         |              | FStat      |
+| S_IFBLK         | Byte      | Always        | Unlimited     | Fixed      | Seekable |          | BLKGETSIZE    |              | BLKGETSIZE |
+| S_IFIFO         | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | GETPIPE_SZ   |            | 
+| S_IFSOCK        | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | SO_RCVBUF    |            |
+| S_IFCHR         | Byte      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |            |
+| Pseudoterminal  | Byte      | Unknown       | Unlimited     |            |          | Poll     |               |              |            | 
+| CanonicalMode   | Line      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |            | 
+| PidFD           |           |               |               | Zero       |          | Poll     |               |              |            | 
 """
 
-PreferredPoll() = IOTraits.preferred_poll_mechanism
-
-for (i, n) in enumerate(md_table_columns(trait_doc))
-    i > 1 || continue
-    f = Symbol(replace(n, " " => ""))
-    for (k, v) in md_table_map(trait_doc, 1 => i)
-        if v != ""
-            v = Symbol(replace(v, " " => ""))
-            @info "$f(::Type{<:FD{In,<:$(Symbol(k))}}) = $v()"
-            ex = :(IOTraits.$f(::Type{<:FD{In,<:$(Symbol(k))}}) = $v())
-            eval(ex)
-        end
-    end
+md_table_foreach_cell(trait_doc) do trait, fdtype, x
+    trait = replace(trait, " " => "")
+    ex = "IOTraits.$trait(::Type{<:FD{In,<:$fdtype}}) = $trait{:$x}()"
+    include_string(@__MODULE__, ex)
 end
 
+IOTraits.StreamIndexing(::Type{<:FD{In,S_IFBLK}}) = IndexableIO()
+IOTraits.StreamIndexing(::Type{<:FD{In,S_IFREG}}) = IndexableIO()
 
 
 README"## Opening and Closing Unix Files."
@@ -366,7 +350,7 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly.
         flags = C.O_RDWR
     end
 
-    if M != BlockingTransfer
+    if M != TransferMode{:Blocking}
         flags |= C.O_NONBLOCK
     end
 
@@ -438,7 +422,7 @@ include("termio.jl")
 
 @db 1 function Base.close(fd::FD)
     fd.isclosed = true
-    @dblock fd notify(fd)
+    @dblock fd.ready notify(fd.ready)
     yield()
     shutdown(fd)
     @cerr allow=C.EBADF C.close(fd)
@@ -493,25 +477,23 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR),
                   raw_transfer(fd,
-                               TransferMechanism(fd),
+                               TransferAPI(fd),
                                TransferDirection(fd),
                                buf, Csize_t(count)))
         if n == -1
-            err = errno()
-            @db 2 n err errname(err)
-            @assert err == C.EAGAIN ||
-                    err == C.EPIPE
+            @db 2 n err=errno() errname(err)
             n = 0
         end
+        @ensure n >= 0
         @ensure n <= count
-        @db 2 return UInt(n)
+        @db 2 return UInt(unsigned(n))
     end
 end
 
-raw_transfer(fd, ::LibCTransfer, ::Out, buf, count) = C.write(fd, buf, count)
-raw_transfer(fd, ::LibCTransfer, ::In,  buf, count) = C.read(fd, buf, count)
+@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::Out, buf, count) = C.write(fd, buf, count)
+@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::In,  buf, count) = C.read(fd, buf, count)
 
-raw_transfer(fd::FD{In,S_IFDIR}, ::LibCTransfer, ::In,  buf, count) =
+raw_transfer(fd::FD{In,S_IFDIR}, ::TransferAPI{:LibC}, ::In,  buf, count) =
     error("Directory read not supported yet!")
 
 include("timer.jl")
@@ -580,11 +562,11 @@ README"## Unix Domain Sockets."
 Create a pair of connected Unix Domain Sockets (`AF_UNIX`, `SOCK_STREAM`).
 See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
 """
-@db function socketpair()
+@db 3 function socketpair()
     v = fill(RawFD(-1), 2)
     @cerr C.socketpair(C.AF_UNIX, C.SOCK_STREAM, 0, v)
     @ensure -1 ∉ v
-    @db return (v[1], v[2])
+    @db 3 return (v[1], v[2])
 end
 
 

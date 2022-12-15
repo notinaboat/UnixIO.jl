@@ -45,7 +45,7 @@ function aio_task(q)
                     if n != C.EINPROGRESS
                         fd = q.fd_list[i]
                         @assert RawFD(q.aiocb_list[i].aio_filedes) == fd.fd
-                        @dblock fd notify(fd, n)
+                        @dblock fd.ready notify(fd.ready, n)
                         push!(indexes_to_delete, i)
                     end
                 end

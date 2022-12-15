@@ -57,7 +57,7 @@ macro cerr(a, b=nothing)
     esc(:(begin
         $r = $ex
         $condition && systemerror(dbstring($f, ($(args...),)))
-        @assert $r >= -1
+        @ensure $r >= -1
         $r
     end))
 end

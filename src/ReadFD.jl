@@ -3,24 +3,13 @@ Read-only Unix File Descriptor.
 """
 
 
-
-
-@db 1 function IOTraits._bytesavailable(fd::FD, ::SupportsStatSize)
-    @db_not_tested
-    pos = @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
-    if pos == -1
-        return 0
-    end
-    @db 1 return stat(fd).size - pos
-end
-
-@db 1 function IOTraits._bytesavailable(fd::FD, ::SupportsFIONREAD)
+@db 1 function IOTraits._bytesavailable(fd::FD, ::ReadSizeAPI{:FIONREAD})
     x = Ref(Cint(0))
     @cerr C.ioctl(fd, C.FIONREAD, x)
     @db 1 return x[]
 end
 
-@db function IOTraits._position(fd::FD, ::Seekable)
+@db function IOTraits._position(fd::FD, ::Cursors{:Seekable})
     @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
 end
 

@@ -63,16 +63,19 @@ function wakeup_poll(q::PollQueue);                       @db 3 "wakeup_poll()"
 end
 
 
+IOTraits._wait(fd::FD, ::WaitAPI{:PosixPoll}; deadline=Inf) =
+    wait_for_event(poll_queue, fd; deadline)
+
 """
 Wait for an event to occur on `fd`.
 """
 @db 2 function wait_for_event(queue, fd::FD; deadline=Inf)
-    assert_havelock(fd)
+    assert_havelock(fd.ready)
 
 #    @info "wait_for_event" fd
 
     timer = register_timer(deadline) do
-        @dblock fd notify(fd, :timeout)
+        @dblock fd.ready notify(fd.ready, :timeout)
     end
     fd.nwaiting += 1
     event = try
@@ -105,11 +108,15 @@ end
 
 waiting_fds(q::PollQueue) = q.fd_vector
 
+const poll_threads = Vector{Int}()
 
 """
 Run `poll_wait()` in a loop.
 """
 @db 1 function poll_task(q)
+
+    @assert !(Threads.threadid() ∈ poll_threads)
+    push!(poll_threads, Threads.threadid())
 
     if Threads.threadid() == 1
         @warn "UnixIO.poll_task() is running on thread No. 1!\n" *
@@ -119,6 +126,7 @@ Run `poll_wait()` in a loop.
 
         timeout_ms = 100
     else
+        @db 1 "poll_task($(typeof(q))) on thread $(Threads.threadid())"
         timeout_ms = 60_000
     end
 
@@ -133,7 +141,7 @@ Run `poll_wait()` in a loop.
                     @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
                 else
                     @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
-                    @dblock fd notify(fd, events); # Wake: `wait_for_event()`
+                    @dblock fd.ready notify(fd.ready, events); # Wake: `wait_for_event()`
                 end
             end
         catch err
@@ -143,7 +151,10 @@ Run `poll_wait()` in a loop.
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
         end
-        yield()
+        GC.safepoint()
+        if Threads.threadid() == 1
+            yield()
+        end
     end
     @assert false
 end

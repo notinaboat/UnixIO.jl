@@ -89,7 +89,8 @@ This `raw_transfer` method handles this by checking if the client process
 is still alive and returning `0` if it has terminated.
 """
 @db 2 function raw_transfer(fd::FD{In,Pseudoterminal},
-                            ::LibCTransfer, ::IOTraits.In, buf, count)
+                            ::TransferAPI{:LibC},
+                            ::IOTraits.In, buf, count)
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
@@ -103,15 +104,15 @@ end
 
 @db function IOTraits._wait(fd::FD{In,Pseudoterminal},
                             wm::T; deadline=Inf
-    ) where T <: typeof(WaitingMechanism(FD{In,Pseudoterminal}))
+    ) where T <: typeof(WaitAPI(FD{In,Pseudoterminal}))
 
-    assert_havelock(fd)
+    assert_havelock(fd.ready)
 
     process = fd.extra[:pt_client]
 
     while true
         timer = register_timer(time() + 1) do
-            @dblock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
+            @dblock fd.ready notify(fd.ready, :poll_isalive) # FIXME SIGCHILD?
         end
         try
             event = @invoke IOTraits._wait(fd::FD{In}, wm::T; deadline)

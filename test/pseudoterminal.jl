@@ -79,8 +79,8 @@ mktempdir() do d
             @show typeof(io)
             @assert io isa UnixIO.FD{UnixIO.In,UnixIO.CanonicalMode}
             @assert !(io isa UnixIO.FD{UnixIO.In,UnixIO.Pseudoterminal})
-            @show UnixIO.ReadFragmentation(io)
-            @assert UnixIO.ReadFragmentation(io) == UnixIO.IOTraits.ReadsLines()
+            @show UnixIO.ReadUnit(io)
+            @assert UnixIO.ReadUnit(io) == UnixIO.IOTraits.ReadUnit{:Line}()
         catch err
             exception=(err, catch_backtrace())
             @error "Error in pty client" exception

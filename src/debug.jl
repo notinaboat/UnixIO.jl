@@ -62,8 +62,8 @@ db_c(c,p) = constant_name(c;prefix=p)
 mutable struct GlobalDebug
     task::Int
     t0::Float64
-    lock::Base.ThreadSynchronizer
-    GlobalDebug() = new(-1, Inf, Base.ThreadSynchronizer())
+    lock::Threads.SpinLock
+    GlobalDebug() = new(-1, Inf, Threads.SpinLock())
 end
 
 const global_debug = GlobalDebug()
@@ -399,7 +399,7 @@ end
 Like `Base.@lock`, but with logging when blocked waiting for lock.
 """
 macro dblock(l, expr)
-    if DEBUG_LEVEL < 0
+    if DEBUG_LEVEL < 1
         return esc(:(@lock $l $expr))
     end
 
@@ -410,7 +410,7 @@ macro dblock(l, expr)
         warn = islocked(l)
         warn && debug_print(1, $lineno, "🔒 Waiting $(string(l)) ⁉️ ...")
         lock(l)
-        warn && debug_print(1, $lineno, "🔓 Unlocked.")
+        warn && debug_print(2, $lineno, "🔓 Unlocked.")
         try
             $(esc(expr))
         finally

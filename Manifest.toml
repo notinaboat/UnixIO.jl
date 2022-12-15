@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.8.2"
+julia_version = "1.8.3"
 manifest_format = "2.0"
 project_hash = "0a8e9e7c4c71984e938565a8753eb03804394f37"
 
@@ -225,7 +225,7 @@ uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
 
 [[deps.MarkdownTableMaps]]
 deps = ["Markdown", "ReadmeDocs"]
-git-tree-sha1 = "d05cc345d59af8af3e3d0ac897ac461956678834"
+path = "../MarkdownTableMaps"
 uuid = "273d989c-148d-470a-9902-90424cbd1978"
 version = "0.1.1"
 
@@ -274,7 +274,7 @@ version = "1.8.0"
 
 [[deps.Preconditions]]
 deps = ["Preferences", "ReadmeDocs"]
-git-tree-sha1 = "95aa41341d186f79158628ab196564591a1f7f35"
+path = "../Preconditions"
 uuid = "059f9e2d-edd5-4920-8ad6-95789b106d09"
 version = "0.2.1"
 

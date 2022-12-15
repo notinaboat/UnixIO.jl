@@ -32,6 +32,9 @@ waiting_fds(q::EPollQueue) = @dblock q.lock collect(values(q.dict))
 end
 
 
+IOTraits._wait(fd::FD, ::WaitAPI{:EPoll}; deadline=Inf) =
+    wait_for_event(epoll_queue, fd; deadline)
+
 
 """
 Add, modify or delete epoll target FDs.

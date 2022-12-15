@@ -40,6 +40,8 @@ waiting_fds(q::IOURingQueue) = @dblock q.lock collect(values(q.dict))
     Threads.@spawn poll_task(io_uring_queue)
 end
 
+IOTraits._wait(fd::FD, ::WaitAPI{:IOURing}; deadline=Inf) =
+    wait_for_event(io_uring_queue, fd; deadline)
 
 const IO_URING_POLL_REQUEST = unsigned(1 << 63)
 const IO_URING_TRANSFER_REQUEST = unsigned(1 << 62)
@@ -60,18 +62,20 @@ Register `fd` to wake up `io_uring_wait_cqe` on `event`:
 @db 4 function register_for_events(q::IOURingQueue, fd)
     key = io_uring_poll_key(fd)
     @dblock q.lock begin
-        if !haskey(q.dict, key)
-            q.dict[key] = fd
-            sqe = io_uring_get_sqe(q.ring)
-            @assert sqe != C_NULL
-            io_uring_prep_poll_add(sqe, fd.fd, poll_event_type(fd))
-            sqe.user_data = key
-            n = io_uring_submit(q.ring)
-            n == 1 || systemerror("io_uring_prep_poll_add()", 0 - n)
-        else
+        if haskey(q.dict, key)
             @db 2 "Already registered!"
+            @assert false
+            return
         end
+        q.dict[key] = fd
     end
+
+    sqe = io_uring_get_sqe(q.ring)
+    @assert sqe != C_NULL
+    io_uring_prep_poll_add(sqe, fd.fd, poll_event_type(fd))
+    sqe.user_data = key
+    n = io_uring_submit(q.ring)
+    n == 1 || systemerror("io_uring_prep_poll_add()", 0 - n)
 end
 
 
@@ -81,14 +85,17 @@ end
     
 
 @db 4 function poll_wait(f::Function, q::IOURingQueue, timeout_ms::Int)
+    #FIXME timeout_ms is ignored
     cqeref = Ref{Ptr{LibURing.io_uring_cqe}}()
-    @cerr gc_safe_io_uring_wait_cqe(q.ring, cqeref)
+    n = gc_safe_io_uring_wait_cqe(q.ring, cqeref)
+    n == 0 || systemerror("io_uring_wait_cqe()", 0 - n)
     cqe = cqeref[]
     res = unsafe_load(cqe.res)
     user_data = unsafe_load(cqe.user_data)
     io_uring_cqe_seen(q.ring, cqe)
     
     if res ∈ (-C.ENOENT, -C.ECANCELED, -C.EALREADY)
+        @assert false
         @db 1 "io_uring_wait_cqe -> $(errname(-res))" res user_data
     elseif res < 0
         msg = "io_uring_cqe.res = $res"
@@ -107,20 +114,22 @@ end
             f(res, fd)
         elseif user_data & IO_URING_TRANSFER_REQUEST != 0
             @db 2 "read $(res) -> notify($fd)"
-            @dblock fd notify(fd, res);
+            @dblock fd.ready notify(fd.ready, res);
             # Wake: `raw_transfer(fd, ::IOURingTransfer, ...)`
+        else
+            @assert false
         end
     end
 end
 
 
-function raw_transfer(fd, ::IOURingTransfer, ::Out, buf, count)
+function raw_transfer(fd, ::TransferAPI{:IOURing}, ::Out, buf, count)
     # FIXME
     C.write(fd, buf, count)
 end
 
 
-@db 1 function raw_transfer(fd, ::IOURingTransfer, ::In,  buf, count)
+@inline @db 1 function raw_transfer(fd, ::TransferAPI{:IOURing}, ::In,  buf, count)
 
     key = io_uring_transfer_key(fd)
 
@@ -130,13 +139,16 @@ end
     end
 
     try
-        sqe = io_uring_get_sqe(io_uring_queue.ring)
-        io_uring_prep_read(sqe, fd, buf, count, unsigned(-1) #= offset =#);
-        sqe.user_data = key
-        n = io_uring_submit(io_uring_queue.ring)
-        n == 1 || systemerror("io_uring_prep_read()", 0 - n)
+        @dblock fd.ready begin
 
-        @db return @dblock fd wait(fd.ready)
+            sqe = io_uring_get_sqe(io_uring_queue.ring)
+            io_uring_prep_read(sqe, fd, buf, count, unsigned(-1) #= offset =#);
+            sqe.user_data = key
+            n = io_uring_submit(io_uring_queue.ring)
+            n == 1 || systemerror("io_uring_prep_read()", 0 - n)
+
+            @db return wait(fd.ready)
+        end
 
     finally
         @dblock io_uring_queue.lock delete!(io_uring_queue.dict, key)

@@ -98,7 +98,7 @@ Run `cmd` using `posix_spawn`.
 end
 
 
-@db function run_cmd_function(f, cmd, p; check_status=true)
+@db 1 function run_cmd_function(f, cmd, p; check_status=true)
     @nospecialize
 
     # Run the IO handling function `f`.
@@ -118,9 +118,9 @@ end
         end
 
         if !check_status
-            @db return p, result
+            @db 1 return p, result
         elseif (didexit(check(p)) && p.exit_status == 0) || sent_sighup
-            @db return result
+            @db 1 return result
         else
             throw(ProcessFailedException(p, cmd))
         end
