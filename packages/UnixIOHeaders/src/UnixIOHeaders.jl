@@ -161,7 +161,7 @@ function parse_headers()
         "<poll.h>",
         (Sys.islinux() ? ("<sys/epoll.h>",) : ())...,
         (Sys.isapple() ? ("<dispatch/dispatch.h>",) : ())...,
-        (Sys.isapple() ? ("<sys/aio.h>",) : ())...,
+        (Sys.isapple() ? ("<sys/disk.h>",) : ())...,
         "<unistd.h>",
         "<sys/stat.h>",
         "<net/if.h>",
@@ -341,7 +341,8 @@ if Sys.isapple()
 const __spawn_action = Cvoid
 end
 
-ioctl(fd, cmd, arg) = @ccall ioctl(fd::Cint, cmd::Cint, arg::Ptr{Cint})::Cint
+ioctl(fd, cmd, arg::Ref{T}) where T =
+    @ccall ioctl(fd::Cint, cmd::Culong, arg::Ptr{T})::Cint
 
 
 const __builtin_va_list = nothing

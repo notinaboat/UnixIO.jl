@@ -17,17 +17,31 @@ end
 =#
 
 
-function dispatch_read_source(fd, buf, length, result, err, queue, notify, complete)
+dispatch_source(::In, fd, buf, length, offset, result, err, queue, notify, complete) =
     @ccall libdispatch.jl_dispatch_read_source(fd::C.dispatch_fd_t, 
                                                buf::Ptr{UInt8},
-                                               length::C.size_t ,
+                                               length::C.size_t,
+                                               offset::C.off_t,
                                                result::Ptr{Cint},
                                                err::Ptr{Cint},
                                                queue::C.dispatch_queue_t,
                                                notify::Ptr{Cvoid},
                                                complete::Ptr{Cvoid}
                                                )::Cvoid
-end
+
+
+dispatch_source(::Out, fd, buf, length, offset, result, err, queue, notify, complete) =
+    @ccall libdispatch.jl_dispatch_write_source(fd::C.dispatch_fd_t, 
+                                                buf::Ptr{UInt8},
+                                                length::C.size_t,
+                                                offset::C.off_t,
+                                                result::Ptr{Cint},
+                                                err::Ptr{Cint},
+                                                queue::C.dispatch_queue_t,
+                                                notify::Ptr{Cvoid},
+                                                complete::Ptr{Cvoid}
+                                                )::Cvoid
+
 
 #=
 
@@ -56,25 +70,24 @@ const gsd_queue = GSDQueue(C_NULL)
 end
 
 
-function raw_transfer(fd, ::TransferAPI{:GSD}, ::Out, buf, count)
-    # FIXME
-    C.write(fd, buf, count)
-end
-
-
 gsd_notify(handle) = ccall(:uv_async_send, Cvoid, (Ptr{Cvoid},), handle)
 
-@db 1 function raw_transfer(fd, ::TransferAPI{:GSD}, ::In,  buf, count)
+@db 1 function raw_transfer(fd, ::TransferAPI{:GSD}, dir::AnyDirection,  buf,
+                            fd_offset, count)
 
     result = Ref(Cint(0))
     err = Ref(Cint(0))
 
+    if ismissing(fd_offset)
+        fd_offset = -1
+    end
+
     cond = Base.AsyncCondition()
     GC.@preserve cond begin
-        dispatch_read_source(fd, buf, count, result, err,
-                             gsd_queue.queue,
-                             @cfunction(gsd_notify, Cvoid, (Ptr{Cvoid},)),
-                             cond.handle)
+        dispatch_source(dir, fd, buf, count, fd_offset, result, err,
+                        gsd_queue.queue,
+                        @cfunction(gsd_notify, Cvoid, (Ptr{Cvoid},)),
+                        cond.handle)
         if result[] == 0
             wait(cond)
         end

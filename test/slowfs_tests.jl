@@ -54,7 +54,7 @@ end #testset
         @time @sync for f in ["A", "B", "C", "D", "E", "F"]
             @async begin
                 io = UnixIO.open("slowfs_mount/$f";
-                                 transfer_mode=UnixIO.IOTraits.ImmediateTransfer)
+                                 transfer_mode=UnixIO.IOTraits.TransferMode{:Immediate})
                 if x == 2 && f == "A"
                     @show typeof(io.in.stream)
                     @show UnixIO.IOTraits.WaitAPI(io.in.stream)
@@ -82,7 +82,7 @@ end #testset
         @time @sync for f in ["A", "B", "C", "D", "E", "F"]
             @async begin
                 io = UnixIO.open("slowfs_mount/$f";
-                                 transfer_mode=UnixIO.IOTraits.BlockingTransfer)
+                    transfer_mode=UnixIO.IOTraits.TransferMode{:Blocking})
                 if x == 2 && f == "A"
                     @show typeof(io.in.stream)
                     @show UnixIO.IOTraits.WaitAPI(io.in.stream)

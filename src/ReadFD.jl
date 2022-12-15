@@ -9,19 +9,38 @@ Read-only Unix File Descriptor.
     @db 1 return x[]
 end
 
+@db function IOTraits._blocksize(fd::FD, ::BlockSizeAPI{:DKIOCGETBLOCKSIZE})
+    x = Ref{UInt32}()
+    @cerr C.ioctl(fd, C.DKIOCGETBLOCKSIZE, x)
+    @db 1 return x[]
+end
+
+
+@db function IOTraits._blocksize(fd::FD, ::BlockSizeAPI{:BLKSSZGET})
+    x = Ref{UInt32}()
+    @cerr C.ioctl(fd, C.BLKSSZGET, x)
+    @db 1 return x[]
+end
+
+
+@db function IOTraits._length(fd::FD, ::LengthAPI{:DKIOCGETBLOCKCOUNT})
+    x = Ref{UInt64}()
+    @cerr C.ioctl(fd, C.DKIOCGETBLOCKCOUNT, x)
+    x[] *= IOTraits.blocksize(fd)
+    @db 1 return x[]
+end
+
+
+@db function IOTraits._length(fd::FD, ::LengthAPI{:BLKGETSIZE64})
+    x = Ref{UInt64}()
+    @cerr C.ioctl(fd, C.BLKGETSIZE64, x)
+    @db 1 return x[]
+end
+
+
 @db function IOTraits._position(fd::FD, ::Cursors{:Seekable})
     @cerr allow=C.EBADF C.lseek(fd, 0, C.SEEK_CUR)
 end
-
-# FIXME
-#
-# if S_ISBLK(st.st_mode)) {
-#        unsigned long long bytes;
-#        if (ioctl(fd, BLKGETSIZE64, &bytes) != 0) {
-#            perror("ioctl");
-#            return -1;
-#            }
-
 
 
 #=

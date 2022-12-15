@@ -14,10 +14,11 @@ String containing result of shell command. e.g.
     V: "0.1.0"
 """
 macro sh_str(s)
-    @assert false "not tested?"
-    s = Meta.parse("\"$s\"")
-    cmd = `bash -c "$s"`
-    esc(:($cmd |> read |> String |> chomp))
+    s = Meta.parse(""" "$s" """)
+    quote
+        _s = $(esc(s))
+        `bash -c $_s` |> read |> String |> chomp
+    end
 end
 
 @doc README"""

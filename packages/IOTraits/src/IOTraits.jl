@@ -529,7 +529,7 @@ end
 @db function Base.position(s::Stream)
     @db_not_tested is_proxy(s)
     @require isopen(s)
-    @require Cursors(s) isa HasPosition
+    @require Cursors(s) isa HasCursors
     s = unwrap(s)
     _position(s, Cursors(s))
 end
@@ -684,7 +684,7 @@ struct NotIndexable <: StreamIndexing end
 struct IndexableIO <: StreamIndexing end
 StreamIndexing(s) = StreamIndexing(typeof(s))
 StreamIndexing(T::Type) = is_proxy(T) ? StreamIndexing(unwrap(T)) :
-                                        NotIndexable
+                                        NotIndexable()
 
 stream_is_indexable(s) = StreamIndexing(s) == IndexableIO()
 
@@ -715,7 +715,7 @@ determines what polling mechamism is used.
 `buffer_i` specifies a buffer index at which the transfer begins.
 If `stream` is indexable then `stream_i` can be used to specify
 the stream byte-index at which the transfer begins.
-A `stream` is indexable if `Cursors(stream) <: HasPosition`.
+A `stream` is indexable if `Cursors(stream) <: HasCursors`.
 
 The direction of transfer depends on
 `TransferDirection(stream) ->` (`In`, `Out` or `Exchange`).
@@ -745,17 +745,23 @@ A transfer to a `URI` creates a new resource or replaces the resource
 @inline @db function transfer!(stream, buffer,
                                n::Union{Integer,Missing}=missing;
                                stream_i::Union{Integer,Missing}=missing,
-                               buffer_i::Integer=UInt(1), # FIXME should be missing by default ??
+                               buffer_i::Union{Integer,Missing}=missing,
                                deadline=Inf,
                                timeout=Inf)
 
     @require isopen(stream)
     @require ismissing(n) || n > 0
     @require ismissing(stream_i) || stream_i > 0
-    @require ismissing(stream_i) || StreamIndexing(stream) == IndexableIO()
-    @require ismissing(stream_i) || Cursors(stream) <: HasPosition
-    @require buffer_i > 0
+    @require ismissing(stream_i) ||
+             StreamIndexing(stream) == IndexableIO() ||
+             Cursors(stream) isa HasCursors
+    @require ismissing(buffer_i) || buffer_i > 0
+
     @db typeof(stream) stream_i buffer_i deadline timeout
+
+    n = missing_or_uint64(n)
+    stream_i = missing_or_uint64(stream_i)
+    buffer_i = missing_or_uint64(buffer_i)
 
     r = _transfer!(stream, buffer, (stream_i, buffer_i, n),
                    deadline_or_timeout(deadline, timeout))
@@ -766,6 +772,8 @@ A transfer to a `URI` creates a new resource or replaces the resource
     @ensure ismissing(n) || r <= n
     @db return r
 end
+
+missing_or_uint64(i) = ismissing(i) ? i : UInt(unsigned(i))
 
 function deadline_or_timeout(deadline, timeout)
     Float64((timeout == 0)   ? 0 :
@@ -1121,6 +1129,7 @@ struct IsItemPtr <: BufferInterface end
 struct IsBytePtr <: BufferInterface end
 struct FromIO <: BufferInterface end
 struct FromStream <: BufferInterface end
+struct FromString <: BufferInterface end
 struct FromPop <: BufferInterface end
 struct FromTake <: BufferInterface end
 struct FromIteration <: BufferInterface end
@@ -1141,6 +1150,7 @@ data from a particular buffer type
 |:----------------- |:-------------------------------------------------------- |
 | `FromIO()`        | Take data from the buffer using the `Base.IO` interface. |
 | `FromStream()`    | Take data from the `IOTraits.Stream` interface.          |
+| `FromString()`    | Use `codeunits(buffer::AbstractString).                  |
 | `FromPop()`       | Use `pop!(buffer)` to read from the buffer.              |
 | `FromTake()`      | Use `take!(buffer)`.                                     |
 | `FromIteration()` | Use `for x in buffer...`.                                |
@@ -1155,6 +1165,7 @@ FromBufferInterface(x) = FromBufferInterface(typeof(x))
 FromBufferInterface(::Type) = FromIteration()
 FromBufferInterface(::Type{<:IO}) = FromIO()
 FromBufferInterface(::Type{<:Stream}) = FromStream()
+FromBufferInterface(::Type{<:AbstractString}) = FromString()
 FromBufferInterface(::Type{<:AbstractChannel}) = FromTake()
 FromBufferInterface(::Type{<:Ref}) = UsingPtr()
 FromBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
@@ -1260,6 +1271,20 @@ LengthAPI(T::Type) = is_proxy(T) ? LengthAPI(unwrap(T)) :
 @db function _length(stream, ::LengthAPI{:FStat})
     stat(stream).size
 end
+
+
+struct BlockSizeAPI{T} end
+BlockSizeAPI(x) = BlockSizeAPI(typeof(x))
+BlockSizeAPI(T::Type) = is_proxy(T) ? BlockSizeAPI(unwrap(T)) :
+                                      BlockSizeAPI{Missing}()
+
+@db function blocksize(s::Stream)
+    @require isopen(s)
+    s = unwrap(s)
+    _blocksize(s, BlockSizeAPI(s))
+end
+
+function _blocksize end
 
 
 
@@ -1442,11 +1467,12 @@ call this this IsBytePtr method, which in turn calls the low level
 """
 @inline @db 2 function _attempt_transfer(stream,
                                          buffer::Ptr{UInt8}, ::IsBytePtr,
-                                         stream_i, buffer_i::UInt, n::UInt)
-    buffer += (buffer_i-1)
-    r = ismissing(stream_i) ?
-        unsafe_transfer!(stream, buffer, n) :
-        unsafe_transfer!(stream, stream_i, buffer, n)
+                                         stream_i, buffer_i, n::UInt)
+    @ensure ismissing(stream_i) || stream_i > 0
+    if !ismissing(buffer_i)
+        buffer += (buffer_i-1)
+    end
+    r = unsafe_transfer!(stream, buffer, stream_i-1, n)
     @ensure r isa UInt
     @db 2 return r
 end
@@ -1461,6 +1487,7 @@ but an error is thrown if a partial item is transferred.
 @db 2 function _attempt_transfer(stream,
                                  buf, ::IsItemPtr,
                                  stream_i, buffer_i::UInt, n::UInt)
+    @show stream buf ioelsize(buf)
     @db_not_tested
     sz = ioelsize(buf)
     @assert sz > 1
@@ -1517,8 +1544,8 @@ work properly for `BaseIOStream`.
 """
 function unsafe_transfer! end
 
-
-@inline @db function unsafe_transfer!(s::BaseIOStream, buf::Ptr{UInt8}, n::UInt)
+@inline @db function unsafe_transfer!(s::BaseIOStream, buf::Ptr{UInt8},
+                                      stream_offset::Missing, n::UInt)
     @db_not_tested
     is_input(s) ? UInt(unsafe_read(s.io, buf, n)) :
                   UInt(unsafe_write(s.io, buf, n))
@@ -1536,9 +1563,31 @@ After this both `buffer_i` and `n` are always `UInt`s.
                                          interface::Union{UsingPtr, UsingIndex},
                                          stream_i, buffer_i, n::Missing)
     @require length(buf) > 0
-    n = length(buf) - (buffer_i - 1)
+    n = length(buf)
+    if !ismissing(buffer_i)
+        n -= (buffer_i - 1)
+    end
     _attempt_transfer(stream, buf, interface, stream_i, buffer_i, UInt(n))
 end
+
+
+@inline @db 2 function _attempt_transfer(stream, buffer, interface::FromString,
+                                         stream_i, buffer_i, n::Missing)
+    n = ncodeunits(buffer)
+    if !ismissing(buffer_i)
+        n -= (buffer_i - 1)
+    end
+    _attempt_transfer(stream, buffer, interface, stream_i, buffer_i, UInt(n))
+end
+
+
+@inline @db 2 function _attempt_transfer(stream, buffer, ::FromString,
+                                         stream_i, buffer_i::UInt, n::UInt)
+    @require (buffer_i-1) + n <= ncodeunits(buffer)
+    _attempt_transfer(stream, pointer(buffer), IsBytePtr(),
+                      stream_i, buffer_i, n)
+end
+
 
 @inline @db 2 function _attempt_transfer(stream, buf,
                                          interface,
@@ -1546,27 +1595,24 @@ end
     _attempt_transfer(stream, buf, interface, stream_i, buffer_i, typemax(UInt))
 end
 
-@inline @db 2 function _attempt_transfer(stream, buf,
-                                         interface, 
-                                         stream_i, buffer_i::Integer, n::Integer)
-    _attempt_transfer(stream, buf, interface, stream_i, UInt(buffer_i), UInt(n))
-end
-
 
 idoc"""
 If the buffer is pointer-compatible convert it to a pointer.
 """
 @inline @db 2 function _attempt_transfer(stream, buf, ::UsingPtr,
-                                         stream_i, buffer_i::UInt, n::UInt)
+                                         stream_i, buffer_i, n::UInt)
+    if ismissing(buffer_i)
+        buffer_i = UInt(1)
+    end
     checkbounds(buf, (buffer_i-1) + n)
     GC.@preserve buf attempt_transfer(stream, pointer(buf, buffer_i),
-                                      (stream_i, 1, n))
+                                      (stream_i, UInt(1), n))
 end
 
 @inline @db 2 function _attempt_transfer(stream, buf::Ref, ::UsingPtr,
                                          stream_i, buffer_i::UInt, n::UInt)
     p = Base.unsafe_convert(Ptr{eltype(buf)}, buf)
-    GC.@preserve buf attempt_transfer(stream, p, (stream_i, 1, n))
+    GC.@preserve buf attempt_transfer(stream, p, (stream_i, UInt(1), n))
 end
 
 
@@ -1813,9 +1859,9 @@ Cursor Support   Description
 """
 Cursors(s) = Cursors(typeof(s))
 Cursors(T::Type) = is_proxy(T) ? Cursors(unwrap(T)) :
-                                       Cursors{Missing}()
+                                 Cursors{Missing}()
 
-const HasPosition = Union{Cursors{:Markable}, Cursors{:Seekable}}
+const HasCursors = Union{Cursors{:Markable}, Cursors{:Seekable}}
 const NotMarkable = Union{Cursors{Missing}, Cursors{:Seekable}}
 
 trait_error(s, trait) =
@@ -1936,7 +1982,7 @@ bytesremaining(s, ::TotalSize{:Zero}, ::Any) = 0
 bytesremaining(s, ::TotalSize{:Unknown}, ::Any) = missing
 bytesremaining(s, ::TotalSize{:Infinite}, ::Any) = typemax(UInt)
 
-@db function bytesremaining(s, ::KnownTotalSize, ::HasPosition)
+@db function bytesremaining(s, ::KnownTotalSize, ::HasCursors)
     length(s) - position(s)
 end
 
@@ -2038,7 +2084,7 @@ end
 end
 
 
-@db function _readall!(stream, ::KnownTotalSize, ::HasPosition, timeout)
+@db function _readall!(stream, ::KnownTotalSize, ::HasCursors, timeout)
     n = length(stream) - position(stream)
     buf = Vector{UInt8}(undef, n)
     transferall!(stream, buf, n; timeout)
@@ -2170,6 +2216,8 @@ PeekSupport(::Type{<:GenericBufferedInput}) = Peekable()
 
 Availability(::Type{<:GenericBufferedInput}) = Availability{:Partial}()
 
+StreamIndexing(::Type{<:GenericBufferedInput}) = NotIndexable()
+
 function buffered_in_warning(stream)
     if ReadUnit(stream) != ReadUnit{:Byte}()
         @warn "Wrapping $(typeof(stream)) with `BufferedInput` causes " *
@@ -2289,6 +2337,8 @@ end
 
 TransferSize(::Type{BufferedInput{T}}) where T = TransferSize{:Limited}()
 
+Cursors(::Type{<:BufferedInput}) = Cursors{Missing}()
+
 max_transfer_size(s::BufferedInput) = s.buffer_size
 
 
@@ -2327,7 +2377,8 @@ end
 
 
 
-@db function unsafe_transfer!(s::BufferedInput, buf::Ptr{UInt8}, n::UInt)
+@db function unsafe_transfer!(s::BufferedInput, buf::Ptr{UInt8},
+                              stream_offset::Missing, n::UInt)
 
     @db_not_tested
     sbuf = s.buffer
@@ -2386,7 +2437,8 @@ end
 end
 
 
-@db function unsafe_transfer!(s::LazyBufferedInput, buf::Ptr{UInt8}, n::UInt)
+@db function unsafe_transfer!(s::LazyBufferedInput, buf::Ptr{UInt8},
+                              stream_offset::Missing, n::UInt)
 
     # First take bytes from the buffer.
     sbuf = s.buffer
@@ -2398,7 +2450,7 @@ end
 
     # Then read from the wrapped IO.
     if n > count
-        count += unsafe_transfer!(s.stream, buf + count, n - count)
+        count += unsafe_transfer!(s.stream, buf + count, stream_offset, n - count)
     end
 
     @ensure count <= n
@@ -2694,7 +2746,7 @@ export ReadUnit
 
 export TransferMode
 
-export TransferAPI, WaitAPI, LengthAPI, ReadSizeAPI
+export TransferAPI, WaitAPI, LengthAPI, BlockSizeAPI, ReadSizeAPI
 
 export Cursors
 

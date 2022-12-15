@@ -53,6 +53,33 @@ end # testset
 @test UnixIO.read(`uname -a`) ==
              read(`uname -a`)
 
+@test UnixIO.read(`uname -a`, String) |> chomp == sh"uname -a"
+
+@info "Test pread()"
+mktempdir() do d
+    io = UnixIO.open("$d/foo", C.O_RDWR | C.O_CREAT)
+    try
+        fdin = io.in.stream.stream
+        fdout = io.out.stream
+
+        transfer!("Hello" => fdout) 
+        v = Vector{UInt8}(undef, 5)
+        transfer!(fdin => v)
+        @test String(v) == "Hello"
+
+        transfer!("FooBar" => fdout; start=(1=>512))
+        v = Vector{UInt8}(undef, 5)
+        transfer!(fdin => v; start=(512=>1))
+        @test String(v) == "FooBa"
+
+        v = Vector{UInt8}(undef, 5)
+        transfer!(fdin => v; start=(1=>1))
+        @test String(v) == "Hello"
+    finally
+        close(io)
+    end
+end
+
 @info "Test open, readline, read, readbytes!, eof, isopen (with file)"
 jio = open("runtests.jl")
 uio = UnixIO.open("runtests.jl")
@@ -228,6 +255,8 @@ sleep(1)
 
 
 include("pseudoterminal.jl")
+include("blockdev.jl")
+include("slowfs_tests.jl")
 
 
 

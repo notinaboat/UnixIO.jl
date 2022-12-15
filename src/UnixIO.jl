@@ -89,7 +89,7 @@ const typetree = TypeTree.tt
 
 using DuplexIOs
 using IOTraits
-using IOTraits: In, Out
+using IOTraits: In, Out, AnyDirection
 using UnixIOHeaders
 const C = UnixIOHeaders.C
 
@@ -242,7 +242,7 @@ stattype(fd) = (s = stat(fd); isfile(s)     ? S_IFREG  :
                                               Nothing)
 
 IOTraits.TransferMode(T::Type{S_IFREG}) = TransferMode{:Async}()
-IOTraits.TransferMode(T::Type{S_IFBLK}) = TransferMode{:Async}()
+#IOTraits.TransferMode(T::Type{S_IFBLK}) = TransferMode{:Async}()
 
 IOTraits.TransferAPI(T::Type{<:FD{<:Any,<:Any,TransferMode{:Async}}}) =
     IOTraits.firstvalid(TransferAPI{:IOURing}(),
@@ -282,18 +282,18 @@ trait_doc = """
 
 # IO Input Traits
 
-| FD Type         | Read Unit | Availability  | Transfer Size | Total Size | Cursors  | Wait API | Read Size API | Max Read API | Length API |
-| --------------- | --------- | ------------- | ------------- | ---------- | -------- | -------- | ------------- | ------------ | ---------- |
-| S_IFDIR         |           |               |               | Variable   |          |          |               |              |            | 
-| S_IFLNK         |           |               |               | Zero       |          |          |               |              |            | 
-| S_IFREG         | Byte      | Always        | Unlimited     | Variable   | Seekable |          | FStat         |              | FStat      |
-| S_IFBLK         | Byte      | Always        | Unlimited     | Fixed      | Seekable |          | BLKGETSIZE    |              | BLKGETSIZE |
-| S_IFIFO         | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | GETPIPE_SZ   |            | 
-| S_IFSOCK        | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | SO_RCVBUF    |            |
-| S_IFCHR         | Byte      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |            |
-| Pseudoterminal  | Byte      | Unknown       | Unlimited     |            |          | Poll     |               |              |            | 
-| CanonicalMode   | Line      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |            | 
-| PidFD           |           |               |               | Zero       |          | Poll     |               |              |            | 
+| FD Type         | Read Unit | Availability  | Transfer Size | Total Size | Cursors  | Wait API | Read Size API | Max Read API |
+| --------------- | --------- | ------------- | ------------- | ---------- | -------- | -------- | ------------- | ------------ |
+| S_IFDIR         |           |               |               | Variable   |          |          |               |              |
+| S_IFLNK         |           |               |               | Zero       |          |          |               |              |
+| S_IFREG         | Byte      | Always        | Unlimited     | Variable   | Seekable |          | FStat         |              |
+| S_IFBLK         | Byte      | Always        | Unlimited     | Fixed      | Seekable |          | BLKGETSIZE    |              |
+| S_IFIFO         | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | GETPIPE_SZ   |
+| S_IFSOCK        | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | SO_RCVBUF    |
+| S_IFCHR         | Byte      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |
+| Pseudoterminal  | Byte      | Unknown       | Unlimited     |            |          | Poll     |               |              |
+| CanonicalMode   | Line      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |
+| PidFD           |           |               |               | Zero       |          | Poll     |               |              |
 """
 
 md_table_foreach_cell(trait_doc) do trait, fdtype, x
@@ -302,8 +302,17 @@ md_table_foreach_cell(trait_doc) do trait, fdtype, x
     include_string(@__MODULE__, ex)
 end
 
-IOTraits.StreamIndexing(::Type{<:FD{In,S_IFBLK}}) = IndexableIO()
-IOTraits.StreamIndexing(::Type{<:FD{In,S_IFREG}}) = IndexableIO()
+IOTraits.LengthAPI(::Type{<:FD{<:AnyDirection,S_IFREG}}) = LengthAPI{:FStat}()
+IOTraits.LengthAPI(::Type{<:FD{<:AnyDirection,S_IFBLK}}) =
+    Sys.isapple() ? LengthAPI{:DKIOCGETBLOCKCOUNT}() :
+                    LengthAPI{:BLKGETSIZE64}()
+
+IOTraits.BlockSizeAPI(::Type{<:FD{<:AnyDirection,S_IFBLK}}) =
+    Sys.isapple() ? BlockSizeAPI{:DKIOCGETBLOCKSIZE}() :
+                    BlockSizeAPI{:BLKSSZGET}()
+
+IOTraits.StreamIndexing(::Type{<:FD{<:AnyDirection,S_IFBLK}}) = IndexableIO()
+IOTraits.StreamIndexing(::Type{<:FD{<:AnyDirection,S_IFREG}}) = IndexableIO()
 
 
 README"## Opening and Closing Unix Files."
@@ -356,15 +365,11 @@ A `RawFD` can be opened in blocking mode by calling `C.open` directly.
 
     if flags & C.O_RDWR == C.O_RDWR
         flags &= ~C.O_RDWR
+        fout = FD{Out,T,M}(open_raw(pathname, flags | C.O_WRONLY, mode;
+                                    tcattr))
         fin = FD{In,T,M}(open_raw(pathname, flags; tcattr))
-        #if isdir(stat(fin))
-        #    io = IOTraits.BaseIO(fin)
-        #else
-            fout = FD{Out,T,M}(open_raw(pathname, flags | C.O_WRONLY, mode;
-                                        tcattr))
-            io = DuplexIO(IOTraits.BaseIO(IOTraits.LazyBufferedInput(fin)),
-                          IOTraits.BaseIO(fout))
-        #end
+        io = DuplexIO(IOTraits.BaseIO(IOTraits.LazyBufferedInput(fin)),
+                      IOTraits.BaseIO(fout))
     else
         D = (flags & C.O_WRONLY) != 0 ? Out : In
         io = FD{D,T,M}(open_raw(pathname, flags, mode; tcattr))
@@ -471,6 +476,7 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
 """
 @inline @db 2 function IOTraits.unsafe_transfer!(fd::FD,
                                                  buf::Ptr{UInt8},
+                                                 fd_offset::Union{Missing,UInt},
                                                  count::UInt)
     @require !fd.isclosed
     @require count > 0
@@ -480,7 +486,9 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
                   raw_transfer(fd,
                                TransferAPI(fd),
                                TransferDirection(fd),
-                               buf, Csize_t(count)))
+                               buf,
+                               fd_offset,
+                               Csize_t(count)))
         if n == -1
             @db 2 n err=errno() errname(err)
             n = 0
@@ -491,10 +499,15 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
     end
 end
 
-@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::Out, buf, count) = C.write(fd, buf, count)
-@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::In,  buf, count) = C.read(fd, buf, count)
+@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::Out, buf, fd_offset, count) =
+    ismissing(fd_offset) ? C.write(fd, buf, count) :
+                          C.pwrite(fd, buf, count, fd_offset)
 
-raw_transfer(fd::FD{In,S_IFDIR}, ::TransferAPI{:LibC}, ::In,  buf, count) =
+@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::In, buf, fd_offset, count) =
+    ismissing(fd_offset) ? C.read(fd, buf, count) :
+                          C.pread(fd, buf, count, fd_offset)
+
+raw_transfer(fd::FD{In,S_IFDIR}, ::TransferAPI{:LibC}, ::In,  args...) =
     error("Directory read not supported yet!")
 
 include("timer.jl")
@@ -581,8 +594,6 @@ include("fork.jl")
 # Pretty Printing.
 
 
-type_icon(::Type{In})              = "→"
-type_icon(::Type{Out})             = "←"
 type_icon(::Type{S_IFIFO})         = "📥"
 type_icon(::Type{S_IFCHR})         = "📞"
 type_icon(::Type{S_IFDIR})         = "📂"
@@ -598,8 +609,11 @@ type_icon(::Type{CanonicalMode})   = "📺"
 function Base.show(io::IO, fd::FD{D,T}) where {D,T}
     fdint = convert(Cint, fd)
     t = type_icon(T)
-    d = type_icon(D)
-    print(io, "FD{$d$t}($fdint")
+    if D == In
+        print(io, "FD{$t→}($fdint")
+    else
+        print(io, "FD{→$t}($fdint")
+    end
     fd.isclosed && print(io, "🚫")
     fd.nwaiting > 0 && print(io, repeat("👀", fd.nwaiting))
     islocked(fd) && print(io, "🔒")

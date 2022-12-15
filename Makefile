@@ -58,6 +58,9 @@ test:
 testslowfs:
 	$(JL) test/slowfs_tests.jl
 
+testblockdev:
+	$(JL) test/blockdev.jl
+
 testpt:
 	$(JL) test/pseudoterminal.jl
 
