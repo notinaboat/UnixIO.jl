@@ -474,6 +474,7 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
                                                  count::UInt)
     @require !fd.isclosed
     @require count > 0
+
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR),
                   raw_transfer(fd,
