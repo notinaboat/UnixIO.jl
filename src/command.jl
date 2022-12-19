@@ -143,6 +143,23 @@ function open(cmd::Cmd; kw...)
     take!(c)
 end
 
+function IOTraits.openread(cmd::Cmd)
+    i, o = open(cmd)
+    close(i)
+    return o
+end
+
+function IOTraits.openwrite(cmd::Cmd)
+    i, o = open(cmd)
+    @asynclog "open_cmd_write" begin
+        while !IOTraits.isfinished(o)
+            IOTraits.transfer!(o => stdout)
+        end
+        close(o)
+    end
+    return i
+end
+
 
 @doc README"""
 ### `UnixIO.read(::Cmd)` -- Read sub-process output.
@@ -192,7 +209,7 @@ end
 
     pid = spawn_process(cmd, devpath; kw...)
 
-    process = Process(pid, cmdin, cmdout)
+    process = Process(pid, cmdin, cmdout; cmd)
     set_extra(cmdout, :pt_client, process)
     return process
 end
@@ -215,7 +232,7 @@ end
     # Close the child end of the socketpair.
     C.close(child_io)
 
-    return Process(pid, cmdin, cmdout)
+    return Process(pid, cmdin, cmdout; cmd)
 end
 
 

@@ -61,6 +61,9 @@ testslowfs:
 testblockdev:
 	$(JL) test/blockdev.jl
 
+testabs:
+	$(JL) test/abstractio.jl
+
 testpt:
 	$(JL) test/pseudoterminal.jl
 

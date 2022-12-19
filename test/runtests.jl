@@ -6,6 +6,8 @@ using Preconditions
 using UnixIO.IOTraits
 using UnixIO: C
 
+#FIXME look at https://github.com/aviatesk/JET.jl
+
 # FIXME use ReTest.jl
 """
 # Test Cases to add
@@ -22,6 +24,8 @@ using UnixIO: C
 cd(@__DIR__)
 
 @testset LoggingTestSet "UnixIO" begin
+
+include("abstractio.jl")
 
 @testset LoggingTestSet "Open Type" begin
 
@@ -111,6 +115,7 @@ readbytes!(uio, uv, 100)
 @test isopen(jio) == isopen(uio)
 
 
+#-
 @info "Test system() and read(::Cmd) with large data"
 for _ in 1:1
     mktempdir() do d
@@ -123,7 +128,7 @@ for _ in 1:1
         a = read("$f.hex")
         b = read(`hexdump $f`) 
         c = UnixIO.read(`hexdump $f`)
-        d = UnixIO.open(`hexdump`) do cin, cout
+        @time d = UnixIO.open(`hexdump`) do cin, cout
             cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
             cin=IOTraits.BaseIO(cin)
             @sync begin

@@ -129,7 +129,8 @@ function raw_transfer(fd, ::TransferAPI{:IOURing}, ::Out, buf, count)
 end
 
 
-@inline @db 1 function raw_transfer(fd, ::TransferAPI{:IOURing}, ::In,  buf, count)
+@inline @db 1 function raw_transfer(fd, ::TransferAPI{:IOURing},
+                                    dir::AnyDirection, fd_offset, buf, count)
 
     key = io_uring_transfer_key(fd)
 
@@ -138,14 +139,22 @@ end
         io_uring_queue.dict[key] = fd
     end
 
+    if ismissing(fd_offset)
+        fd_offset = -1
+    end
+
     try
         @dblock fd.ready begin
 
             sqe = io_uring_get_sqe(io_uring_queue.ring)
-            io_uring_prep_read(sqe, fd, buf, count, unsigned(-1) #= offset =#);
+            if dir == In()
+                io_uring_prep_read(sqe, fd, buf, count, fd_offset);
+            else
+                io_uring_prep_write(sqe, fd, buf, count, fd_offset);
+            end
             sqe.user_data = key
             n = io_uring_submit(io_uring_queue.ring)
-            n == 1 || systemerror("io_uring_prep_read()", 0 - n)
+            n == 1 || systemerror("io_uring_submit()", 0 - n)
 
             @db return wait(fd.ready)
         end

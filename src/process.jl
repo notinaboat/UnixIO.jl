@@ -8,6 +8,7 @@ mutable struct Process
     code::Union{Nothing, Cint}
     exit_status::Union{Nothing, Cint}
     signal::Union{Nothing, Cint}
+    cmd::Cmd
 end
 
 isstopped(p::Process) = p.stopped
@@ -39,8 +40,8 @@ Base.wait(p::Process, ::WaitAPI{:PidFD}; kw...)= waitpidfd(p; kw...)
 
 # Sub Processes.
 
-function Process(pid, infd, outfd)
-    p = Process(pid, infd, outfd, false, nothing, nothing, nothing)
+function Process(pid, infd, outfd; cmd=``)
+    p = Process(pid, infd, outfd, false, nothing, nothing, nothing, cmd)
     @dblock processes_lock push!(processes, p)
     return p
 end

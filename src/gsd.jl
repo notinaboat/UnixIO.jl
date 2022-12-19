@@ -75,6 +75,10 @@ gsd_notify(handle) = ccall(:uv_async_send, Cvoid, (Ptr{Cvoid},), handle)
 @db 1 function raw_transfer(fd, ::TransferAPI{:GSD}, dir::AnyDirection,  buf,
                             fd_offset, count)
 
+    if IOTraits.isfinished(fd)
+        return 0
+    end
+
     result = Ref(Cint(0))
     err = Ref(Cint(0))
 

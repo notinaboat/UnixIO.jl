@@ -386,6 +386,49 @@ end
 open(args...; kw...) = open(Union{}, args...; kw...)
 
 
+@inline @db 1 function _open(type::Type{T},
+                             path,
+                             flags;
+                             mode=0o644,
+                             transfer_mode::Type{M}=Union{},
+                             timeout=Inf,
+                             tcattr=nothing) where {T<:FDType,M}
+
+    flags |= C.O_NONBLOCK
+    rawfd = open_raw(path, flags, mode; tcattr)
+    D = (flags & C.O_WRONLY) == 0 ? In : Out
+    fd = FD{D,T,M}(rawfd)
+    @ensure isopen(fd)
+    finalizer(fd) do fd
+        if !fd.isclosed
+            C.close(fd)
+        end
+    end
+    @db 1 return fd
+end
+
+@inline function IOTraits.openread(type::Type, path, flags=Cint(0); kw...)
+    @require flags & (C.O_RDWR | C.O_WRONLY) == 0
+    flags = C.O_RDONLY
+    _open(type, path, flags; kw...)
+end
+
+@inline function IOTraits.openwrite(type::Type, path, flags=Cint(0); kw...)
+    @require flags & (C.O_RDWR) == 0
+    flags = (C.O_WRONLY | C.O_CREAT | C.O_APPEND)
+    _open(type, path, flags; kw...)
+end
+
+IOTraits.openread(args...; kw...) = IOTraits.openread(Union{}, args...; kw...)
+IOTraits.openwrite(args...; kw...) = IOTraits.openwrite(Union{}, args...; kw...)
+
+function openreadwrite(args...; kw...)
+    out = IOTraits.openwrite(args...; kw...)
+    in = IOTraits.openread(args...; kw...)
+    in, out
+end
+
+
 function open_raw(a...; tcattr=nothing)
     fd = @cerr gc_safe_open(a...)
     if tcattr != nothing
@@ -426,15 +469,21 @@ include("termio.jl")
 
 
 @db 1 function Base.close(fd::FD)
+    if fd.isclosed
+        return
+    end
     fd.isclosed = true
     @dblock fd.ready notify(fd.ready)
     yield()
     shutdown(fd)
-    @cerr allow=C.EBADF C.close(fd)
+    @cerr #=allow=C.EBADF=# C.close(fd)
+    fd.fd = RawFD(-1)
     @dblock fd.closed notify(fd.closed)
     @ensure !isopen(fd)
     nothing
 end
+
+Base.close(io::Tuple{FD{In},FD{Out}}) = close.(io)
 
 
 Base.isopen(fd::FD) = !fd.isclosed
