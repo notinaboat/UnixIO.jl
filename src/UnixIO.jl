@@ -278,29 +278,53 @@ Base.convert(::Type{RawFD}, fd::FD) = RawFD(fd.fd)
 include("ReadFD.jl")
 include("WriteFD.jl")
 
-trait_doc = """
+io_trait_doc = """
 
-# IO Input Traits
+# IO Traits
 
-| FD Type         | Read Unit | Availability  | Transfer Size | Total Size | Cursors  | Wait API | Read Size API | Max Read API |
-| --------------- | --------- | ------------- | ------------- | ---------- | -------- | -------- | ------------- | ------------ |
-| S_IFDIR         |           |               |               | Variable   |          |          |               |              |
-| S_IFLNK         |           |               |               | Zero       |          |          |               |              |
-| S_IFREG         | Byte      | Always        | Unlimited     | Variable   | Seekable |          | FStat         |              |
-| S_IFBLK         | Byte      | Always        | Unlimited     | Fixed      | Seekable |          | BLKGETSIZE    |              |
-| S_IFIFO         | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | GETPIPE_SZ   |
-| S_IFSOCK        | Byte      | Partial       | Limited       |            |          | Poll     | FIONREAD      | SO_RCVBUF    |
-| S_IFCHR         | Byte      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |
-| Pseudoterminal  | Byte      | Unknown       | Unlimited     |            |          | Poll     |               |              |
-| CanonicalMode   | Line      | Partial       | Unlimited     |            |          | Poll     | FIONREAD      |              |
-| PidFD           |           |               |               | Zero       |          | Poll     |               |              |
+| FD Type         | Cursors  | Wait API |
+| --------------- | -------- | -------- |
+| S_IFDIR         |          |          |
+| S_IFLNK         |          |          |
+| S_IFREG         | Seekable |          |
+| S_IFBLK         | Seekable | Poll     |
+| S_IFIFO         |          | Poll     |
+| S_IFSOCK        |          | Poll     |
+| S_IFCHR         |          | Poll     |
+| Pseudoterminal  |          | Poll     |
+| CanonicalMode   |          | Poll     |
+| PidFD           |          | Poll     |
 """
+md_table_foreach_cell(io_trait_doc) do trait, fdtype, x
+    trait = replace(trait, " " => "")
+    ex = "IOTraits.$trait(::Type{<:FD{<:Any,<:$fdtype}}) = $trait{:$x}()"
+    include_string(@__MODULE__, ex)
+end
 
-md_table_foreach_cell(trait_doc) do trait, fdtype, x
+
+input_trait_doc = """
+
+# Input Traits
+
+| FD Type         | Read Unit | Availability  | Transfer Size | Total Size | Read Size API | Max Read API |
+| --------------- | --------- | ------------- | ------------- | ---------- | ------------- | ------------ |
+| S_IFDIR         |           |               |               | Variable   |               |              |
+| S_IFLNK         |           |               |               | Zero       |               |              |
+| S_IFREG         | Byte      | Always        | Unlimited     | Variable   | FStat         |              |
+| S_IFBLK         | Byte      | Always        | Unlimited     | Fixed      | BLKGETSIZE    |              |
+| S_IFIFO         | Byte      | Partial       | Limited       |            | FIONREAD      | GETPIPE_SZ   |
+| S_IFSOCK        | Byte      | Partial       | Limited       |            | FIONREAD      | SO_RCVBUF    |
+| S_IFCHR         | Byte      | Partial       | Unlimited     |            | FIONREAD      |              |
+| Pseudoterminal  | Line      | Unknown       | Unlimited     |            |               |              |
+| CanonicalMode   | Line      | Partial       | Unlimited     |            | FIONREAD      |              |
+| PidFD           |           |               |               | Zero       |               |              |
+"""
+md_table_foreach_cell(input_trait_doc) do trait, fdtype, x
     trait = replace(trait, " " => "")
     ex = "IOTraits.$trait(::Type{<:FD{In,<:$fdtype}}) = $trait{:$x}()"
     include_string(@__MODULE__, ex)
 end
+
 
 IOTraits.LengthAPI(::Type{<:FD{<:AnyDirection,S_IFREG}}) = LengthAPI{:FStat}()
 IOTraits.LengthAPI(::Type{<:FD{<:AnyDirection,S_IFBLK}}) =
@@ -415,7 +439,7 @@ end
 
 @inline function IOTraits.openwrite(type::Type, path, flags=Cint(0); kw...)
     @require flags & (C.O_RDWR) == 0
-    flags = (C.O_WRONLY | C.O_CREAT | C.O_APPEND)
+    flags = (C.O_WRONLY | C.O_CREAT #=| C.O_APPEND=#)
     _open(type, path, flags; kw...)
 end
 
@@ -529,6 +553,14 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
                                                  count::UInt)
     @require !fd.isclosed
     @require count > 0
+    @require TransferMode(fd) == TransferMode{:Blocking}() ||
+             (fcntl_getfl(fd) & C.O_NONBLOCK) != 0
+
+    # Linux pwrite not POSIX compliant with O_APPEND
+    # https://bugzilla.kernel.org/show_bug.cgi?id=43178
+    @require !Sys.islinux() ||
+             ismissing(fd_offset) ||
+             (fcntl_getfl(fd) & C.O_APPEND) == 0
 
     while true
         n = @cerr(allow=(C.EAGAIN, C.EINTR),
@@ -548,13 +580,17 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
     end
 end
 
-@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::Out, buf, fd_offset, count) =
+@inline @db 2 function raw_transfer(fd, ::TransferAPI{:LibC}, ::Out,
+                                    buf, fd_offset, count)
     ismissing(fd_offset) ? C.write(fd, buf, count) :
                           C.pwrite(fd, buf, count, fd_offset)
+end
 
-@inline raw_transfer(fd, ::TransferAPI{:LibC}, ::In, buf, fd_offset, count) =
+@inline @db 2 function raw_transfer(fd, ::TransferAPI{:LibC}, ::In,
+                                    buf, fd_offset, count)
     ismissing(fd_offset) ? C.read(fd, buf, count) :
                           C.pread(fd, buf, count, fd_offset)
+end
 
 raw_transfer(fd::FD{In,S_IFDIR}, ::TransferAPI{:LibC}, ::In,  args...) =
     error("Directory read not supported yet!")
@@ -631,6 +667,23 @@ See [socketpair(2)](https://man7.org/linux/man-pages/man2/socketpair.2.html)
     @ensure -1 ∉ v
     @db 3 return (v[1], v[2])
 end
+
+
+@doc README"""
+### `UnixIO.pipe()` -- Unix FIFO Pipe for IPC.
+
+    UnixIO.pipe() -> ::FD{In}, ::FD{Out}
+
+Create a unidirectional FIFO pipe.
+See [pipe(2)](https://man7.org/linux/man-pages/man2/pipe.2.html)
+"""
+@db 3 function pipe()
+    v = fill(RawFD(-1), 2)
+    @cerr C.pipe(v)
+    @ensure -1 ∉ v
+    @db 3 return (FD{In}(v[1]), FD{Out}(v[2]))
+end
+
 
 
 include("pseudoterminal.jl") 

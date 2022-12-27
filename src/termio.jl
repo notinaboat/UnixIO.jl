@@ -66,7 +66,10 @@ Disabling all terminal input and output processing.
     x.c_oflag = 0
     x.c_cflag = C.CS8
     x.c_lflag = 0
+    nothing
 end
+
+@selfdoc setraw(f) = tcsetattr(setraw, f)
 
 
 function setspeed!(attr::C.termios_m, speed)

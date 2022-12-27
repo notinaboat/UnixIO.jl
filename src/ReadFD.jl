@@ -5,7 +5,7 @@ Read-only Unix File Descriptor.
 
 @db 1 function IOTraits._bytesavailable(fd::FD, ::ReadSizeAPI{:FIONREAD})
     x = Ref(Cint(0))
-    @cerr C.ioctl(fd, C.FIONREAD, x)
+    @cerr allow=C.EIO C.ioctl(fd, C.FIONREAD, x)
     @db 1 return x[]
 end
 

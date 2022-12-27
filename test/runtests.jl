@@ -13,6 +13,7 @@ using UnixIO: C
 # Test Cases to add
 
 - Close while transfer is waiting.
+- Read from empty file.
 
 """
 

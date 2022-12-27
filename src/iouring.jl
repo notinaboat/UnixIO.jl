@@ -23,15 +23,17 @@ gc_safe_io_uring_wait_cqe(ring, cqe) =
 
 mutable struct IOURingQueue
     ring::Ref{LibURing.io_uring}
+    ring_lock::Threads.SpinLock
     dict::Dict{UInt,FD}
-    lock::Threads.SpinLock
+    dict_lock::Threads.SpinLock
 end
 
 const io_uring_queue = IOURingQueue(Ref{LibURing.io_uring}(),
+                                    Threads.SpinLock(),
                                     Dict{UInt,FD}(),
                                     Threads.SpinLock())
 
-waiting_fds(q::IOURingQueue) = @dblock q.lock collect(values(q.dict))
+waiting_fds(q::IOURingQueue) = @dblock q.dict_lock collect(values(q.dict))
 
 @db function io_uring_queue_init()
 
@@ -61,7 +63,7 @@ Register `fd` to wake up `io_uring_wait_cqe` on `event`:
 """
 @db 4 function register_for_events(q::IOURingQueue, fd)
     key = io_uring_poll_key(fd)
-    @dblock q.lock begin
+    @dblock q.dict_lock begin
         if haskey(q.dict, key)
             @db 2 "Already registered!"
             @assert false
@@ -70,17 +72,20 @@ Register `fd` to wake up `io_uring_wait_cqe` on `event`:
         q.dict[key] = fd
     end
 
-    sqe = io_uring_get_sqe(q.ring)
-    @assert sqe != C_NULL
-    io_uring_prep_poll_add(sqe, fd.fd, poll_event_type(fd))
-    sqe.user_data = key
-    n = io_uring_submit(q.ring)
-    n == 1 || systemerror("io_uring_prep_poll_add()", 0 - n)
+    @dblock q.ring_lock begin
+        sqe = io_uring_get_sqe(q.ring)
+        @assert sqe != C_NULL
+        io_uring_prep_poll_add(sqe, fd.fd, poll_event_type(fd))
+        sqe.user_data = key
+        n = io_uring_submit(q.ring)
+        @assert n == 1 || n < 0
+        n == 1 || systemerror("io_uring_prep_poll_add()", 0 - n)
+    end
 end
 
 
 @db 4 function unregister_for_events(q::IOURingQueue, fd)
-    @dblock q.lock delete!(q.dict, io_uring_poll_key(fd))
+    @dblock q.dict_lock delete!(q.dict, io_uring_poll_key(fd))
 end
     
 
@@ -103,7 +108,7 @@ end
         systemerror(msg, 0 - res)
     else
         fd = nothing
-        @dblock q.lock begin
+        @dblock q.dict_lock begin
             fd = get(q.dict, user_data, nothing)
         end
         if fd == nothing
@@ -130,36 +135,41 @@ end
 
 
 @inline @db 1 function raw_transfer(fd, ::TransferAPI{:IOURing},
-                                    dir::AnyDirection, fd_offset, buf, count)
+                                    dir::AnyDirection, buf, fd_offset, count)
 
     key = io_uring_transfer_key(fd)
 
-    @dblock io_uring_queue.lock begin
+    @dblock io_uring_queue.dict_lock begin
         @require !haskey(io_uring_queue.dict, key)
         io_uring_queue.dict[key] = fd
     end
 
     if ismissing(fd_offset)
-        fd_offset = -1
+        fd_offset = unsigned(-1)
     end
 
     try
         @dblock fd.ready begin
 
-            sqe = io_uring_get_sqe(io_uring_queue.ring)
-            if dir == In()
-                io_uring_prep_read(sqe, fd, buf, count, fd_offset);
-            else
-                io_uring_prep_write(sqe, fd, buf, count, fd_offset);
+            @dblock io_uring_queue.ring_lock begin
+                sqe = io_uring_get_sqe(io_uring_queue.ring)
+                if dir == In()
+                    io_uring_prep_read(sqe, fd, buf, count, fd_offset);
+                else
+                    io_uring_prep_write(sqe, fd, buf, count, fd_offset);
+                end
+                sqe.user_data = key
+                n = io_uring_submit(io_uring_queue.ring)
+                # FIXME don't share ring between threads
+                # https://github.com/axboe/liburing/issues/109#issuecomment-1166378978
+                @assert n == 1 || n < 0
+                n == 1 || systemerror("io_uring_submit()", 0 - n)
             end
-            sqe.user_data = key
-            n = io_uring_submit(io_uring_queue.ring)
-            n == 1 || systemerror("io_uring_submit()", 0 - n)
 
             @db return wait(fd.ready)
         end
 
     finally
-        @dblock io_uring_queue.lock delete!(io_uring_queue.dict, key)
+        @dblock io_uring_queue.dict_lock delete!(io_uring_queue.dict, key)
     end
 end

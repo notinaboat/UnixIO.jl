@@ -25,6 +25,124 @@ include("../../../src/macroutils.jl")
 include("idoc.jl")
 
 
+#Allocation    | Termination             | Block   | 
+#------------- | ----------------------- | ------- | 
+#New `String`. | Current length of file. | Yes.    | 
+
+#FIXME
+
+raw"""
+Idea for table
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+Intent                                                   transfer! API                                 Base.IO API                              
+-------------------------------------------------------- --------------------------------------------- -----------------------------------------------
+Write at most `n` bytes from a byte-vector into a        `transfer!(v => s, n) -> n`                   ?
+stream (`v::Vector{UInt8}`). Don't wait for the stream
+to be ready to accept all `n` bytes, just transfer
+as much as the stream will immediately accept.
+
+Wait as long as it takes to Write entire content of a    `transferall!(v => s) -> n`                   `write(s, v)`
+byte-vector into a stream. e.g. `v::Vector{UInt8}`
+
+Read at most `n` bytes from a file into a byte-vector:   `transfer!(f => v, n) -> n`                   `open(i->readbytes!(i, v, n), f)`          
+`v = Vector{UInt8}(undef, n)`. \
+Read at least one byte (unless the file is empty).
+FIXME test cases reading huge files over slow NFS.
+FIXME internally query block size and do small async
+eads? use a timeout to return less than `n`?
+or a heuristic value of bytes ?
+
+Wait as long as it takes to read all `n` bytes from a    `transferall!(f => v, n)`                     `open(i->readbytes!(i, v, n; all=true), f) -> ::Int`
+file into a byte-vector (or all remaining bytes if less
+than `n` remain). \
+`v = Vector{UInt8}(undef, n)`
+
+
+Read at most `n` bytes from a file into an abstract      `transfer!(f => v, n) -> n`                   `open(i->readbytes!(i, v, n), f)` \
+byte-vector. e.g. `v::SubArray{UInt8}`                                                                 💔 fails with "no method matching
+                                                                                                       `resize!(::SubArray`..." if `length(v) < n.
+
+Read at least one and at most n pairs of Int64 values    `transfer!(f => v, n) -> n`
+from a file into a vector.    
+`v = Vector{Tuple{Int64,Int64}}(undef, n)`
+                                                                                                                                                
+Read at most `n` bytes from a socket into a byte-vector. `transfer!(s => v, n) -> n`                   `readbytes!(i, v, n)` \
+Wait for at least one byte unless socket shuts down.                                                   💔 for sockets this call blocks waiting for
+                                                                                                       `n` bytes \
+                                                                                                       (`all=false` fails with 
+                                                                                                       "unsupported keyword argument").
+
+Read at least one and at most `n` bytes from `stdin`     `transfer!(s => v, n) -> n`                   `readbytes!(i, v, n)` \
+into a byte-vector.                                                                                    💔 for sockets this call blocks waiting for
+                                                                                                       `n` bytes \
+                                                                                                       (`all=false fails with 
+                                                                                                       "unsupported keyword argument").
+
+Read at most `n` bytes from `stdin` into a byte-vector.  `transfer!(s => v, n; timeout=1) -> n`        ?
+Return after 1 second if no bytes are available.
+
+Read at most `n` bytes from `stdin` into a byte-vector,  `transfer!(s => v, n; timeout=0) -> n`        💔 No way to read `stdin` without waiting
+return immediately if no bytes are available.                                                          for at least one byte.
+
+Read at most `n` bytes from a stream into a byte-vector  `transfer!(s => v, n; buffer_i=7) -> n`       readbytes!(s, view(v, 7:length(v)), n)
+at a specified index.
+
+Read at most `n` bytes from a specified file offset      `transfer!(f => v, n; stream_i=7) -> n`       `@lock f try` \
+into a byte-vector.                                                                                    `    p = position(i)` \
+                                                                                                       `    seek(f, 7)`  \
+                                                                                                       `    readbytes!(s, v, n)` \
+                                                                                                       `finally` \
+                                                                                                       `    seek(f, p)` \
+                                                                                                       `end`
+                                                                                                       
+
+Find out how many bytes are immediately available to read `bytesavailable(x) -> n`                     `bytesavailable(x)` \
+from `stdin`, a socket or a file.                                                                      💔 Always returns zero for `stdin`,
+                                                                                                       sockets and files.
+
+Find out how many bytes will be available to read before `bytesremaining(x) -> n`                      ?
+the stream is finished.                                                 
+
+Find out if a stream is is finished.                     `isfinished(x)`                               `eof(x)` \
+i.e. the end of the file has been reached, or                                                          💔 Sometimes blocks to wait for more bytes. \
+the stream has been shut down and no more bytes will                                                   💔 Sometimes returns true when more data
+be available.                                                                                          might be available in the future. [24526](@jl#)
+(Note: a file may become un-finished if more bytes are
+appended after the end of the file)                                                               
+
+Read all `n` bytes from a socket into a byte-vector      `transferall!(s => v, n) -> n`                `readbytes!(s, v, n; all=true)` \
+(or fewer than `n` if the socket shuts down).                                                          💔 for sockets fails with "no method matching
+`v = Vector{UInt8}(undef, n)`                                                                          `readbytes!(::Base.PipeEndpoint`...
+                                                                                                       unsupported keyword argument 'all'" 
+
+Read as many of `n` bytes as possible in 1 second.       `transferall!(s => v, n; timeout=1) -> n`     ?
+FIXME test case for ensuring data is not lost
+from in-progress read when timeout occurs.
+FIXME cover io_uring, gsd, LibC etc
+
+Read entire content of a file into a new string. \       `transferall!(f => v) -> n`                   `read(f, String) -> ::String`            
+`f = "myfile.txt"; v = Vector{UInt8}(undef, length(f))`. `String(v)` \
+                                                         or readall!(f) |> String
+
+Read entire content of a file into a new                 `transferall!(f => v) -> n`
+byte-vector-vector. \
+`f = "myfile.txt"; v = Vector{Vector{UInt8}}()`.
+
+Read entire content of a socket into a channel           `transferall!(s => c) -> n`
+`c = Channel{Vector{UInt8}}()`.
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+"""
+
+
 raw"""
 ## Background
 
@@ -912,7 +1030,7 @@ Transfer Mode         Description
                       (e.g. `O_NONBLOCK`).
 
 `:Async`              System call schedules transfer for asynchronous execution,
-                      the returns
+                      then returns.
                       (e.g. [`io_uring`][io_uring] or [POSIX AIO][aio]).
 --------------------------------------------------------------------------------
 """
@@ -1032,7 +1150,13 @@ FIXME: Conditer WaitWithoutYeilding -- Block calling thread.
 """
 WaitAPI(x) = WaitAPI(typeof(x))
 WaitAPI(T::Type) = is_proxy(T) ? WaitAPI(unwrap(T)) :
-                                          WaitAPI{:Sleep}()
+                                          WaitAPI{Nothing}()
+
+@db function wait_for_transfer(stream, ::WaitAPI{Nothing},
+                  buf, indices, deadline::Float64)
+    @db "Not waiting!"
+    @db return UInt(0)
+end
 
 Base.isvalid(::WaitAPI) = false
 Base.isvalid(::WaitAPI{:Sleep}) = true
@@ -1110,6 +1234,9 @@ const delay_sequence =
 @db function wait_for_transfer(stream, ::WaitAPI{:Sleep},
                                buf, indices, deadline::Float64)
     for delay in delay_sequence
+        if isfinished(stream)
+            return UInt(0)
+        end
         r = attempt_transfer(stream, buf, indices);
         if r > 0
             @db return r
@@ -1182,6 +1309,7 @@ struct ToIO <: BufferInterface end
 struct ToStream <: BufferInterface end
 struct ToPush <: BufferInterface end
 struct ToPut <: BufferInterface end
+struct ToRef <: BufferInterface end
 
 
 """
@@ -1243,6 +1371,7 @@ in a particular type of buffer
 | `ToStream`     | Write data using the `IOTraits.Stream` interface.           |
 | `ToPush`       | Use `push!(buffer, data)`.                                  |
 | `ToPut`        | Use `put!(buffer, data)`.                                   |
+| `ToRef`        | Use `buffer[] = data`.                                      |
 | `UsingIndex`   | Use `buffer[i] = data (the default)`.                       |
 | `UsingPtr`     | Use `unsafe_copyto!(pointer(buffer), x, n)`.                |
 | `IsItemPtr`    | Use `unsafe_copyto!(buffer, x, n)`.                         |
@@ -1255,6 +1384,8 @@ ToBufferInterface(x) = ToBufferInterface(typeof(x))
 ToBufferInterface(::Type) = ToPush()
 ToBufferInterface(::Type{<:AbstractArray{<:AbstractArray}}) = ToPush()
 ToBufferInterface(::Type{<:AbstractArray{<:AbstractString}}) = ToPush()
+ToBufferInterface(::Type{<:Ref{<:AbstractArray}}) = ToRef()
+ToBufferInterface(::Type{<:Ref{<:AbstractString}}) = ToRef()
 ToBufferInterface(::Type{<:IO}) = ToIO()
 ToBufferInterface(::Type{<:Stream}) = ToStream()
 ToBufferInterface(::Type{<:AbstractChannel}) = ToPut()
@@ -1264,7 +1395,7 @@ ToBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
                                                                IsItemPtr()
 
 buffer_is_indexed(stream, buf) = is_input(stream) ?
-    ToBufferInterface(buf) ∉ (ToPush(), ToIO(), ToStream(), ToPut()) :
+    ToBufferInterface(buf) ∉ (ToPush(), ToIO(), ToStream(), ToPut(), ToRef()) :
     FromBufferInterface(buf) ∉ (FromIO(), FromStream())
 
 
@@ -1747,7 +1878,8 @@ end
 ## Transfer Specialisations for Collection Buffers
 
 for (T, f) in [ToPut => put!,
-              ToPush => push!]
+              ToPush => push!,
+              ToRef => setindex!]
     eval(:(_attempt_transfer(s, buf, ::$T, si, bi, n::UInt) =
            _attempt_transfer_f(s, buf, $f, si, bi, n)))
 end
@@ -2244,6 +2376,7 @@ Return the number of items transferred.
         stream_i += r
         buffer_i += r
     end
+    @ensure isfinished(stream) || ntransferred == n
     @ensure ntransferred isa UInt
     @db return ntransferred
 end
@@ -2794,7 +2927,6 @@ Otherwise, the amount of data immediately available can be queried using the
     @require isopen(s)
     @require is_input(s)
     if Availability(s) == Availability{:Unknown}()
-        @db_not_tested
         n = default_buffer_size(s)
     else
         n = bytesavailable(s)

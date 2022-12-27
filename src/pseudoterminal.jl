@@ -21,11 +21,16 @@ and [prsname(3)](https://man7.org/linux/man-pages/man2/prsname.3.html).
     clientfd = @cerr C.open(path, C.O_RDONLY | C.O_NOCTTY)
     @assert !ispt(clientfd)
 
-    ptin, ptout = FD(pt)
-    tcsetattr(ptin) do attr
+    tcsetattr(pt) do attr
         setraw(attr)
         attr.c_lflag |= C.ICANON
     end
+
+    pt_dup = C.dup(pt)
+    C.shutdown(pt, C.SHUT_RD)
+    C.shutdown(pt_dup, C.SHUT_WR)
+    ptin = FD{In}(pt_dup)
+    ptout = FD{Out}(pt)
     set_extra(ptin, :pt_clientfd, clientfd)
 
     @db return ptin, ptout, path

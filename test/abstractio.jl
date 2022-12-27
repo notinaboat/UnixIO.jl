@@ -23,6 +23,98 @@ cd(@__DIR__)
 
 @testset LoggingTestSet "UnixIO" begin
 
+#-------------------------------------------------------------------------------
+
+ptin, ptout, ptpath = UnixIO.openpt()
+clientin = IOTraits.openread(ptpath)
+@test UnixIO.iscanon(clientin)
+@show typeof(clientin)
+try
+    c = Vector{String}()
+    @sync begin
+        @asynclog "write" begin
+            transferall!("FOO\nBA" => ptout)
+            sleep(2)
+            transferall!("R\nMORE\n" => ptout)
+            sleep(1)
+            transferall!("FUM\r\nMORE\nEXTRA" => ptout)
+            sleep(1)
+            close(ptout)
+        end
+        @asynclog "read" begin
+            sleep(0.1)
+            @test bytesavailable(clientin) == 4
+            n = transfer!(clientin => c, 3)
+            @test n == 1
+            @test bytesavailable(clientin) == 0
+            n = transfer!(clientin => c, 3)
+            @test n == 2
+            @test bytesavailable(clientin) == 0
+            n = transfer!(clientin => c, 3)
+            @test n == 2
+            @test bytesavailable(clientin) == 0
+            n = transfer!(clientin => c, 3)
+            @test bytesavailable(clientin) == 0
+            @test n == 1
+        end
+    end
+    @test c == ["FOO\n", "BAR\n", "MORE\n", "FUM\r\n", "MORE\n", "EXTRA"]
+finally
+    close.([clientin, ptin, ptout])
+end
+
+#-------------------------------------------------------------------------------
+
+c = Channel{Tuple{UInt32,UInt32}}()
+i, o = UnixIO.pipe()
+@show i, o
+
+r = Ref{Any}()
+
+@sync begin
+    @asynclog "write" begin
+        for x in 1:12
+            v = [(UInt32(n+64x), UInt32(n+64x)) for n in 1:9]
+            n = transferall!(v => o)
+        end
+        close(o)
+    end
+    @asynclog "read" begin
+        while !IOTraits.isfinished(i)
+            n = transfer!(i => c, 10)
+            @test IOTraits.isfinished(i) || n == 10 || n == 8
+        end
+        close(c)
+    end
+    @async r[] = collect(c)
+end
+
+
+@test r[] == vcat([(UInt32(n+64x), UInt32(n+64x)) for n in 1:9, x in 1:12]...)
+
+
+c = Vector{Vector{UInt8}}()
+
+i, o = UnixIO.pipe()
+@show i, o
+
+@sync begin
+    @asynclog "write" begin
+        for x in 1:3
+            n = transferall!(fill(UInt8(x), 1_000_000) => o)
+#            @show "write $n"
+        end
+        close(o)
+    end
+    @asynclog "read" begin
+        while !IOTraits.isfinished(i)
+            n = transfer!(i => c, 10)
+#            @show n
+        end
+    end
+end
+
+#@test c == ["FOO\n", "BAR\n", "FUM\n", "EXTRA"]
 
 v = Vector{Vector{UInt8}}()
 `bash -c "echo FOO; sleep 1; echo BAR; sleep 0.1; echo FUM"` --> v
@@ -45,6 +137,8 @@ s = IOTraits.openread(`bash -c "echo FOO; sleep 1; echo BAR; sleep 0.1; echo FUM
 @test transfer!(s => v) == 1
 @test v == ["FOO\n", "BAR\n", "FUM\n"]
 close(s)
+
+
 
 
 @testset LoggingTestSet "Open Type" begin
@@ -166,23 +260,28 @@ end
 @info "Test read(::Cmd)"
 @test UnixIO.read(`uname -a`, String) |> chomp == sh"uname -a"
 
-
 @info "Test pread()"
 mktempdir() do d
     in, out = UnixIO.openreadwrite("$d/foo")
     try
         transfer!("Hello" => out) 
         v = Vector{UInt8}(undef, 5)
-        transfer!(in => v)
+        n = transfer!(in => v)
+        @test n == 5
         @test String(v) == "Hello"
 
-        transfer!("FooBar" => out; start=(1=>512))
+        n = transfer!("FooBar" => out; start=(1=>512))
+        @test n == 6
+        #UnixIO.system(`hexdump -C $d/foo`)
+
         v = Vector{UInt8}(undef, 5)
-        transfer!(in => v; start=(512=>1))
+        n = transfer!(in => v; start=(512=>1))
+        @test n == 5
         @test String(v) == "FooBa"
 
         v = Vector{UInt8}(undef, 5)
-        transfer!(in => v; start=(1=>1))
+        n = transfer!(in => v; start=(1=>1))
+        @test n == 5
         @test String(v) == "Hello"
     finally
         close(in)
@@ -190,28 +289,32 @@ mktempdir() do d
     end
 end
 
-
 @info "Test pread()"
 mktempdir() do d
     io = UnixIO.openreadwrite("$d/foo")
     try
         transfer!("Hello" => io) 
         v = Vector{UInt8}(undef, 5)
-        transfer!(io => v)
+        n = transfer!(io => v)
+        @test n == 5
         @test String(v) == "Hello"
 
         transfer!("FooBar" => io; start=(1=>512))
+
         v = Vector{UInt8}(undef, 5)
-        transfer!(io => v; start=(512=>1))
+        n = transfer!(io => v; start=(512=>1))
+        @test n == 5
         @test String(v) == "FooBa"
 
         v = Vector{UInt8}(undef, 5)
-        transfer!(io => v; start=(1=>1))
+        n = transfer!(io => v; start=(1=>1))
+        @test n == 5
         @test String(v) == "Hello"
     finally
         close(io)
     end
 end
+
 
 @info "Test open, readline, read, readbytes!, eof, isopen (with file)"
 jio = open("runtests.jl")
@@ -257,14 +360,9 @@ for _ in 1:1
         c = readall!(`hexdump $f`)
         @time d = UnixIO.open(`hexdump`) do cin, cout
             @sync begin
-                @async try
+                @asynclog "read file" begin
                     IOTraits.URI(f) --> cin
                     close(cin)
-                catch err
-                    UnixIO.printerr("ERROR: $err")
-                    exception=(err, catch_backtrace())
-                    UnixIO.printerr(exception)
-                    @error "ERROR" exception
                 end
                 readall!(cout)
             end
@@ -300,14 +398,9 @@ uio = IOTraits.openread("runtests.jl")
 @test UnixIO.open(`hexdump`; fork=true) do cmdin, cmdout
     @show cmdin cmdout
     @sync begin
-        @async try
+        @asynclog "read file" begin
             URI("runtests.jl") --> cmdin
             close(cmdin)
-        catch err
-            UnixIO.printerr("ERROR: $err")
-            exception=(err, catch_backtrace())
-            UnixIO.printerr(exception)
-            @error "ERROR" exception
         end
         readall!(cmdout)
     end
@@ -330,13 +423,8 @@ cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
 @info "Test @async read(::Cmd) with delay"
 results = []
 @sync for i in 1:5
-    @async try
+    @asynclog "bash $i" begin
         push!(results, (i, readall!(`bash -c "sleep 2; echo $i"`) |> String))
-    catch err
-        UnixIO.printerr("ERROR: $err")
-        exception=(err, catch_backtrace())
-        UnixIO.printerr(exception)
-        @error "ERROR" exception
     end
 end
 for (i, r) in results
@@ -350,15 +438,10 @@ end
 
 times = []
 @sync for i in 1:4
-    @async try
+    @asynclog "bash $i" begin
         t0 = time()
         readall!(`bash -c "sleep 4; echo FOO"`; timeout=2.4)
         push!(times, time() - t0)
-    catch err
-        UnixIO.printerr("ERROR: $err")
-        exception=(err, catch_backtrace())
-        UnixIO.printerr(exception)
-        @error "ERROR" exception
     end
 end
 @show times

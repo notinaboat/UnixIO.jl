@@ -25,7 +25,124 @@ include("../../../src/macroutils.jl")
     end
 
 include("idoc.jl")
+
+
+#Allocation    | Termination             | Block   | 
+#------------- | ----------------------- | ------- | 
+#New `String`. | Current length of file. | Yes.    | 
 ```
+
+
+FIXME[^FIXME32]
+
+[^FIXME32]: ⚠️ 
+
+
+Idea for table
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+Intent                                                   transfer! API                                 Base.IO API                              
+-------------------------------------------------------- --------------------------------------------- -----------------------------------------------
+Write at most `n` bytes from a byte-vector into a        `transfer!(v => s, n) -> n`                   ?
+stream (`v::Vector{UInt8}`). Don't wait for the stream
+to be ready to accept all `n` bytes, just transfer
+as much as the stream will immediately accept.
+
+Wait as long as it takes to Write entire content of a    `transferall!(v => s) -> n`                   `write(s, v)`
+byte-vector into a stream. e.g. `v::Vector{UInt8}`
+
+Read at most `n` bytes from a file into a byte-vector:   `transfer!(f => v, n) -> n`                   `open(i->readbytes!(i, v, n), f)`          
+`v = Vector{UInt8}(undef, n)`. \
+Read at least one byte (unless the file is empty).
+FIXME test cases reading huge files over slow NFS.
+FIXME internally query block size and do small async
+eads? use a timeout to return less than `n`?
+or a heuristic value of bytes ?
+
+Wait as long as it takes to read all `n` bytes from a    `transferall!(f => v, n)`                     `open(i->readbytes!(i, v, n; all=true), f) -> ::Int`
+file into a byte-vector (or all remaining bytes if less
+than `n` remain). \
+`v = Vector{UInt8}(undef, n)`
+
+
+Read at most `n` bytes from a file into an abstract      `transfer!(f => v, n) -> n`                   `open(i->readbytes!(i, v, n), f)` \
+byte-vector. e.g. `v::SubArray{UInt8}`                                                                 💔 fails with "no method matching
+                                                                                                       `resize!(::SubArray`..." if `length(v) < n.
+
+Read at least one and at most n pairs of Int64 values    `transfer!(f => v, n) -> n`
+from a file into a vector.    
+`v = Vector{Tuple{Int64,Int64}}(undef, n)`
+                                                                                                                                                
+Read at most `n` bytes from a socket into a byte-vector. `transfer!(s => v, n) -> n`                   `readbytes!(i, v, n)` \
+Wait for at least one byte unless socket shuts down.                                                   💔 for sockets this call blocks waiting for
+                                                                                                       `n` bytes \
+                                                                                                       (`all=false` fails with 
+                                                                                                       "unsupported keyword argument").
+
+Read at least one and at most `n` bytes from `stdin`     `transfer!(s => v, n) -> n`                   `readbytes!(i, v, n)` \
+into a byte-vector.                                                                                    💔 for sockets this call blocks waiting for
+                                                                                                       `n` bytes \
+                                                                                                       (`all=false fails with 
+                                                                                                       "unsupported keyword argument").
+
+Read at most `n` bytes from `stdin` into a byte-vector.  `transfer!(s => v, n; timeout=1) -> n`        ?
+Return after 1 second if no bytes are available.
+
+Read at most `n` bytes from `stdin` into a byte-vector,  `transfer!(s => v, n; timeout=0) -> n`        💔 No way to read `stdin` without waiting
+return immediatly if no bytes are available.                                                           for at least one byte.
+
+Read at most `n` bytes from a stream into a byte-vector  `transfer!(s => v, n; buffer_i=7) -> n`       readbytes!(s, view(v, 7:length(v)), n)
+at a specified index.
+
+Read at most `n` bytes from a specified file offset      `transfer!(f => v, n; stream_i=7) -> n`       `@lock f try` \
+into a byte-vector.                                                                                    `    p = position(i)` \
+                                                                                                       `    seek(f, 7)`  \
+                                                                                                       `    readbytes!(s, v, n)` \
+                                                                                                       `finally` \
+                                                                                                       `    seek(f, p)` \
+                                                                                                       `end`
+                                                                                                       
+
+Find out how many bytes are immediatly available to read `bytesavailable(x) -> n`                      `bytesavailable(x)` \
+from `stdin`, a socket or a file.                                                                      💔 Always returns zero for `stdin`,
+                                                                                                       sockets and files.
+
+Find out how many bytes will be available to read before `bytesremaining(x) -> n`                      ?
+the stream is finished.                                                 
+
+Find out if a stream is is finished.                     `isfinished(x)`                               `eof(x)` \
+i.e. the end of the file has been reached, or                                                          💔 Sometimes blocks to wait for more bytes. \
+the stream has been shut down and no more bytes will                                                   💔 Sometimes returns true when more data
+be available.                                                                                          might be available in the future. [24526](@jl#)
+(Note: a file may become un-finished if more bytes are
+appended after the end of the file)                                                               
+
+Read all `n` bytes from a socket into a byte-vector      `transferall!(s => v, n)`                     `readbytes!(s, v, n; all=true)`
+(or fewer than `n` if the socket shuts down).                                                          💔 for sockets fails with "no method matching
+`v = Vector{UInt8}(undef, n)`                                                                          `readbytes!(::Base.PipeEndpoint`...
+                                                                                                       unsupported keyword argument 'all'" 
+
+Read entire content of a file into a new string. \       `transferall!(f => v)` \                      `read(f, String) -> ::String`            
+`f = "myfile.txt"; v = Vector{UInt8}(undef, length(f))`. `String(v)` \
+                                                         or readall!(f) |> String
+
+Read entire content of a file into a new                 `transferall!(f => v)`
+byte-vector-vector. \
+`f = "myfile.txt"; v = Vector{Vector{UInt8}}()`.
+
+Read entire content of a socket into a channel           `transferall!(s => c)`
+`c = Channel{Vector{UInt8}}()`.
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
 
 
 ## Background
@@ -71,7 +188,7 @@ to various aspects of IO and to see where it leads.
 
 ## Overview
 
-The IOTraits interface is built around the function `transfer(stream, buffer)`.
+The IOTraits interface is built around the function `transfer!(stream, buffer)`.
 This function transfers data between a stream and a buffer.
 
 Traits are used to specify the behaviour of the stream and the buffer.
@@ -86,32 +203,34 @@ Trait                      Description
                            (`NotIndexable`, `IndexableIO`)
 
 `FromBufferInterface`      How to get data from the buffer? \
-                           (`FromIO`, `FromStream`, `FromPop`, `FromTake`,
-                            `UsingIndex`, `FromIteration` or `UsingPtr`)
+                           (`FromIO`, `FromStream`, `UsingIndex`,
+                            `FromIteration` or `UsingPtr`)
 
 `ToBufferInterface`        How to put data into the buffer? \
                            (`ToIO`, `ToStream`, `ToPush`, `ToPut`,
                             `UsingIndex` or `UsingPtr`)
 
-`TotalSize`                How much data is available? \
-                           (`UnknownTotalSize`, `VariableTotalSize`,
-                            `FixedTotalSize`, or `InfiniteTotalSize`)
+`TotalSize{T}`             How much data is available? \
+                           (`T` = `:Zero`, `:Unknown`, `:Variable`, `:Fixed`,
+                            or `:Infinite`)
 
-`TransferSize`              How much data can be moved in a single transfer? \
-                            (`UnlimitedTransferSize`, `LimitedTransferSize`
-                            or `FixedTransferSize`)
+`TransferSize{T}`           How much data can be moved in a single transfer? \
+                            (`T` = `:Unlimited`, `:Limited` or `:Fixed`)
 
-`ReadFragmentation`         What guarantees are made about fragmentation? \
-                            (`ReadsBytes`, `ReadsLines`, `ReadsPackets` or
-                             `ReadsRequestedSize`)
+`ReadUnit{T}`               What guarantees are made about fragmentation? \
+                            (`T` = `:Byte`, `:Line`, `:Packet` or
+                            `:RequestedSize`)
 
-`CursorSupport`             Are `mark` and `seek` supported? \
-                            (`NoCursors`, `Seekable` or `Markable`)
+`Cursors{T}`                Are `mark` and `seek` supported? \
+                            (`T` = `Missing`, `:Seekable` or `:Markable`)
 
-`WaitingMechanism`          How to wait for activity? \
-                            (`WaitBySleeping`, `WaitUsingPosixPoll`,
-                             `WaitUsingEPoll`, `WaitUsingPidFD` or
-                             `WaitUsingKQueue`)
+`TransferAPI{T}`            How to transfer bytes?
+                            (`T` = `:LibC`, `:IOURing`, `:GSD`, or `:AIO`)
+
+`WaitAPI{T}`                How to wait for activity? \
+                            (`T` = `:Sleep`, `:PosixPoll`,
+                             `:EPoll`, `:IOUring`, `:PidFD`,
+                             or `:KQueue`)
 
 FIXME update summaries
 --------------------------------------------------------------------------------
@@ -175,7 +294,7 @@ or typing commands into a terminal.
 Note that `IOTraits.Stream` is not a subtype of `Base.IO`.[^BaseIO]
 
 
-```{.julia .numberLines .lineAnchors startFrom="175"}
+```{.julia .numberLines .lineAnchors startFrom="290"}
 abstract type Stream end
 ```
 
@@ -184,9 +303,14 @@ The constructor `BaseIO(::Stream) -> Base.IO` creates a Base.IO compatible
 wrapper around a stream.
 
 
-```{.julia .numberLines .lineAnchors startFrom="181"}
+```{.julia .numberLines .lineAnchors startFrom="296"}
 struct BaseIO{T<:Stream} <: Base.IO
     stream::T
+end
+
+
+struct URI
+    uri::String
 end
 ```
 
@@ -210,7 +334,7 @@ The IOTraits interface attempts to limit the number of behavioural permutations
 as much as possible by choosing a default behaviour for each aspect and
 supporting other behaviours only by addition of clean wrapper layers.
 
-**Allocation:** The `transfer` function never allocates buffers or resizes buffers
+**Allocation:** The `transfer!` function never allocates buffers or resizes buffers
 it simply transfers bytes to or from the buffer provided. Exceptions to this
 rule are possible through the [Buffer Interface Traits](#buffer-interface-traits)
 [^AS1]. The interface aims to support implementations that wish to avoid
@@ -222,24 +346,24 @@ in wrapper layers as needed.
 [^AS1]: e.g. if `ToBufferInterface(buffer) == ToPush()` data is pushed into the
 buffer, which may lead to resizing.
 
-**Termination:** The `transfer` function is specified to "transfer at most `n`
+**Termination:** The `transfer!` function is specified to "transfer at most `n`
 items" and "Return the number of items transferred".
 i.e. if some amount of data is available, return it right away rather than
 waiting for the entire requested amount. This behaviour can easily be wrapped
 with a retry layer to support cases where all `n` items are required.
 
-**Blocking:** By default the `transfer` function waits indefinitely for
+**Blocking:** By default the `transfer!` function waits indefinitely for
 data to be available. Control over this behaviour is provided by the optional
-`deadline=` argument. The `transfer` function stops waiting when `deadline > time()`.
+`deadline=` argument. The `transfer!` function stops waiting when `deadline > time()`.
 This interface allows non-blocking transfers (`deadline=0`), blocking transfers
 (`deadline=Inf`) or anything in between.[^AS2]
 
-[^AS2]: Note that `transfer` will always return data that is immediately
+[^AS2]: Note that `transfer!` will always return data that is immediately
 available irrespective of the deadline. i.e. There is no race condition when
 `deadline ~= time()`.
 
 The combination of the chosen termination and blocking behavior leads to
-two cases where `transfer` returns zero: End of stream (EOF), and deadline
+two cases where `transfer!` returns zero: End of stream (EOF), and deadline
 expired. This seems like a nice unification of the treatment of streams that
 have a distinct end and those that don't. The caller can specify
 a deadline that makes sense for their application and not have to worry about
@@ -310,6 +434,175 @@ FIXME
    (i.e. wrap with buffered stream).
 
 
+### Stream Interface Functions
+
+#### Stream Data Transfer Core Functions
+
+--------------------------------------------------------------------------------
+Function                       Description
+----------------------------   -------------------------------------------------
+`transfer!(stream, buf, [n])`  Transfer at least one and at most `n` items
+                               between `stream` and `buf`.
+                               Return the number of items transferred.
+                               See `TransferDirection`, `FromBufferInterface`
+                               and `ToBufferInterface` traits.
+
+`wait(stream; timeout=Inf)`    Wait until `stream` is ready to transfer data.
+                               `transfer!` calls `wait` if there are no items
+                               available.
+                               See `WaitAPI` trait and `set_poll_interface`.
+
+`lock(stream)`                 Acquire a task-exclusive lock on `stream`.
+                               A `Stream` must be locked before `wait` is
+                               called.
+
+`unlock(stream)`               Reverse the effect of `lock`.
+
+`max_transfer_size(stream)`    Maximum number of bytes per call to `transfer!`.
+                               See `TransferSize` trait.
+--------------------------------------------------------------------------------
+
+
+#### Stream Data Transfer Conveniance Methods
+
+--------------------------------------------------------------------------------
+Function                               Description
+-------------------------------------- -----------------------------------------
+`transfer!(...; timeout=Inf)`          Wait `timeout` seconds if no items
+                                       are available to transfer.
+
+`transfer!(stream => buf, [n])`        Transfer data from `stream` to `buf`.
+
+`transfer!(buf => stream, [n])`        Transfer data from `buf` to `stream`.
+
+`transfer!(stream, buf; buffer_i=i)`   Transfer data starting at `buf` index `i`.
+
+`transfer!(stream, buf; stream_i=i)`   Transfer data starting at `stream`
+                                       byte-index `i`.
+                                       See `StreamIndexing` trait.
+
+`transferall!(stream, buf, [n])` \     Transfer all `n` items between
+`transferall!(stream => buf, [n])` \   `stream` and `buf`.
+`transferall!(buf => stream, [n])` \   
+
+`transferall!(...; timeout=Inf)`       Stop waiting for more items after
+                                       `timeout`.
+
+`readall!(stream) -> Vector{UInt8}`    Transfer all items from `stream` into
+                                       a new byte buffer.
+--------------------------------------------------------------------------------
+
+
+#### Stream Data Transfer Driver API
+
+--------------------------------------------------------------------------------
+Function                                Description
+--------------------------------------- ----------------------------------------
+
+`unsafe_transfer!(stream, p, n) -> n`   Transfer at least `n` bytes between
+                                        `stream` and `p::Ptr{UInt8}`.
+                                        Return the number of bytes transferred.
+
+--------------------------------------------------------------------------------
+
+
+#### Stream Lifecycle State Functions
+
+A `Stream` begins its life in "connected" and "open" state.
+A `Stream` might be spontaneously "disconnected" by an external event
+(e.g. when a peer a hangs up a connection).
+A `Stream` can only be "closed" by the `close` function.
+
+
+--------------------------------------------------------------------------------
+Function                   Description
+-------------------------- -----------------------------------------------------
+`isconnected(stream)`      True if the underlying data source/sink is
+                           still available through `stream`.
+
+`isopen(stream)`           True unless `close(stream)` is called.
+
+`close(stream)`            Signal that the program is finished with `stream`.
+                           If stream is an output, call `flush(stream)`.
+                           Disconnect the underlying data source/sink. \
+                           After `close` is called, `isopen` and `isconnected`
+                           are both False. \
+                           Most `Stream` funtions have `isopen(stream)` as
+                           a precondition, so calling other stream functions
+                           after `close` is likely to cause an exception.
+--------------------------------------------------------------------------------
+
+
+#### Input Stream Query Functions
+
+--------------------------------------------------------------------------------
+Function                        Description
+------------------------------- ------------------------------------------------
+`length_is_known(stream)`       True if the total number of bytes available from
+                                the stream is known.
+                                See `TotalSize` trait.
+
+`length(stream)`                Total number of bytes available from the stream.
+                                `missing` if unknown.
+
+`position_is_known(stream)`     True if `position(stream)` is known.
+                                See `Cursors` trait.
+
+`position(stream)`              Byte position relative to start of `stream`.
+                                The first byte in `position` zero.
+                                `missing` if unknown.
+
+`bytesremaining(stream)`        Number of bytes remaining to be transferred from
+                                the stream. 
+                                `missing` if unknown.
+                                If `length_is_known` this is the same as
+                                `length(stream) - position(stream)`.
+
+`isfinished(stream)`            True if there are no bytes remaining to be
+                                transferred from the stream. \
+                                If `length_is_known` them this is the same as
+                                `bytesremaining(stream) == 0`, otherwise
+                                `isfinished` is only true when `isconnected`
+                                is false and `bytesavailable(stream) == 0`
+
+`availability_is_known(stream)` True if the number of bytes immediately
+                                available for transfer is known.
+                                See `Availability` trait.
+
+`bytesavailable(stream)`        Number of bytes immediately ready for transfer.
+                                `missing` if unknown.
+                                See `ReadSizeAPI` trait.
+--------------------------------------------------------------------------------
+
+Note that the query functions above are all side-effect free.
+
+Failure to ensure that query methods for all stream types are side-effect free
+can lead to subtle bugs.
+
+Consider the following method:
+
+```julia
+position(s::BufferedInput) = position(s.stream) - bytesavailable(s.buffer)
+```
+
+The current position is the number of bytes that have been taken from the
+stream, less the number of bytes buffered but not yet transferred to the user.
+Imagine that `bytesavailable(s.buffer)` was designed to refill the buffer 
+from the stream on demand before returning the number of buffered bytes.
+The `position(s::BufferedInput)` method would return an invalid result because
+the value of `position(s.stream)` is altered by the side-effect in
+`bytesavailable(s.buffer)`.
+
+
+
+### Notes
+
+TODO:
+Note about back-pressure, the problem with reading too fast into a big buffer
+
+
+### Methods of Base Functions for Streams
+
 
 ### Methods of Base Functions for Streams
 
@@ -324,38 +617,84 @@ to a wrapped delegate stream if the `StreamDelegation` trait is in effect).
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="320"}
+```{.julia .numberLines .lineAnchors startFrom="608"}
 Base.isopen(s::Stream) = is_proxy(s) ? isopen(unwrap(s)) : false
 
 Base.close(s::Stream) = is_proxy(s) ? close(unwrap(s)) : nothing
 
-Base.wait(s::Stream; deadline=Inf) = is_proxy(s) ?
-                                     wait(unwrap(s); deadline) :
-                                     _wait(s, WaitingMechanism(s); deadline)
+Base.islocked(s::Stream) = is_proxy(s) ? islocked(unwrap(s)) :
+    @warn "Base.islocked(::$(typeof(s)) not defined!"
+
+Base.lock(s::Stream) = is_proxy(s) ? lock(unwrap(s)) :
+    @warn "Base.lock(::$(typeof(s)) not defined!"
+
+Base.unlock(s::Stream) = is_proxy(s) ? unlock(unwrap(s)) :
+    @warn "Base.unlock(::$(typeof(s)) not defined!"
+
+@db function Base.wait(s::Stream; deadline=Inf, timeout=Inf)
+    deadline = deadline_or_timeout(deadline, timeout)     ;@db deadline - time()
+    is_proxy(s) ? wait(unwrap(s); deadline) :
+                 _wait(s, WaitAPI(s); deadline)
+end
 
 @db function Base.bytesavailable(s::Stream)
+    @db_not_tested is_proxy(s)
     @require is_input(s)
-    s = unwrap(s)
-    _bytesavailable(s, Availability(s), TransferSize(s))
+    @require isopen(s)
+    is_proxy(s) ? bytesavailable(unwrap(s)) :
+                  _bytesavailable(s, Availability(s), TransferSize(s))
 end
 
-function Base.length(s::Stream)
-    @require TotalSize(s) isa KnownTotalSize
+@db function Base.length(s::Stream)
+    @require isopen(s)
+    @require length_is_known(s)
+    if TotalSize(s) == TotalSize{:Zero}()
+        return 0
+    end
     s = unwrap(s)
-    _length(s, TotalSizeMechanism(s))
+    _length(s, LengthAPI(s))
 end
 
-function Base.readline(s::Stream; timeout=Inf, keep=false)
+
+@db function Base.position(s::Stream)
+    @db_not_tested is_proxy(s)
+    @require isopen(s)
+    @require Cursors(s) isa HasCursors
+    s = unwrap(s)
+    _position(s, Cursors(s))
+end
+
+@db function Base.readline(s::Stream; keep=false, timeout=Inf)
+    @db_not_tested is_proxy(s)
+    @require isopen(s)
     @require is_input(s)
-    s = unwrap(s)
-    _readline(s, ReadFragmentation(s); timeout, keep)
+    s = unwrap(s) # FIXME buffered input should not be unwrapped
+                  # but timeout stream should.
+                  # ensure that there are tests for this kind of thing
+                  # consider the need for different types of proxy / unwrap
+    _readline(s, ReadUnit(s); keep, timeout)
 end
 
-function Base.peek(s::Stream, ::Type{T}; timeout=Inf) where T
+
+@db function Base.eachline(s::Stream; keep=false, timeout=Inf)
+    @db_not_tested is_proxy(s)
+    @require isopen(s)
+    @require is_input(s)
+    s = timeout_stream(s; timeout)
+    eachline(BaseIO(s); keep)
+end
+
+
+@db function Base.peek(s::Stream, ::Type{T}; timeout=Inf) where T
+    @db_not_tested
+    @db_not_tested is_proxy(s)
+    @require isopen(s)
     @require is_input(s)
     s = unwrap(s)
     _peek(s, PeekSupport(s), T; timeout)
 end
+
+pump!(s::Stream; deadline) = is_proxy(s) ? pump!(unwrap(s); deadline) : nothing
 ```
 
 
@@ -377,7 +716,7 @@ with `Base.IO`.
 | `DelegatedToSubStream()` | This stream is a proxy for a sub stream.          |
 
 
-```{.julia .numberLines .lineAnchors startFrom="371"}
+```{.julia .numberLines .lineAnchors startFrom="705"}
 abstract type StreamDelegation end
 struct NotDelegated <: StreamDelegation end
 struct DelegatedToSubStream <: StreamDelegation end
@@ -392,7 +731,7 @@ is_proxy(s) = StreamDelegation(s) != NotDelegated()
 -- Retrieves the underlying stream that is wrapped by a proxy stream.
 
 
-```{.julia .numberLines .lineAnchors startFrom="384"}
+```{.julia .numberLines .lineAnchors startFrom="718"}
 unwrap(s) = unwrap(s, StreamDelegation(s))
 unwrap(s, ::NotDelegated) = s
 unwrap(s, ::DelegatedToSubStream) = s.stream
@@ -454,7 +793,7 @@ supported by a stream.
 | `Exchange()`   | data is exchanged between the `IO` and a buffer.[^SPI]      |
 
 
-```{.julia .numberLines .lineAnchors startFrom="444"}
+```{.julia .numberLines .lineAnchors startFrom="778"}
 abstract type TransferDirection end
 struct In <: TransferDirection end
 struct Out <: TransferDirection end
@@ -476,7 +815,7 @@ The constructor `BaseIOStream(::Base.IO) -> IOTraits.Stream` creates a Stream
 compatible wrapper around a Base.IO.
 
 
-```{.julia .numberLines .lineAnchors startFrom="464"}
+```{.julia .numberLines .lineAnchors startFrom="798"}
 struct BaseIOStream{T<:Base.IO,D<:TransferDirection} <: Stream
     io::T
 end
@@ -493,13 +832,13 @@ Base.isopen(s::BaseIOStream) = isopen(s.io)
 Is indexing (e.g. `pread(2)`) supported?
 
 
-```{.julia .numberLines .lineAnchors startFrom="478"}
+```{.julia .numberLines .lineAnchors startFrom="812"}
 abstract type StreamIndexing end
 struct NotIndexable <: StreamIndexing end
 struct IndexableIO <: StreamIndexing end
 StreamIndexing(s) = StreamIndexing(typeof(s))
 StreamIndexing(T::Type) = is_proxy(T) ? StreamIndexing(unwrap(T)) :
-                                        NotIndexable
+                                        NotIndexable()
 
 stream_is_indexable(s) = StreamIndexing(s) == IndexableIO()
 
@@ -512,7 +851,7 @@ ioeltype(s) = isabstracttype(eltype(s)) ? UInt8 : eltype(s)
 # Data Transfer Function
 
 
-    transfer(stream, buffer, [n]; start=1, deadline=Inf) -> n_transfered
+    transfer!(stream, buffer, [n]; buffer_i=1, deadline=Inf) -> n_transfered
 
 Transfer at most `n` items between `stream` and `buffer`.[^NITEMS]
 Return the number of items transferred.
@@ -524,12 +863,13 @@ argument is provided then the deadline is `time() + timeout`.
 [^NITEMS]: If `n` is not specified then the number of items transferred depends
 on the number of items available and the capacity of `buffer`.
 
-[^WAIT]: The [`WaitingMechanism`](#event-notification-mechanism-trait) trait
+[^WAIT]: The [`WaitAPI`](#waiting-interface-trait) trait
 determines what polling mechamism is used.
 
-`start` specifies a buffer index at which the transfer begins.
-If `stream` is indexable then `start` can be a tuple of two indexes:
-`(stream_start_byte_index, buffer_start_index)`.
+`buffer_i` specifies a buffer index at which the transfer begins.
+If `stream` is indexable then `stream_i` can be used to specify
+the stream byte-index at which the transfer begins.
+A `stream` is indexable if `Cursors(stream) <: HasCursors`.
 
 The direction of transfer depends on
 `TransferDirection(stream) ->` (`In`, `Out` or `Exchange`).
@@ -557,154 +897,278 @@ A transfer to a `URI` creates a new resource or replaces the resource
 (i.e. HTTP PUT semantics).
 
 
-```{.julia .numberLines .lineAnchors startFrom="540"}
-@db function transfer(stream, buf, n::Union{Integer,Missing}=missing;
-                  start::Union{Integer, NTuple{2,Integer}}=UInt(1),
-                  timeout=Inf,
-                  deadline=Inf)
+```{.julia .numberLines .lineAnchors startFrom="875"}
+@inline @db function transfer!(stream, buffer,
+                               n::Union{Integer,Missing}=missing;
+                               stream_i::Union{Integer,Missing}=missing,
+                               buffer_i::Union{Integer,Missing}=missing,
+                               deadline=Inf,
+                               timeout=Inf)
 
     @require isopen(stream)
     @require ismissing(n) || n > 0
-    @require all(start .> 0)
-    if timeout != Inf
-        deadline = time() + timeout
-    end
-    n = transfer(stream, buf, n, start, Float64(deadline))
-    transfer_complete(stream, buf, n)
-    @ensure n isa UInt
-    @db return n
+    @require ismissing(stream_i) || stream_i > 0
+    @require ismissing(stream_i) ||
+             StreamIndexing(stream) == IndexableIO() ||
+             Cursors(stream) isa HasCursors
+    @require ismissing(buffer_i) || buffer_i > 0
+
+    @db typeof(stream) stream_i buffer_i deadline timeout
+
+    n = missing_or_uint64(n)
+    stream_i = missing_or_uint64(stream_i)
+    buffer_i = missing_or_uint64(buffer_i)
+
+    r = _transfer!(stream, buffer, (stream_i, buffer_i, n),
+                   deadline_or_timeout(deadline, timeout))
+
+    transfer_complete(stream, buffer, r)
+
+    @ensure r isa UInt
+    @ensure ismissing(n) || r <= n
+    @db return r
 end
+
+missing_or_uint64(i) = ismissing(i) ? i : UInt(unsigned(i))
+
+function deadline_or_timeout(deadline, timeout)
+    Float64((timeout == 0)   ? 0 :
+            (timeout == Inf) ? deadline :
+                               (time() + timeout))
+end
+
+transfer!(a...; timeout) = transfer!(a...; deadline=time() + Float64(timeout))
 ```
 
 
-`transfer_complete` is called at the end of the top-level `transfer` method.
-A single call to the top-level `tansfer` method may result in many calls to
+`transfer_complete` is called at the end of the top-level `transfer!` method.
+A single call to the top-level `tansfer!` method may result in many calls to
 low level driver methods. e.g. to transfer every item in a collection.
 The `transfer_complete` hook can be used, for example, to flush an output
 buffer at end of a transfer.
 
 
-```{.julia .numberLines .lineAnchors startFrom="565"}
+```{.julia .numberLines .lineAnchors startFrom="924"}
 transfer_complete(stream, buf, n) = nothing
 ```
 
 
-### `transfer(a => b)`
+### `transfer!(a => b)`
 
-    transfer(stream => buffer, [n]; start=(1 => 1), kw...) -> n_transfered
-    transfer(buffer => stream, [n]; start=(1 => 1), kw...) -> n_transfered
+    transfer!(stream => buffer, [n]; start=(1 => 1), kw...) -> n_transfered
+    transfer!(buffer => stream, [n]; start=(1 => 1), kw...) -> n_transfered
 
-`stream` and `buffer` can be passed to `transfer` as a pair.
+`stream` and `buffer` can be passed to `transfer!` as a pair.
 `In` streams must be on the left.
 `Out` streams must be on the right.
 
 
-```{.julia .numberLines .lineAnchors startFrom="578"}
-function transfer(t::Pair{<:Stream, <:Any}, a...; start=(1 => 1), kw...)
+```{.julia .numberLines .lineAnchors startFrom="937"}
+@inline function transfer!(t::Pair{<:Stream,<:Any}, a...;
+                           start::Pair=(missing => missing), kw...)
     @require TransferDirection(t[1]) == In()
-    if start isa Pair
-        start = (start[1], start[2])
-    end
-    transfer(t[1], t[2], a...; start, kw...)
+    stream_i, buffer_i = start
+    transfer!(t[1], t[2], a...; stream_i, buffer_i, kw...)
 end
 
-function transfer(t::Pair{<:Any,<:Stream}, a...; start=(1 => 1), kw...)
+@inline function transfer!(t::Pair{<:Any,<:Stream}, a...;
+                           start::Pair=(missing => missing), kw...)
     @require TransferDirection(t[2]) == Out()
-    if start isa Pair
-        start = (start[2], start[1])
-    end
-    transfer(t[2], t[1], a...; start=start, kw...)
+    buffer_i, stream_i = start
+    transfer!(t[2], t[1], a...; stream_i, buffer_i, kw...)
 end
+
+@inline function transfer!(t::Pair{<:Stream,<:Stream}, a...;
+                           start::Pair=(missing => missing), kw...)
+    @require TransferDirection(t[1]) == In()
+    @require TransferDirection(t[2]) == Out()
+    stream_i, buffer_i = start
+    transfer!(t[1], t[2], a...; stream_i, buffer_i, kw...)
+end
+
+const IOStreams = Tuple{<:Stream,<:Stream}
+input(io::IOStreams) = (@require is_input(io[1]); io[1])
+output(io::IOStreams) = (@require is_output(io[2]); io[2])
+
+
+transfer!(t::Pair{<:Any,<:IOStreams}, a...; kw...) =
+    transfer!(t[1] => output(t[2]), a...; kw...)
+
+transfer!(t::Pair{<:IOStreams,<:Any}, a...; kw...) =
+    transfer!(input(t[1]) => t[2], a...; kw...)
 ```
 
 
 ## Waiting for the Deadline
 
 
-The specification for `transfer` says: If no items are immediately available,
+The specification for `transfer!` says: If no items are immediately available,
 wait until `time() > deadline` for at least one item to be transferred.
 
 The method below starts by simply attempting the transfer.
 This avoids the overhead of locking and measuring the current time.
 If the initial transfer attempt yields no data, the `wait_for_transfer`
-method is selected based on Waiting Mechanism trait.
+method is selected based on Waiting Interface trait.
 
 If the buffer elements are larger than one byte and the stream has
-Unknown Availability then `transfer_available` can end up with a
+Unknown Availability then `attempt_transfer` can end up with a
 partial item in the buffer. In this situation a second attempt is needed
 to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
 that the second transfer adheres to the specified deadline.
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="614"}
-function transfer(stream, buffer, n, start, deadline::Float64)
+```{.julia .numberLines .lineAnchors startFrom="991"}
+@inline @db 2 function _transfer!(stream, buffer, indices, deadline::Float64)
 
-    if Availability(stream) == UnknownAvailability() &&
-    ioelsize(buffer) != 1 &&
-    deadline != Inf
+    if (Availability(stream) == Availability{:Unknown}()
+    &&  try ioelsize(buffer) != 1 catch; false end
+    &&  deadline != Inf)
         stream = timeout_stream(stream; deadline)
     end
 
-    r = transfer_available(stream, buffer, n, start)
+    r = attempt_transfer(stream, buffer, indices)
     if r > 0 || iszero(deadline)
-        return r
+        @db 2 return r
     end
-    wait_for_transfer(stream, WaitingMechanism(stream),
-                      buffer, n, start, deadline)
+
+    wait_for_transfer(stream, WaitAPI(stream), buffer, indices, deadline)
 end
 ```
 
 
-# Waiting Mechanism Trait
+# Transfer Mode Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="634"}
-abstract type WaitingMechanism end
-struct WaitBySleeping     <: WaitingMechanism end
-struct WaitUsingPosixPoll <: WaitingMechanism end
-struct WaitUsingEPoll     <: WaitingMechanism end
-struct WaitUsingPidFD     <: WaitingMechanism end
-struct WaitUsingKQueue    <: WaitingMechanism end
+```{.julia .numberLines .lineAnchors startFrom="1010"}
+struct TransferMode{T} end
 ```
 
 
-The `WaitingMechanism` trait describes ways of waiting for OS resources
+The `TransferMode` trait describes the blocking behaviour of the underlying
+operating system calls used for a file descriptor.
+
+`TransferMode(stream)` returns `TransferMode{T}()` where `T` is one of:
+
+--------------------------------------------------------------------------------
+Transfer Mode         Description
+--------------------- ----------------------------------------------------------
+`:Blocking`           System call does not return until the transfer is complete.
+
+`:Immediate`          System call transfers only as much data as it can without
+                      blocking, then returns
+                      (e.g. `O_NONBLOCK`).
+
+`:Async`              System call schedules transfer for asynchronous execution,
+                      the returns
+                      (e.g. [`io_uring`][io_uring] or [POSIX AIO][aio]).
+--------------------------------------------------------------------------------
+
+
+```{.julia .numberLines .lineAnchors startFrom="1032"}
+TransferMode(x) = TransferMode(typeof(x))
+TransferMode(T::Type) = is_proxy(T) ? TransferMode(unwrap(T)) :
+                                      TransferMode{:Immediate}()
+```
+
+
+# Transfer Interface Trait
+
+
+```{.julia .numberLines .lineAnchors startFrom="1039"}
+struct TransferAPI{T} end
+```
+
+
+The `TransferAPI` trait describes ways transferring bytes to/from
+a file descriptor.
+
+`TransferAPI(stream)` returns `TransferAPI{T}` where `T` is one of:
+
+--------------------------------------------------------------------------------
+Interface             Description
+--------------------- ----------------------------------------------------------
+`:LibC`               Transfer bytes using [`read(2)`][read2] and
+                      [`write(2)`][write2].
+
+`:IOURing`            Transfer bytes using
+                      [`io_uring_prep_read(3)`][prep_read],
+                      [`io_uring_prep_write(3)`][prep_write] and
+                      [`io_uring_wait_cqe(3)`][wait_cqe].
+
+`:AIO`                Transfer bytes using [AIO][aio] POSIX asynchronous I/O.
+
+`:GSD`                Transfer bytes using [Grand Central Dispatch][GSD].
+--------------------------------------------------------------------------------
+
+[read2]: https://man7.org/linux/man-pages/man2/read.2.html
+[write2]: https://man7.org/linux/man-pages/man2/write.2.html
+[prep_read]: https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_read.3.en.html
+[prep_write]: https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_write.3.en.html
+[wait_cqe]: https://manpages.debian.org/unstable/liburing-dev/io_uring_wait_cqe.3.en.html
+[aio]: https://man7.org/linux/man-pages/man7/aio.7.html
+[GSD]: https://developer.apple.com/documentation/dispatch?language=objc
+
+
+
+```{.julia .numberLines .lineAnchors startFrom="1072"}
+TransferAPI(x) = TransferAPI(typeof(x))
+TransferAPI(T::Type) = is_proxy(T) ? TransferAPI(unwrap(T)) :
+                                     TransferAPI{:LibC}()
+Base.isvalid(::TransferAPI) = true
+Base.isvalid(::TransferAPI{:IOURing}) = Sys.islinux()
+Base.isvalid(::TransferAPI{:AIO}) = false
+Base.isvalid(::TransferAPI{:GSD}) = Sys.isapple()
+```
+
+
+# Waiting Interface Trait
+
+
+```{.julia .numberLines .lineAnchors startFrom="1083"}
+struct WaitAPI{T} end
+const AnyWaitAPI = WaitAPI
+```
+
+
+The `WaitAPI` trait describes ways of waiting for OS resources
 that are not immediately available. e.g. when `read(2)` returns
 `EAGAIN` (`EWOULDBLOCK`), or when `waitpid(2)` returns `0`.
 
-Resource types, `R`, that have an applicable `WaitingMechanism`, `T`,
-define a method of `Base.wait(::T, r::R)`.
-`WaitBySleeping` is the default.[^SLEEP]
+Resource types, `R`, that have a special waiting interface `T`
+define a method of `Base.wait(::WaitAPI{T}, r::R)`.
+`WaitAPI{:Sleep}` is the default.[^SLEEP]
 
-If a `WaitingMechanism`, `T`, is not available on a particular OS
-then `Base.isvalid(::T)` should be defined to return `false`.[^AIO]
+If a waiting interface `T`, is not available on a particular OS
+then `Base.isvalid(::WaitAPI{T})` should be defined to return `false`.
 
-[^AIO]: ⚠️ Consider Linux AIO `io_getevents` for disk io?
-
-`WaitingMechanism(stream)` returns one of:
+`WaitAPI(stream)` returns `WaitAPI{T}()` where `T` is one of:
 
 --------------------------------------------------------------------------------
 Waiting Mechanism     Description 
 --------------------- ----------------------------------------------------------
-`WaitBySleeping`      Wait using a dumb retry/sleep loop.
+`:Sleep`              Wait using a dumb retry/sleep loop.
 
-`WaitUsingPosixPoll`  Wait using the POSIX `poll` mechanism.
+`:PosixPoll`          Wait using the POSIX `poll` interface.
                       Wait for activity on a set of file descriptors.
                       Applicable to FIFO pipes, sockets and character devices
                       (but not local files).  See [`poll(2)`][poll]
 
-`WaitUsingEPoll`      Wait using the Linux `epoll` mechanism.
+`:EPoll`              Wait using the Linux `epoll` interface.
                       Like `poll` but scales better for workloads with a large
                       number of waiting streams.
                       See [`epoll(7)`][epoll]
 
-`WaitUsingKQueue`     Wait using the BSD `kqueue` mechanism.
+`:IOURing`            Wait using the Linux `io_uring` interface.
+                      Works with local disk files.
+                      See [`io_uring(7)`][io_uring]
+
+`:KQueue`             Wait using the BSD `kqueue` interface.
                       Like `epoll` but can also wait for files, processes,
                       signals etc. See [`kqueue(2)`][kqueue]
 
-`WaitUsingPidFD()`    Wait for process termination using the Linux `pidfd`
-                      mechanism. A `pidfd` is a special process monitoring
+`:PidFD()`            Wait for process termination using the Linux `pidfd`
+                      interface. A `pidfd` is a special process monitoring
                       file descriptor that can in turn be monitored by `poll` or
                       `epoll`. See [`pidfd_open(2)`][pidfd]
 --------------------------------------------------------------------------------
@@ -713,6 +1177,7 @@ Waiting Mechanism     Description
 [epoll]: https://man7.org/linux/man-pages/man7/epoll.7.html
 [kqueue]: https://www.freebsd.org/cgi/man.cgi?kqueue
 [pidfd]: http://man7.org/linux/man-pages/man2/pidfd_open.2.html
+[io_uring]: https://manpages.debian.org/unstable/liburing-dev/io_uring.7.en.html
 
 [^SLEEP]: Sleeping may be the most efficient mechanism for small systems with
 simple IO requirements, for large systems where throughput is more important
@@ -721,93 +1186,106 @@ waiting for IO. Sleeping allows other Julia tasks to run immediately, whereas
 the other polling mechanisms all have some amount of book-keeping and system
 call overhead.
 
+FIXME: Conditer WaitWithoutYeilding -- Block calling thread.
+ - Might be useful where low latency is important.
 
-```{.julia .numberLines .lineAnchors startFrom="695"}
-WaitingMechanism(x) = WaitingMechanism(typeof(x))
-WaitingMechanism(T::Type) = is_proxy(T) ? WaitingMechanism(unwrap(T)) :
-                                          WaitBySleeping()
 
-Base.isvalid(::WaitingMechanism) = true
-Base.isvalid(::WaitUsingEPoll) = Sys.islinux()
-Base.isvalid(::WaitUsingPidFD) = Sys.islinux()
-Base.isvalid(::WaitUsingKQueue) = Sys.isbsd() && false # not yet implemented.
+```{.julia .numberLines .lineAnchors startFrom="1146"}
+WaitAPI(x) = WaitAPI(typeof(x))
+WaitAPI(T::Type) = is_proxy(T) ? WaitAPI(unwrap(T)) :
+                                          WaitAPI{:Sleep}()
+
+Base.isvalid(::WaitAPI) = false
+Base.isvalid(::WaitAPI{:Sleep}) = true
+Base.isvalid(::WaitAPI{:PosixPoll}) = Sys.isunix()
+Base.isvalid(::WaitAPI{:EPoll}) = Sys.islinux()
+Base.isvalid(::WaitAPI{:PidFD}) = Sys.islinux()
+Base.isvalid(::WaitAPI{:IOURing}) = Sys.islinux()
+Base.isvalid(::WaitAPI{:KQueue}) = Sys.isbsd() && false # not yet implemented.
 
 firstvalid(x, xs...) = isvalid(x) ? x : firstvalid(xs...)
+firstvalid() = nothing
 
-const default_poll_mechanism = firstvalid(WaitUsingKQueue(),
-                                          WaitUsingEPoll(),
-                                          WaitUsingPosixPoll(),
-                                          WaitBySleeping())
+const default_poll_interface = firstvalid(WaitAPI{:KQueue}(),
+                                          WaitAPI{:IOURing}(),
+                                          WaitAPI{:EPoll}(),
+                                          WaitAPI{:PosixPoll}(),
+                                          WaitAPI{:Sleep}())
 
-_wait(x, ::WaitBySleeping; deadline=Inf) = sleep(0.1)
+_wait(x, ::WaitAPI{:Sleep}; deadline=Inf) = sleep(0.1)
+
+
+@static if VERSION > v"1.6"
 ```
 
 
-## Preferred Polling Mechanism
+## Preferred Polling Interface
 
-    set_poll_mechanism(name)
+    set_poll_interface(name)
 
-Configure the preferred event polling mechanism:
-"kqueue", "epoll", "poll", or "sleep".[^POLL]
+Configure the preferred event polling interface:
+"kqueue", "io_uring", "epoll", "poll", or "sleep".[^POLL]
 This setting is persistently stored through [Preferences.jl][Prefs].
 
 [^POLL]: This setting applies only to `poll(2)`-compatible file descriptors
 (i.e. it does not apply to local disk files).
 
-By default, IOTraits will try to choose the best available mechanism
-(see `default_poll_mechanism`).
+By default, IOTraits will try to choose the best available interface
+(see `default_poll_interface`).
 
 
-To find out what mechanism is used for a particular `FD` call:
-`WaitingMechanism(fd)`
+To find out what interface is used for a particular `FD` call:
+`WaitAPI(fd)`
 
 [Prefs]: https://github.com/JuliaPackaging/Preferences.jl
 
 
-```{.julia .numberLines .lineAnchors startFrom="735"}
-function set_poll_mechanism(x)
-    @require poll_mechanism(x) != nothing
-    @require isvalid(poll_mechanism(x))
-    @set_preferences!("waiting_mechanism" => x)
-    @warn "Preferred IOTraits.WaitingMechanism set to $(poll_mechanism(x))." *
+```{.julia .numberLines .lineAnchors startFrom="1192"}
+function set_poll_interface(x)
+    @require isvalid(poll_interface(x))
+    @set_preferences!("poll_interface" => x)
+    @warn "Preferred IOTraits.WaitAPI{:Poll} set to $(poll_interface(x))." *
           "UnixIO must be recompiled for this setting to take effect."
 end
 
-poll_mechanism(name) = name == "kqueue" ? WaitUsingKQueue() :
-                       name == "epoll"  ? WaitUsingEPoll() :
-                       name == "poll"   ? WaitUsingPosixPoll() :
-                       name == "sleep"  ? WaitBySleeping() :
-                                          default_poll_mechanism
-
-const preferred_poll_mechanism =
-    poll_mechanism(@load_preference("waiting_mechanism"))
+const preferred_poll_interface = begin
+    api = WaitAPI{Symbol(@load_preference("poll_interface"))}()
+    isvalid(api) ? api : default_poll_interface
+end
+else
+const preferred_poll_interface = default_poll_interface
+end
+WaitAPI{:Poll}() = IOTraits.preferred_poll_interface
 ```
 
 
 ## Wait By Sleeping Method
 
 
-The Wait By Sleeping method for `wait_for_transfer` calls `transfer_available`
+The Wait By Sleeping method for `wait_for_transfer` calls `attempt_transfer`
 in a loop until data is available or the deadline is reached.
 
 An exponentially increasing sleep delay minimises latency for short waits and
 limits CPU use for longer waits.
 
 
-```{.julia .numberLines .lineAnchors startFrom="763"}
+```{.julia .numberLines .lineAnchors startFrom="1219"}
 const delay_sequence =
     ExponentialBackOff(;n = typemax(Int),
                         first_delay = 0.01, factor = 1.2, max_delay = 0.25)
 
-@db function wait_for_transfer(stream, ::WaitBySleeping,
-                               buf, n, start, deadline::Float64)
+@db function wait_for_transfer(stream, ::WaitAPI{:Sleep},
+                               buf, indices, deadline::Float64)
     for delay in delay_sequence
-        r = transfer_available(stream, buf, n, start);
-        if r >= 0
+        if isfinished(stream)
+            return UInt(0)
+        end
+        r = attempt_transfer(stream, buf, indices);
+        if r > 0
             @db return r
         end
         if time() >= deadline
-            @db return 0
+            @db return UInt(0)
         end
         sleep(delay)
     end
@@ -825,26 +1303,38 @@ be selected according to Waiting Mechanism.
 `Base.lock` and `Base.unlock` must be implemented for each stream type.[^LOCK]
 
 [^LOCK]: These methods should do whatever is necessary to avoid race conditions
-between `Base.wait` and `transfer_available`.
+between `Base.wait` and `attempt_transfer`. (FIXME, ... and `bytesavailable`)
 In UnixIO.jl `Base.wait` waits for a `ThreadSynchronizer` and the underlying
 polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
 
 
-```{.julia .numberLines .lineAnchors startFrom="797"}
-@db function wait_for_transfer(stream, buf, n, start, deadline::Float64,
-                               ::WaitingMechanism)
-    try 
-        lock(stream)
-        while time() < deadline
+```{.julia .numberLines .lineAnchors startFrom="1255"}
+@db function wait_for_transfer(stream, ::AnyWaitAPI,
+                               buf, indices, deadline::Float64)
+    @db deadline - time()
+    @dblock stream begin
+        while !isfinished(stream)
+            pump!(stream; deadline)
             wait(stream; deadline)
-            r = transfer_available(stream, buf, n, start);
+            r = attempt_transfer(stream, buf, indices)
             if r > 0
                 @db return r
             end
+            if time() >= deadline
+                break
+            end
+            if !isconnected(stream) &&
+            availability_is_known(stream) &&
+            bytesavailable(stream) > 0
+                @warn "wait_for_transfer() $(verb(TransferDirection(stream))) " *
+                      "$stream aborted by disconnect!\n" *
+                      "$(bytesavailable(stream)) bytes are buffered " *
+                      "but $(typeof(buf)) requires at least $(ioelsize(buf)) " *
+                      "bytes."
+                break
+            end
         end
-        @db return 0
-    finally
-        unlock(stream)
+        @db return UInt(0)
     end
 end
 ```
@@ -853,7 +1343,7 @@ end
 # Buffer Interface Traits
 
 
-```{.julia .numberLines .lineAnchors startFrom="818"}
+```{.julia .numberLines .lineAnchors startFrom="1288"}
 abstract type BufferInterface end
 struct UsingIndex <: BufferInterface end
 struct UsingPtr <: BufferInterface end
@@ -861,13 +1351,13 @@ struct IsItemPtr <: BufferInterface end
 struct IsBytePtr <: BufferInterface end
 struct FromIO <: BufferInterface end
 struct FromStream <: BufferInterface end
-struct FromPop <: BufferInterface end
-struct FromTake <: BufferInterface end
+struct FromString <: BufferInterface end
 struct FromIteration <: BufferInterface end
 struct ToIO <: BufferInterface end
 struct ToStream <: BufferInterface end
 struct ToPush <: BufferInterface end
 struct ToPut <: BufferInterface end
+struct ToRef <: BufferInterface end
 ```
 
 
@@ -881,8 +1371,7 @@ data from a particular buffer type
 |:----------------- |:-------------------------------------------------------- |
 | `FromIO()`        | Take data from the buffer using the `Base.IO` interface. |
 | `FromStream()`    | Take data from the `IOTraits.Stream` interface.          |
-| `FromPop()`       | Use `pop!(buffer)` to read from the buffer.              |
-| `FromTake()`      | Use `take!(buffer)`.                                     |
+| `FromString()`    | Use `codeunits(buffer::AbstractString).                  |
 | `FromIteration()` | Use `for x in buffer...`.                                |
 | `UsingIndex()`    | Use `buffer[i]` (the default).                           |
 | `UsingPtr()`      | Use `unsafe_copyto!(x, pointer(buffer), n)`.             | 
@@ -892,12 +1381,12 @@ data from a particular buffer type
 Default `FromBufferInterface` methods are built-in for common buffer types:
 
 
-```{.julia .numberLines .lineAnchors startFrom="855"}
+```{.julia .numberLines .lineAnchors startFrom="1324"}
 FromBufferInterface(x) = FromBufferInterface(typeof(x))
 FromBufferInterface(::Type) = FromIteration()
 FromBufferInterface(::Type{<:IO}) = FromIO()
 FromBufferInterface(::Type{<:Stream}) = FromStream()
-FromBufferInterface(::Type{<:AbstractChannel}) = FromTake()
+FromBufferInterface(::Type{<:AbstractString}) = FromString()
 FromBufferInterface(::Type{<:Ref}) = UsingPtr()
 FromBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
                                                                  IsItemPtr()
@@ -907,10 +1396,10 @@ FromBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
 Pointers can be used for `AbstractArray` buffers of Bits types.
 
 
-```{.julia .numberLines .lineAnchors startFrom="868"}
+```{.julia .numberLines .lineAnchors startFrom="1337"}
 FromBufferInterface(T::Type{<:AbstractArray}) = ArrayIOInterface(T)
 
-ArrayIOInterface(::Type) where T = UsingIndex()
+ArrayIOInterface(::Type) = UsingIndex()
 
 ArrayIOInterface(::Type{<:Array{T}}) where T =
     isbitstype(T) ? UsingPtr() : UsingIndex()
@@ -918,6 +1407,12 @@ ArrayIOInterface(::Type{<:Array{T}}) where T =
 ArrayIOInterface(::Type{<:Base.FastContiguousSubArray{T,<:Any,<:Array{T}}}) where T =
     isbitstype(T) ? UsingPtr() : UsingIndex()
 ```
+
+
+FIXME[^FIXME1347]
+
+[^FIXME1347]: ⚠️  hook in an interface to `writev()` here ?
+
 
 
 The `ToBufferInterface` trait defines what interface is used to store data
@@ -932,6 +1427,7 @@ in a particular type of buffer
 | `ToStream`     | Write data using the `IOTraits.Stream` interface.           |
 | `ToPush`       | Use `push!(buffer, data)`.                                  |
 | `ToPut`        | Use `put!(buffer, data)`.                                   |
+| `ToRef`        | Use `buffer[] = data`.                                      |
 | `UsingIndex`   | Use `buffer[i] = data (the default)`.                       |
 | `UsingPtr`     | Use `unsafe_copyto!(pointer(buffer), x, n)`.                |
 | `IsItemPtr`    | Use `unsafe_copyto!(buffer, x, n)`.                         |
@@ -941,9 +1437,13 @@ Default `ToBufferInterface` methods are built-in for common buffer types.
 
 
 
-```{.julia .numberLines .lineAnchors startFrom="901"}
+```{.julia .numberLines .lineAnchors startFrom="1372"}
 ToBufferInterface(x) = ToBufferInterface(typeof(x))
 ToBufferInterface(::Type) = ToPush()
+ToBufferInterface(::Type{<:AbstractArray{<:AbstractArray}}) = ToPush()
+ToBufferInterface(::Type{<:AbstractArray{<:AbstractString}}) = ToPush()
+ToBufferInterface(::Type{<:Ref{<:AbstractArray}}) = ToRef()
+ToBufferInterface(::Type{<:Ref{<:AbstractString}}) = ToRef()
 ToBufferInterface(::Type{<:IO}) = ToIO()
 ToBufferInterface(::Type{<:Stream}) = ToStream()
 ToBufferInterface(::Type{<:AbstractChannel}) = ToPut()
@@ -951,72 +1451,91 @@ ToBufferInterface(::Type{<:Ref}) = UsingPtr()
 ToBufferInterface(T::Type{<:AbstractArray}) = ArrayIOInterface(T)
 ToBufferInterface(::Type{<:Ptr{T}}) where T = sizeof(T) == 1 ? IsBytePtr() :
                                                                IsItemPtr()
+
+buffer_is_indexed(stream, buf) = is_input(stream) ?
+    ToBufferInterface(buf) ∉ (ToPush(), ToIO(), ToStream(), ToPut(), ToRef()) :
+    FromBufferInterface(buf) ∉ (FromIO(), FromStream())
 ```
 
 
 # Total Data Size Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="915"}
-abstract type TotalSize end
-struct UnknownTotalSize <: TotalSize end
-struct InfiniteTotalSize <: TotalSize end
-abstract type KnownTotalSize end
-struct VariableTotalSize <: KnownTotalSize end
-struct FixedTotalSize <: KnownTotalSize end
+```{.julia .numberLines .lineAnchors startFrom="1393"}
+struct TotalSize{T} end
 const AnyTotalSize = TotalSize
+const KnownTotalSize = Union{TotalSize{:Zero},
+                             TotalSize{:Variable},
+                             TotalSize{:Fixed}}
 ```
 
 
 The `TotalSize` trait describes how much data is available from a stream.
 
-`TotalSize(stream)` returns one of:
+`TotalSize(stream)` returns `TotalSize{T}()` where `T` is one of:
 
 --------------------------------------------------------------------------------
 Total Size              Description
 ----------------------- --------------------------------------------------------
-`VariableTotalSize()`   The total amount of data available can be queried
+`:Zero`                 The `length` function always returns zero.
+                        e.g. `S_IFLNK` or fd from [`pidfd_open(2)`][pidfd_open].
+
+`:Variable`             The total amount of data available can be queried
                         using the `length` function. Note: the total size can
                         change. e.g. new lines might be appended to a log file.
 
-`FixedTotalSize()`      The amount of data is known and will not change.
+`:Fixed`                The amount of data is known and will not change.
                         Applicable to block devices.
                         Applicable to some network streams. e.g.
                         a HTTP Message where Content-Length is known.
 
-`InfiniteTotalSize()`   End of file will never be reached. Applicable
+`:Infinite`             End of file will never be reached. Applicable
                         to some device files.
 
-`UnknownTotalSize()`    No known data size limit. But end of file may be
+`:Unknown`              No known data size limit. But end of file may be
                         reached. e.g. if the other end is closed.
 --------------------------------------------------------------------------------
 
+[pidfd_open]: https://man7.org/linux/man-pages/man2/pidfd_open.2.html
 
-```{.julia .numberLines .lineAnchors startFrom="947"}
+
+```{.julia .numberLines .lineAnchors startFrom="1428"}
 TotalSize(x) = TotalSize(typeof(x))
 TotalSize(T::Type) = is_proxy(T) ? TotalSize(unwrap(T)) :
-                                   UnknownTotalSize()
+                                   TotalSize{:Unknown}()
+length_is_known(x) = TotalSize(x) isa KnownTotalSize
 
-abstract type SizeMechanism end
-struct NoSizeMechanism <: SizeMechanism end
-struct SupportsStatSize <: SizeMechanism end
-struct SupportsFIONREAD <: SizeMechanism end
-TotalSizeMechanism(x) = TotalSizeMechanism(typeof(x))
-TotalSizeMechanism(T::Type) = is_proxy(T) ? TotalSizeMechanism(unwrap(T)) :
-                                            NoSizeMechanism()
 
-_length(stream, ::SupportsStatSize) = stat(stream).size
+struct LengthAPI{T} end
+LengthAPI(x) = LengthAPI(typeof(x))
+LengthAPI(T::Type) = is_proxy(T) ? LengthAPI(unwrap(T)) :
+                                   LengthAPI{Missing}()
+
+@db function _length(stream, ::LengthAPI{:FStat})
+    stat(stream).size
+end
+
+
+struct BlockSizeAPI{T} end
+BlockSizeAPI(x) = BlockSizeAPI(typeof(x))
+BlockSizeAPI(T::Type) = is_proxy(T) ? BlockSizeAPI(unwrap(T)) :
+                                      BlockSizeAPI{Missing}()
+
+@db function blocksize(s::Stream)
+    @require isopen(s)
+    s = unwrap(s)
+    _blocksize(s, BlockSizeAPI(s))
+end
+
+function _blocksize end
 ```
 
 
 # Transfer Size Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="965"}
-abstract type TransferSize end
-struct UnlimitedTransferSize <: TransferSize end
-struct LimitedTransferSize <: TransferSize end
-struct FixedTransferSize <: TransferSize end
+```{.julia .numberLines .lineAnchors startFrom="1461"}
+struct TransferSize{T} end
 const AnyTransferSize = TransferSize
 ```
 
@@ -1024,167 +1543,180 @@ const AnyTransferSize = TransferSize
 The `TransferSize` trait describes how much data can be moved in a single
 transfer.
 
-`TransferSize(stream)` returns one of:
+`TransferSize(stream)` returns `TransferSize{T}` where `T` is one of:
 
 --------------------------------------------------------------------------------
 Transfer Size             Description
 ------------------------- ------------------------------------------------------
-`UnlimitedTransferSize()` No known transfer size limit.
+`:Unlimited`              No known transfer size limit.
 
-`LimitedTransferSize()`   The amount of data that can be moved in a single
+`:Limited`                The amount of data that can be moved in a single
                           transfer is limited. e.g. by a device block size or
                           buffer size. The maximum transfer size can queried
                           using the `max_transfer_size` function.
 
-`FixedTransferSize()`     The amount of data moved by a single transfer is
+`:Fixed`                  The amount of data moved by a single transfer is
                           fixed. e.g. `/dev/input/event0` device always
                           transfers `sizeof(input_event)` bytes.
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="992"}
+```{.julia .numberLines .lineAnchors startFrom="1485"}
 TransferSize(s) = TransferSize(typeof(s))
-TransferSize(T::Type) = is_proxy(T) ?  TransferSize(unwrap(T)) :
-                                       UnlimitedTransferSize()
+TransferSize(T::Type) = is_proxy(T) ? TransferSize(unwrap(T)) :
+                                      TransferSize{:Unlimited}()
 
 max_transfer_size(s) = max_transfer_size(s, TransferSize(s), TotalSize(s))
 max_transfer_size(s, ::AnyTransferSize, ::AnyTotalSize) = typemax(UInt)
-max_transfer_size(s, ::UnlimitedTransferSize, ::KnownTotalSize) = length(s)
-max_transfer_size(s, ::LimitedTransferSize, ::AnyTotalSize) = 
-    max_transfer_size(s, TransferSizeMechanism(s))
+max_transfer_size(s, ::TransferSize{:Unlimited}, ::KnownTotalSize) = length(s)
+max_transfer_size(s, ::TransferSize{:Limited}, ::AnyTotalSize) = 
+    max_transfer_size(s, MaxReadAPI(s))
+
+
+struct ReadSizeAPI{T} end
 ```
 
 
-`TransferSizeMechanism(stream)` returns one of:
+`ReadSizeAPI(stream)` returns `ReadSizeAPI{T}` where `T` is one of:
 
-FIXME look at `F_GETPIPE_SZ` and `SO_SNDBUF`
+FIXME look at `F_GETPIPE_SZ` and `SO_RCVBUF`, `SO_SNDBUF`
 
- * `SupportsFIONREAD()` -- The underlying device supports `ioctl(2), FIONREAD`.
- * `SupportsStatSize()` -- The underlying device supports  `fstat(2), st_size`.
+ * `:FIONREAD` -- The underlying device supports `ioctl(2), FIONREAD`.
+ * `:FStat`    -- The underlying device supports  `fstat(2), st_size`.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1012"}
-TransferSizeMechanism(s) = TransferSizeMechanism(typeof(s))
-TransferSizeMechanism(T::Type) = is_proxy(T) ?
-                                 TransferSizeMechanism(unwrap(T)) :
-                                 NoSizeMechanism()
+```{.julia .numberLines .lineAnchors startFrom="1506"}
+ReadSizeAPI(s) = ReadSizeAPI(typeof(s))
+ReadSizeAPI(T::Type) = is_proxy(T) ? ReadSizeAPI(unwrap(T)) :
+                                     ReadSizeAPI{Missing}
+
+struct MaxReadAPI{T} end
+
+MaxReadAPI(s) = MaxReadAPI(typeof(s))
+MaxReadAPI(T::Type) = is_proxy(T) ? MaxReadAPI(unwrap(T)) :
+                                    MaxReadAPI{Missing}
 ```
 
 
 # Data Availability Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="1021"}
-abstract type Availability end
-struct AlwaysAvailable <: Availability end
-struct PartiallyAvailable <: Availability end
-struct UnknownAvailability <: Availability end
+```{.julia .numberLines .lineAnchors startFrom="1519"}
+struct Availability{T} end
+const AnyAvailability = Availability
 ```
 
 
 The `Availability` trait describes when data is available from a stream.
 
-`Availability(stream)` returns one of:
+`Availability(stream)` returns `Availabilty{T}()` where `T` is one of:
 
 --------------------------------------------------------------------------------
 Availability            Description
 ----------------------- --------------------------------------------------------
-`AlwaysAvailable()`     Data is always immediately available.
-                        i.e. `bytesavailable` === `bytes_remaining`.
+`:Always`               Data is always immediately available.
+                        i.e. `bytesavailable` === `bytesremaining`.
                         Applicable to some device files (dev/event, /dev/zero).
                         Applicable to local disk files.
 
-`PartiallyAvailable()`  Some data may be immediately available from a buffer,
-                        but `bytesavailable` can be less than `bytes_remaining`.
+`:Partial`              Some data may be immediately available from a buffer,
+                        but `bytesavailable` can be less than `bytesremaining`.
+                        `bytesavailable` may be 0 (e.g. when a buffer is empty)
+                        even if a subsequent transfer would yeild more data.
 
-`UnknownAvailability()` There is no mechanism for determining data availability.
+`:Unknown`              There is no mechanism for determining data availability.
                         The only way to know how much data is available is to
                         attempt a transfer.
                         i.e. `bytesavailable` is always 0.
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="1049"}
+```{.julia .numberLines .lineAnchors startFrom="1547"}
 Availability(x) = Availability(typeof(x))
 Availability(T::Type) = is_proxy(T) ? Availability(unwrap(T)) :
-                                      UnknownAvailability()
+                                      Availability{:Unknown}()
 
-_bytesavailable(s, ::UnknownAvailability,
-                   ::AnyTransferSize) = 0
+availability_is_unknown(x) = Availability(x) == Availability{:Unknown}()
+availability_is_known(x) = !availability_is_unknown(x)
 
-_bytesavailable(s, ::AlwaysAvailable,
-                   ::UnlimitedTransferSize) = bytes_remaining(s)
+@db function _bytesavailable(s, ::Availability{:Unknown}, ::AnyTransferSize)
+    @db_not_tested
+    missing
+end
 
-_bytesavailable(s, ::AlwaysAvailable,
-                   ::FixedTransferSize) = max_transfer_size(s)
+@db function _bytesavailable(s, ::Availability{:Always}, ::TransferSize{:Unlimited})
+    bytesremaining(s)
+end
+
+@db function _bytesavailable(s, ::Availability{:Always}, ::TransferSize{:Fixed})
+    @db_not_tested
+    max_transfer_size(s)
+end
 
 
-_bytesavailable(s, ::PartiallyAvailable,
-                   ::AnyTransferSize) =
-    _bytesavailable(s, TransferSizeMechanism(s))
+@db function _bytesavailable(s, ::Availability{:Partial}, ::AnyTransferSize)
+    _bytesavailable(s, ReadSizeAPI(s))
+end
+
+
+@db function wait_for_n_bytes(s, n; deadline=Inf)
+    @db_not_tested
+    @require availability_is_known(s)
+    if bytesavailable(s) >= n
+        @db return
+    end
+
+    while time() < deadline
+        pump!(s; deadline)
+        @dblock s begin
+            if bytesavailable(s) >= n
+                @db return
+            end
+            wait(s; deadline)
+        end
+    end
+    nothing
+end
+
+
+wait_for_n_bytes(a...; timeout) =
+    wait_for_n_bytes(a...; deadline = time() + timeout)
 ```
 
 
 # Transfer Function Dispatch
 
 
-    transfer_available(stream, buf, n, start)
+    attempt_transfer(stream, buffer, (stream_i, buffer_i, n))
 
 Transfer at most `n` items between `stream` and `buffer`.
 Return the number of items transferred.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1077"}
-function transfer_available end
+```{.julia .numberLines .lineAnchors startFrom="1606"}
+function attempt_transfer end
 ```
-
-
-## `start` Index Normalisation
-
-If `start` is a Tuple of indexes it is normalised by the method below.
-The `StreamIndexing` trait is used to check that `stream` supports indexing.
-Indexable streams are replaced by a `Tuple` containing `stream` and the
-stream index.
-
-
-```{.julia .numberLines .lineAnchors startFrom="1087"}
-@db function transfer_available(stream, buf, n, start::Tuple)
-    @require StreamIndexing(stream) == IndexableIO() || start[1] == 1
-    @require start >= (1,1)
-    if start[1] != 1
-        stream = (stream, UInt(start[1]))
-    end
-    transfer_available(stream, buf, n, UInt(start[2]))
-end
-```
-
-
-From here on, `start` is always a simple `UInt` index into `buf`.
 
 
 ## Application of the Direction and Buffer Interface Traits
 
-Next, the `IODriection` and `BufferInterface` traits are inserted into the
-argument list.[^InOut]
+Next, the `BufferInterface` trait is inserted into the argument list.[^InOut]
 
-[^InOut]: Note that although the `IODirection` is now part of the argument
-list, premature specialisation on direction is avoided. Eventually
-most transfers will end up calling an OS `read` or `write` function.
+[^InOut]: Note that premature specialisation on direction is avoided.
+Eventually most transfers will end up calling an OS `read` or `write` function.
 However, much of the transfer logic is the same irrespective of direction.
 For example, the methods for `UsingPtr` and `UsingIndex` below work for
 both input and output. (Another consideration is supporting interfaces with
-`IODirection` `Exchange`).
+`TransferDirection` `Exchange`).
 
 
-```{.julia .numberLines .lineAnchors startFrom="1113"}
-transfer_available(stream, buf, n, start) = 
-    transfer_available(stream, TransferDirection(stream), buf, n, start)
-
-transfer_available(stream, ::In, buf, n, start) =
-    transfer_available(stream, In(), buf, ToBufferInterface(buf), n, start)
-
-transfer_available(stream, ::Out, buf, n, start) =
-    transfer_available(stream, Out(), buf, FromBufferInterface(buf), n, start)
+```{.julia .numberLines .lineAnchors startFrom="1620"}
+@inline @db function attempt_transfer(stream, buf, indices)
+    buf_api = is_input(stream)  ? ToBufferInterface(buf) :
+              is_output(stream) ? FromBufferInterface(buf) :
+                                  ExchangeBufferInterface(buf)
+    _attempt_transfer(stream, buf, buf_api, indices...)
+end
 ```
 
 
@@ -1193,15 +1725,20 @@ transfer_available(stream, ::Out, buf, n, start) =
 
 The specialised methods for various Buffer Interfaces eventually
 call this this IsBytePtr method, which in turn calls the low level
-`unsafe_transfer` implementation methods.
+`unsafe_transfer!` implementation methods.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1131"}
-@db function transfer_available(stream, direction, buf::Ptr{UInt8}, ::IsBytePtr,
-                                n::UInt, start::UInt)
-    r = unsafe_transfer(stream, direction, buf + (start-1), n)
+```{.julia .numberLines .lineAnchors startFrom="1636"}
+@inline @db 2 function _attempt_transfer(stream,
+                                         buffer::Ptr{UInt8}, ::IsBytePtr,
+                                         stream_i, buffer_i, n::UInt)
+    @ensure ismissing(stream_i) || stream_i > 0
+    if !ismissing(buffer_i)
+        buffer += (buffer_i-1)
+    end
+    r = unsafe_transfer!(stream, buffer, stream_i-1, n)
     @ensure r isa UInt
-    @db return r
+    @db 2 return r
 end
 ```
 
@@ -1212,25 +1749,28 @@ For streams with Unknown Transfer Size the requested transfer is attempted
 but an error is thrown if a partial item is transferred.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1145"}
-@db function transfer_available(stream, direction, buf, ::IsItemPtr,
-                                n::UInt, start::UInt)
+```{.julia .numberLines .lineAnchors startFrom="1655"}
+@db 2 function _attempt_transfer(stream,
+                                 buf, ::IsItemPtr,
+                                 stream_i, buffer_i::UInt, n::UInt)
     sz = ioelsize(buf)
     @assert sz > 1
-    if Availability(stream) != UnknownAvailability()
+    if Availability(stream) != Availability{:Unknown}()
         n::UInt = min(n, bytesavailable(stream) ÷ sz)
-        n > 0 || @db return UInt(0)
+        n > 0 || @db 2 return UInt(0)
     end
 
     buf = Ptr{UInt8}(buf)
-    start = 1 + ((start-1) * sz)
+    buffer_i = 1 + ((buffer_i-1) * sz)
 
-    r = transfer_available(stream, direction, buf, IsBytePtr(), n * sz, start)
+    r = _attempt_transfer(stream, buf, IsBytePtr(),
+                          stream_i, buffer_i, n * sz)
     @ensure r isa UInt
+    stream_i += r
 
     if r % sz != 0
-        @assert Availability(stream) == UnknownAvailability()
-        r += transferall(stream, buf + (start-1) + r, r % sz)
+        @assert Availability(stream) == Availability{:Unknown}()
+        r += transferall!(stream, buf + (buffer_i-1) + r, r % sz; stream_i)
     end
     if r % sz != 0
         throw(IOTraitsError(stream,
@@ -1239,25 +1779,25 @@ but an error is thrown if a partial item is transferred.
               "but $(typeof(buf)) has $sz-byte elements " *
               "($r % $sz = $(r % sz)).\n" *
               "Consider using BufferedInput(stream) to ensure that " *
-              "`Availability(stream) != UnknownAvailability`."))
+              "`Availability(stream) != Availability{:Unknown}`."))
     end
     r ÷= sz
     @ensure r <= n
-    @db return r
+    @db 2 return r
 end
 ```
 
 
-At least one of the following `unsafe_transfer` methods must be implemented
+At least one of the following `unsafe_transfer!` methods must be implemented
 for each type `T <: IOTraits.Stream`:
 
-    unsafe_transfer(s::T, ::IOTraits.In,           buffer::Ptr{UInt8}, n::UInt)
-    unsafe_transfer(s::T, ::IOTraits.Out,          buffer::Ptr{UInt8}, n::UInt)
-    unsafe_transfer(s::T, ::IOTraits.Exchange,     buffer::Ptr{UInt8}, n::UInt)
-    unsafe_transfer(s::T, ::IOTraits.AnyDirection, buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.In,           buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.Out,          buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.Exchange,     buffer::Ptr{UInt8}, n::UInt)
+    unsafe_transfer!(s::T, ::IOTraits.AnyDirection, buffer::Ptr{UInt8}, n::UInt)
 
-`unsafe_transfer` should transfer at most `n` items between `stream` and
-`buffer` and return the number of items transferred (or zero if no items are
+`unsafe_transfer!` should transfer at most `n` bytes between `stream` and
+`buffer` and return the number of items transferred (or zero if no bytes are
 immediately available)[^BLOCKING].
 
 [^BLOCKING]: ⚠️ Note that the `BaseIOStream` methods defined here do
@@ -1267,18 +1807,15 @@ for testing purposes only.  The transfer timeout feature will not
 work properly for `BaseIOStream`.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1198"}
-function unsafe_transfer end
+```{.julia .numberLines .lineAnchors startFrom="1711"}
+function unsafe_transfer! end
 
-
-unsafe_transfer(T::Type) = is_proxy(T) ? ReadFragmentation(unwrap(T)) :
-                                           ReadsBytes()
-
-unsafe_transfer(s::BaseIOStream, ::In, buf::Ptr{UInt8}, n::UInt) =
-    UInt(unsafe_read(s.io, buf, n))
-
-unsafe_transfer(s::BaseIOStream, ::Out, buf::Ptr{UInt8}, n::UInt) =
-    UInt(unsafe_write(s.io, buf, n))
+@inline @db function unsafe_transfer!(s::BaseIOStream, buf::Ptr{UInt8},
+                                      stream_offset::Missing, n::UInt)
+    @db_not_tested
+    is_input(s) ? UInt(unsafe_read(s.io, buf, n)) :
+                  UInt(unsafe_write(s.io, buf, n))
+end
 ```
 
 
@@ -1287,41 +1824,70 @@ unsafe_transfer(s::BaseIOStream, ::Out, buf::Ptr{UInt8}, n::UInt) =
 
 If `n` is missing, use the whole length of the buffer.
 
-After this both `n` and `start` are always `UInt`s.
+After this both `buffer_i` and `n` are always `UInt`s.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1220"}
-@db function transfer_available(stream, direction::AnyDirection,
-                                buf, interface::Union{UsingPtr, UsingIndex},
-                                n::Missing, start::UInt)
+```{.julia .numberLines .lineAnchors startFrom="1728"}
+@inline @db 2 function _attempt_transfer(stream, buf,
+                                         interface::Union{UsingPtr, UsingIndex},
+                                         stream_i, buffer_i, n::Missing)
     @require length(buf) > 0
-    n = length(buf) - (start - 1)
-    transfer_available(stream, direction, buf, interface, UInt(n), start)
+    @require ismissing(buffer_i) || buffer_i < length(buf)
+    n = length(buf)
+    if !ismissing(buffer_i)
+        n -= (buffer_i - 1)
+    end
+    _attempt_transfer(stream, buf, interface, stream_i, buffer_i, UInt(n))
 end
 
-transfer_available(stream, direction, buf, interface, n::Missing, start::UInt) =
-    transfer_available(stream, direction, buf, interface, typemax(UInt), start)
 
-transfer_available(stream, direction, buf, interface, n::Integer, start::Integer) = 
-    transfer_available(stream, direction, buf, interface, UInt(n), UInt(start))
+@inline @db 2 function _attempt_transfer(stream, buffer, interface::FromString,
+                                         stream_i, buffer_i, n::Missing)
+    n = ncodeunits(buffer)
+    if !ismissing(buffer_i)
+        n -= (buffer_i - 1)
+    end
+    _attempt_transfer(stream, buffer, interface, stream_i, buffer_i, UInt(n))
+end
+
+
+@inline @db 2 function _attempt_transfer(stream, buffer, ::FromString,
+                                         stream_i, buffer_i, n)
+    if ismissing(buffer_i)
+        buffer_i = UInt(1)
+    end
+    @require (buffer_i-1) + n <= ncodeunits(buffer)
+    _attempt_transfer(stream, pointer(buffer), IsBytePtr(),
+                      stream_i, buffer_i, n)
+end
+
+
+@inline @db 2 function _attempt_transfer(stream, buf,
+                                         interface,
+                                         stream_i, buffer_i, n::Missing)
+    _attempt_transfer(stream, buf, interface, stream_i, buffer_i, typemax(UInt))
+end
 ```
 
 
 If the buffer is pointer-compatible convert it to a pointer.
-`unsafe_transfer` function.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1239"}
-@db function transfer_available(stream, ::AnyDirection, buf, ::UsingPtr,
-                                n::UInt, start::UInt)
-    checkbounds(buf, (start-1) + n)
-    GC.@preserve buf transfer_available(stream, pointer(buf, start), n, 1)
+```{.julia .numberLines .lineAnchors startFrom="1772"}
+@inline @db 2 function _attempt_transfer(stream, buf, ::UsingPtr,
+                                         stream_i, buffer_i, n::UInt)
+    if ismissing(buffer_i)
+        buffer_i = UInt(1)
+    end
+    checkbounds(buf, (buffer_i-1) + n)
+    GC.@preserve buf attempt_transfer(stream, pointer(buf, buffer_i),
+                                      (stream_i, UInt(1), n))
 end
 
-@db function transfer_available(stream, ::AnyDirection, buf::Ref, ::UsingPtr,
-                                n::UInt, start::UInt)
+@inline @db 2 function _attempt_transfer(stream, buf::Ref, ::UsingPtr,
+                                         stream_i, buffer_i::Missing, n::UInt)
     p = Base.unsafe_convert(Ptr{eltype(buf)}, buf)
-    GC.@preserve buf transfer_available(stream, p, n, 1)
+    GC.@preserve buf attempt_transfer(stream, p, (stream_i, UInt(1), n))
 end
 ```
 
@@ -1329,52 +1895,79 @@ end
 If the buffer is not pointer-compatible, transfer one item at a time.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1255"}
-@db function transfer_available(stream, d::AnyDirection, buf, ::UsingIndex,
-                                n::UInt, start::UInt)
+```{.julia .numberLines .lineAnchors startFrom="1792"}
+@inline @db 2 function _attempt_transfer(stream, buf, ::UsingIndex,
+                                         stream_i, buffer_i, n::UInt)
+    if ismissing(buffer_i)
+        buffer_i = 1
+    end
     T = ioeltype(buf)
+    #sz = ioelsize(buf)
     x = Vector{T}(undef, 1)
     count::UInt = 0
-    for i in eachindex(view(buf, start:(start-1)+n))
-        d == In() || (x[1] = buf[i])
-        n = transfer(stream, x; deadline=0)
-        if n == 0
+    for i in eachindex(view(buf, buffer_i:(buffer_i-1)+n))
+        if is_output(stream)
+            x[1] = buf[i]
+        end
+        r = transfer!(stream, x; deadline=0, stream_i)
+        stream_i += r * sizeof(x[1])
+        if r == 0
+            @db_not_tested
             break
         end
-        d == Out() || (buf[i] = x[1])
-        count += n
-        stream = next_stream_index(stream, T)
+        if is_input(stream)
+            buf[i] = x[1]
+        end
+        count += r
     end
-    @db return count
+    @db 2 return count
 end
-
-next_stream_index((stream, i), T) = (stream, i + sizeof(T))
-next_stream_index(stream::Stream, T) = stream
 ```
 
 
 ## Transfer Specialisations for Iterable Buffers
 
 
-Iterate over `buf` (skip items until `start` index is reached).
+Iterate over `buf` (skip items until `buffer_i` index is reached).
 Transfer each item one at a time.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1283"}
-@db function transfer_available(stream, ::In, buf, ::FromIteration,
-                                n::UInt, start::UInt)
+```{.julia .numberLines .lineAnchors startFrom="1826"}
+@db 2 function _attempt_transfer(stream, buf, ::FromIteration,
+                                 stream_i, buffer_i, n::UInt)
+    @require is_output(stream)
     count::UInt = 0
+    T = ioeltype(buf)
+    if T <: Union{Vector{UInt8}, AbstractString}
+        @require ismissing(stream_i)
+        for x in buf
+            sz = x isa AbstractString ? ncodeunits(x) : length(x)
+            r = transferall!(stream, x, sz)
+            @assert r == sz
+            count += 1
+            if count == n
+                break
+            end
+        end
+        @db 2 return count
+    end
     for x in buf
-        if start > 1
-            start -= 1
+        if !ismissing(buffer_i) && buffer_i > 1
+            buffer_i -= 1
+            @db_not_tested
             continue
         end
-        n = transfer(stream, [x]; deadline=0)
-        if n == 0
+        r = transfer!(stream, [x]; deadline=0, stream_i)
+        stream_i += r * sizeof(x)
+        if r == 0
+            @db_not_tested
             break
         end
-        count += n
-        stream = next_stream_index(stream, ioeltype(buf))
+        @assert r == 1
+        count += r
+        if count == n
+            break
+        end
     end
     return count
 end
@@ -1384,32 +1977,48 @@ end
 ## Transfer Specialisations for Collection Buffers
 
 
-```{.julia .numberLines .lineAnchors startFrom="1305"}
+```{.julia .numberLines .lineAnchors startFrom="1869"}
 for (T, f) in [ToPut => put!,
               ToPush => push!,
-              FromPop => pop!,
-              FromTake => take!]
-    eval(:(transfer_available(s, dir, buf, ::$T, n::UInt, start::UInt) =
-           transfer_available(s, dir, buf,   $f, n, start)))
+              ToRef => setindex!]
+    eval(:(_attempt_transfer(s, buf, ::$T, si, bi, n::UInt) =
+           _attempt_transfer_f(s, buf, $f, si, bi, n)))
 end
 
-@db function transfer_available(stream, d::TransferDirection, buf, f::Function,
-                                n::UInt, start::UInt)
-    @require start == 1
-    T = ioeltype(buf)
-    x = Vector{T}(undef, 1)
+@db 2 function _attempt_transfer_f(stream, buf, f::Function,
+                                   stream_i, buffer_i::Missing, n::UInt)
+    @require is_input(stream)
     count::UInt = 0
+    T = ioeltype(buf)
+    if T <: Union{Vector{UInt8}, String}
+        @require ismissing(stream_i)
+        while count < n
+            if is_input(stream)
+                x = readavailable(stream)
+                if isempty(x)
+                    break
+                end
+                f(buf, T(x))
+            end
+            count += 1
+        end
+        @db 2 return count
+    end
+    x = Vector{T}(undef, 1)
     while count < n
-        d == In() || (x[1] = f(buf))
-        r = transfer(stream, x; deadline=0)
+        r = transfer!(stream, x; stream_i, deadline=0)
+        stream_i += r * sizeof(x[1])
         if r == 0
             break
         end
-        d == Out() || f(buf, x[1])
+        f(buf, x[1])
+        @assert r == 1
         count += r
-        stream = next_stream_index(stream, T)
+        if count == n
+            break
+        end
     end
-    @db return count
+    @db 2 return count
 end
 ```
 
@@ -1417,32 +2026,56 @@ end
 ## Transfer Specialisations for IO Buffers
 
 
-```{.julia .numberLines .lineAnchors startFrom="1336"}
-@db function transfer_available(s1, ::In, s2, ::ToStream,
-                                n::UInt, start::UInt)
+```{.julia .numberLines .lineAnchors startFrom="1916"}
+@db 2 function _attempt_transfer(s1, s2, ::ToStream,
+                                 stream_i, buffer_i, n::UInt)
+    @require is_input(s1)
+    @require is_output(s2)
     buf = Vector{UInt8}(undef, min(n, max(default_buffer_size(s1),
                                           default_buffer_size(s2))))
     count::UInt = 0
     while count < n
-        r = transfer(s1 => buf; deadline=0)
+        r = transfer!(s1 => buf; deadline=0, start=(stream_i => 1))
+        stream_i += r
         if r == 0
             break
         end
-        r2 = transfer(buf => s2, r)
+        r2 = transferall!(buf => s2, r; start=(1 => buffer_i))
+        buffer_i += r2
         @assert r2 == r
         # FIXME should query available capacity and not read more than that?
+        #
+        # FIXME https://man7.org/linux/man-pages/man2/sendfile.2.html
         count += r
     end
     return count
 end
 
-transfer_available(s1, ::Out, s2, ::FromStream, n::UInt, start::UInt) =
-    transfer_available(s2, In(), s1, ToStream(), n, start)
 
-function transfer_available(s, direction, io, ::Union{ToIO,FromIO},
-                            n::UInt, start::UInt)
-    s2 = BaseIOStream{typeof(io), direction == In() ? Out : In}(io)
-    transfer_available(s, direction, s2, n, start)
+@db 2 function _attempt_transfer(s1, s2, ::FromStream,
+                                 stream_i, buffer_i::UInt, n::UInt)
+    @require is_output(s1)
+    @require is_input(s2)
+    @db_not_tested
+    _attempt_transfer(s2, In(), s1, ToStream(), stream_i, buffer_i, n)
+end
+
+
+@db 2 function _attempt_transfer(s, io::T, ::ToIO,
+                                 stream_i, buffer_i::UInt, n::UInt) where T
+    @db_not_tested
+    @require is_input(s)
+    _attempt_transfer(s, BaseIOStream{T, Out}(io), ToStream(),
+                      stream_i, buffer_i, n)
+end
+
+
+@db 2 function _attempt_transfer(s, io::T, ::FromIO,
+                                 stream_i, buffer_i::UInt, n::UInt) where T
+    @db_not_tested
+    @require is_output(s)
+    _attempt_transfer(s, BaseIOStream{T, In}(io), FromStream(),
+                      stream_i, buffer_i, n)
 end
 ```
 
@@ -1450,62 +2083,58 @@ end
 # Data Fragmentation Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="1368"}
-abstract type ReadFragmentation end
-struct ReadsBytes         <: ReadFragmentation end
-struct ReadsLines         <: ReadFragmentation end
-struct ReadsPackets       <: ReadFragmentation end
-struct ReadsRequestedSize <: ReadFragmentation end
-const AnyReadFragmentation = ReadFragmentation 
+```{.julia .numberLines .lineAnchors startFrom="1972"}
+struct ReadUnit{T} end
+const AnyReadUnit = ReadUnit 
 ```
 
 
-The `ReadFragmentation` trait describes what guarantees a stream makes
+The `ReadUnit` trait describes what guarantees a stream makes
 about fragmentation of data returned by the underlying `read(2)` system call.
 
-`ReadFragmentation(stream)` returns one of:
-
+`ReadUnit(stream)` returns `ReadUnit{T}()` where `T` is one of:
+ 
 --------------------------------------------------------------------------------
 Data Fragmentation      Description
 ----------------------- --------------------------------------------------------
-`ReadsBytes()`          No special guarantees about what is returned by
+`:Byte`                 No special guarantees about what is returned by
                         `read(2)`.  This is the default.
 
-`ReadsLines()`          `read(2)` returns exactly one line at a time.
+`:Line`                 `read(2)` returns exactly one line at a time.
                         Does not return partially buffered lines unless an
                         explicit `EOL` or `EOF` control character is received.
                         Applicable to Character devices in canonical mode.
                         See [termios(3)](https://man7.org/linux/man-pages/man3/termios.3.html).
 
-`ReadsPackets()`        `read(2)` returns exactly one packet at a time.
+`:Packet`               `read(2)` returns exactly one packet at a time.
                         Does not return partially buffered packets.
                         Applicable to some sockets and pipes depending on configuration.
                         e.g. See the `O_DIRECT` flag in
                         [pipe(2)](https://man7.org/linux/man-pages/man2/pipe.2.html).
 
-`ReadsRequestedSize()`  `read(2)` returns exactly the number of elements
+`:RequestedSize`        `read(2)` returns exactly the number of elements
                         requested.
                         Applicable to local files and some virtual files
                         (e.g. `/dev/random`, `/dev/null`).
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="1405"}
-ReadFragmentation(s) = ReadFragmentation(typeof(s))
-ReadFragmentation(T::Type) = is_proxy(T) ? ReadFragmentation(unwrap(T)) :
-                                           ReadsBytes()
+```{.julia .numberLines .lineAnchors startFrom="2005"}
+ReadUnit(s) = ReadUnit(typeof(s))
+ReadUnit(T::Type) = is_proxy(T) ? ReadUnit(unwrap(T)) :
+                                  ReadUnit{:Byte}()
 ```
 
 
 # Performance Traits
 
 
-```{.julia .numberLines .lineAnchors startFrom="1412"}
+```{.julia .numberLines .lineAnchors startFrom="2012"}
 abstract type TransferCost end
 struct HighTransferCost <: TransferCost end
 struct LowTransferCost <: TransferCost end
 TransferCost(s) = TransferCost(typeof(s))
-TransferCost(T::Type) = is_proxy(T) ? TransferCost(T) :
+TransferCost(T::Type) = is_proxy(T) ? TransferCost(unwrap(T)) :
                                       HighTransferCost()
 
 
@@ -1521,71 +2150,75 @@ DataRate(T::Type) = is_proxy(T) ? DataRate(unwrap(T)) :
 # Cursor Traits (Mark & Seek)
 
 
-```{.julia .numberLines .lineAnchors startFrom="1430"}
-abstract type CursorSupport end
-abstract type AbstractHasPosition <: CursorSupport end
-struct NoCursors <: CursorSupport end
-struct HasPosition <: AbstractHasPosition end
-struct Seekable  <: AbstractHasPosition end
-struct Markable  <: AbstractHasPosition end
+```{.julia .numberLines .lineAnchors startFrom="2030"}
+struct Cursors{T} end
 ```
 
 
-The `CursorSupport` trait describes mark and seek capabilities.
+The `Cursors` trait describes mark and seek capabilities.
 
-`CursorSupport(stream)` returns one of:
+`Cursors(stream)` returns `Cursors{T}()` where `T` is one of:
 
 --------------------------------------------------------------------------------
 Cursor Support   Description
 ---------------- ---------------------------------------------------------------
-`NoCursors()`
+`Missing`
 
-`Seekable()`     Supports `seek`, `skip`, `seekstart` and `seekend`.
+`:Seekable`      Supports `seek`, `skip`, `seekstart` and `seekend`.
 
-`Markable()`     Is seekable, and also supports
+`:Markable`      Is seekable, and also supports
                  `mark`, `ismarked`, `unmark`, `reset`.
 --------------------------------------------------------------------------------
 
 
-```{.julia .numberLines .lineAnchors startFrom="1453"}
-CursorSupport(s) = CursorSupport(typeof(s))
-CursorSupport(T::Type) = is_proxy(T) ? CursorSupport(unwrap(T)) :
-                                       NoCursors()
-const NotMarkable = Union{NoCursors,Seekable}
+```{.julia .numberLines .lineAnchors startFrom="2048"}
+Cursors(s) = Cursors(typeof(s))
+Cursors(T::Type) = is_proxy(T) ? Cursors(unwrap(T)) :
+                                 Cursors{Missing}()
+
+const HasCursors = Union{Cursors{:Markable}, Cursors{:Seekable}}
+const NotMarkable = Union{Cursors{Missing}, Cursors{:Seekable}}
 
 trait_error(s, trait) =
     throw(ArgumentError("$(typeof(s)) does not implement $trait"))
 
-Base.seek(io::BaseIO, pos) = seek(io.stream, CursorSupport(io.stream), pos)
-_seek(s, ::NoCursors, pos) = trait_error(s, Seekable)
+Base.seek(io::BaseIO, pos) = seek(io.stream, Cursors(io.stream), pos)
+_seek(s, ::Cursors{Missing}, pos) = trait_error(s, :Seekable)
 
-Base.skip(io::BaseIO, offset) = _skip(io.stream, CursorSupport(io.stream), offset)
-_skip(s, ::NoCursors, offset) = trait_error(s, Seekable)
+Base.skip(io::BaseIO, offset) = _skip(io.stream, Cursors(io.stream), offset)
+_skip(s, ::Cursors{Missing}, offset) = trait_error(s, :Seekable)
+```
 
-Base.position(io::BaseIO) = _position(io.stream, CursorSupport(io.stream))
-_position(s, ::NoCursors) = nothing
 
-Base.seekend(io::BaseIO) = _seekend(io.stream, CursorSupport(io.stream))
-_seekend(s, ::NoCursors) = nothing
+FIXME[^FIXME2064]
 
-Base.mark(io::BaseIO) = _mark(io.stream, CursorSupport(io.stream))
-_mark(s, ::NotMarkable) = trait_error(s, Markable)
+[^FIXME2064]: ⚠️ 
 
-Base.unmark(io::BaseIO) = _unmark(io.stream, CursorSupport(io.stream))
-_unmark(s, ::NotMarkable) = trait_error(s, Markable)
+```{.julia .numberLines .lineAnchors startFrom="2065"}
+#Base.position(io::BaseIO) = _position(io.stream, Cursors(io.stream))
+_position(s, ::Cursors{Missing}) = nothing
 
-Base.reset(io::BaseIO) = _reset(io.stream, CursorSupport(io.stream))
-_reset(s, ::NotMarkable) = trait_error(s, Markable)
+Base.seekend(io::BaseIO) = _seekend(io.stream, Cursors(io.stream))
+_seekend(s, ::Cursors{Missing}) = nothing
 
-Base.ismarked(io::BaseIO) = _ismarked(io.stream, CursorSupport(io.stream))
-_ismarked(s, ::NotMarkable) = trait_error(s, Markable)
+Base.mark(io::BaseIO) = _mark(io.stream, Cursors(io.stream))
+_mark(s, ::NotMarkable) = trait_error(s, :Markable)
+
+Base.unmark(io::BaseIO) = _unmark(io.stream, Cursors(io.stream))
+_unmark(s, ::NotMarkable) = trait_error(s, :Markable)
+
+Base.reset(io::BaseIO) = _reset(io.stream, Cursors(io.stream))
+_reset(s, ::NotMarkable) = trait_error(s, :Markable)
+
+Base.ismarked(io::BaseIO) = _ismarked(io.stream, Cursors(io.stream))
+_ismarked(s, ::NotMarkable) = trait_error(s, :Markable)
 ```
 
 
 # Peekable Trait
 
 
-```{.julia .numberLines .lineAnchors startFrom="1489"}
+```{.julia .numberLines .lineAnchors startFrom="2087"}
 abstract type PeekSupport end
 struct Peekable <: PeekSupport end
 struct NotPeekable <: PeekSupport end
@@ -1605,18 +2238,18 @@ _peek(s, ::NotPeekable, T) = trait_error(s, Peekable)
 
 The temporary `TimeoutStream` wrapper adds an immutable transfer deadline to a
 stream. It is used in cases where a stream interface function needs to
-make multiple calls to `transfer` (e.g. `readall`).
+make multiple calls to `transfer!` (e.g. `readall!`).
 
 Note that the `timeout_stream` function simply returns `stream` if
 `timeout` and `deadline` are both `Inf`.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1513"}
+```{.julia .numberLines .lineAnchors startFrom="2111"}
 struct TimeoutStream{T<:Stream} <: Stream
     stream::T
     deadline::Float64
     function TimeoutStream(stream::T; timeout, deadline) where T
-        @require timeout < Inf || deadline < Inf
+        @require (timeout == Inf) ⊻ (deadline == Inf)
         if timeout < Inf
             deadline = time() + timeout
         end
@@ -1631,14 +2264,31 @@ timeout_stream(s; timeout=Inf, deadline=Inf) =
 
 StreamDelegation(::Type{<:TimeoutStream}) = DelegatedToSubStream()
 
-@db function transfer(s::TimeoutStream{T}, buffer,
-                      n::Union{Missing, Integer}; kw...) where T
-    @info "transfer(t::TimeoutStream, ...)"
-    transfer(s.stream, buffer, n; deadline = s.deadline, kw...)
+@db function transfer!(s::TimeoutStream{T}, buffer,
+                       n::Union{Missing, Integer}; deadline=Inf, kw...) where T
+    @db s.deadline - time()
+    transfer!(s.stream, buffer, n; deadline = min(deadline, s.deadline), kw...)
 end
 
-unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
-    unsafe_transfer(s.stream, direction, buffer, n)
+@db function pump!(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+    @db_not_tested
+    deadline = deadline_or_timeout(deadline, timeout)
+    pump!(s.stream; deadline = min(deadline, s.deadline))
+end
+
+@db function Base.wait(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+    @db_not_tested
+    deadline = deadline_or_timeout(deadline, timeout)
+    wait(s.stream; deadline = min(deadline, s.deadline))
+end
+
+@db function Base.eof(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+    deadline = deadline_or_timeout(deadline, timeout)
+    eof(s.stream; deadline = min(deadline, s.deadline))
+end
+
+unsafe_transfer!(s::TimeoutStream, args...) =
+    unsafe_transfer!(s.stream, args...)
 ```
 
 
@@ -1648,34 +2298,124 @@ unsafe_transfer(s::TimeoutStream, direction, buffer, n) =
 How many bytes remain before the end of `stream`?
 
 
-```{.julia .numberLines .lineAnchors startFrom="1548"}
-function bytes_remaning(stream::Stream)
+```{.julia .numberLines .lineAnchors startFrom="2163"}
+@db function bytesremaining(s::Stream)
     @require is_input(s)
-    bytes_remaining(s, TotalSize(io), CursorSupport(io))
+    @require isopen(s)
+    bytesremaining(s, TotalSize(s), Cursors(s))
 end
 
-bytes_remaining(s, ::UnknownTotalSize, ::Any) = nothing
-bytes_reamaining(s, ::InfiniteTotalSize, ::Any) = typemax(UInt)
-bytes_remaining(s, ::KnownTotalSize, ::AbstractHasPosition) =
+bytesremaining(s, ::TotalSize{:Zero}, ::Any) = 0
+bytesremaining(s, ::TotalSize{:Unknown}, ::Any) = missing
+bytesremaining(s, ::TotalSize{:Infinite}, ::Any) = typemax(UInt)
+
+@db function bytesremaining(s, ::KnownTotalSize, ::HasCursors)
     length(s) - position(s)
+end
+
+#TODO: note about dispatch sequencing:
+```
+
+
+#   - first isproxy/unwrap
+#   - then apply traits
+
+
+```{.julia .numberLines .lineAnchors startFrom="2181"}
+#Classes of method:
+```
+
+
+#   - Conveniance interfcae method
+#       - transforms inputs, implements default values
+#       - no side-effects other than calling a core method
+#   - Main interfcae method
+#       - checks preconditions
+#       - does not call other methods of same function
+#       - calls Main imeplemetation method
+#       - checks postcondition
+#   - Main implementation method
+#       - different non-exported name to interface method
+#       - implements trait-based fan-out to other implenentation methods
+#  
+
+
+
+
+
+FIXME[^FIXME2198]
+
+[^FIXME2198]: ⚠️  rename isfinished -> isconnected ???
+
+
+```{.julia .numberLines .lineAnchors startFrom="2200"}
+mutable struct IOEventCounts
+    not_connected_but_not_finished::Int
+    inefficient_byte_io::Int
+    IOEventCounts() = new(0)
+end
+
+function io_counts(stream)
+    key = :IO_TRAITS_EVENT_COUNTS
+    counts_dict = try
+        task_local_storage(key)
+    catch
+        task_local_storage(key, Dict{Stream,IOEventCounts}())
+    end
+    counts = get(counts_dict, stream, nothing)
+    if counts == nothing
+        counts = IOEventCounts()
+        counts_dict[stream] = counts
+    end
+    counts
+end
+
+
+
+global stats 
+
+isconnected(s::Stream) = is_proxy(s) ? isconnected(unwrap(s)) : true
+
+warn_not_connected_but_not_finished(s) = 
+    (io_counts(s).not_connected_but_not_finished += 1) < 2 ||
+    @warn "Stream is disconnected but isfinished($s) returned false because " *
+           "$(bytesavailable(s)) bytes are buffered."
+
+@db function isfinished(s::Stream)
+    @require isopen(s)
+    if is_output(s) || !length_is_known(s)
+        @db return !isconnected(s)
+    end
+    n_bytesavailable = bytesavailable(s)
+    if availability_is_known(s) && n_bytesavailable > 0
+        isconnected(s) || warn_not_connected_but_not_finished(s)
+        @db return false
+    end
+    @db return n_bytesavailable == 0
+end
 ```
 
 
 `readbyte` returns one byte
-(or `nothing` at end of stream or if `timeout` expires).
+(or `nothing` at end of stream or if `deadline` expires).
 
 Specialized based on Transfer Cost.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1566"}
-function readbyte(s::Stream; timeout=Inf)
+```{.julia .numberLines .lineAnchors startFrom="2252"}
+function readbyte(s::Stream; deadline=Inf)
     @require is_input(s)
-    readbyte(s, TransferCost(s); timeout)
+    readbyte(s, TransferCost(s); deadline)
 end
 
-readbyte(s, ::HighTransferCost; kw...) =
-    error(typeof(s), " does not support byte I/O. ",
-          "Consider using the `LazyBufferedInput` wrapper.")
+function readbyte(s, ::HighTransferCost; kw...)
+    count = (io_counts(s).inefficient_byte_io += 1)
+    if (count ∈ 10:100 || (count > 100 && count % 100 == 0))
+        @warn "readbyte(): $(typeof(s)) may be inefficient for byte I/O. ",
+              "Consider using the `LazyBufferedInput` wrapper."
+    end
+    @invoke readbyte(s::Stream, LowTransferCost()::LowTransferCost; kw...)
+end
 ```
 
 
@@ -1685,49 +2425,68 @@ but warn if a special Read Fragmentation trait is available.[^WARNINGS]
 [^WARNINGS]: ⚠️ FIXME: Warnings should be configurable via Preferences.jl
 
 
-```{.julia .numberLines .lineAnchors startFrom="1582"}
-function readbyte(stream, ::LowTransferCost; timeout)
-    if ReadFragmentation(stream) == ReadsLines()
+```{.julia .numberLines .lineAnchors startFrom="2273"}
+function readbyte(stream, ::LowTransferCost; deadline)
+    if ReadUnit(stream) == ReadUnit{:Line}()
         @warn "read(::$(typeof(stream)), UInt8): " *
-              "$(typeof(stream)) implements `IOTraits.ReadsLines`." *
+              "$(typeof(stream)) implements `IOTraits.ReadUnit{:Line}`." *
               "Reading one byte at a time may not be efficient." *
               "Consider using `readline` instead."
+        @db_not_tested
     end
-    x = Ref{UInt8}()
-    n = GC.@preserve x transfer(stream => pointer(x), 1)
+    x = Ref(UInt8(0))
+    n = transfer!(stream => x, 1; deadline)
     n == 1 || return nothing
     return x[]
+end
+
+Base.read(s::Stream) = readall!(s)
+
+Base.read(s::Stream, ::Type{T}; kw...) where T = read(BaseIO(s), T; kw...)
+
+function Base.read(s::Stream, n::Integer; kw...)
+    v = Vector{UInt8}(undef, n)
+    transfer!(s => v)
+    v
 end
 ```
 
 
-`readall` reads until the end of `stream` (or until `timeout` expires)
+`readall!` reads until the end of `stream` (or until `timeout` expires)
 and returns `Vector{UInt8}`.
 
 Specialise on Total Size and Cursor Support.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1603"}
-function readall(s::Stream; timeout=Inf)
+```{.julia .numberLines .lineAnchors startFrom="2304"}
+@db function readall!(s::Stream; timeout=Inf)
     @require is_input(s)
-    readall(s, TotalSize(s), CursorSupport(s); timeout)
+    @require TotalSize(s) != TotalSize{:Infinite}() || timeout < Inf
+    _readall!(s, TotalSize(s), Cursors(s), timeout)
 end
 
 
-function readall(stream, ::UnknownTotalSize, ::NoCursors)
+@db function _readall!(stream, ::TotalSize{:Unknown}, ::Cursors{Missing}, timeout)
     n = default_buffer_size(stream)
     buf = Vector{UInt8}(undef, n)
-    _readbytes!(stream, buf, typemax(UInt))
-    return buf
+    stream = timeout_stream(stream; timeout)
+    n = _readbytes!(stream, buf, typemax(UInt))
+    @assert n <= length(buf)
+    resize!(buf, n)
+    @db return buf
 end
 
 
-function readall(stream, ::KnownTotalSize, ::AbstractHasPosition)
+@db function _readall!(stream, ::KnownTotalSize, ::HasCursors, timeout)
     n = length(stream) - position(stream)
     buf = Vector{UInt8}(undef, n)
-    transferall(stream, buf, n)
-    return buf
+    transferall!(stream, buf, n; timeout)
+    @db return buf
 end
+
+
+readall!(x::Union{Cmd,URI}; kw...) = openread(s->readall!(s; kw...), x)
+readall!(uri::AbstractString; kw...) = readall!(URI(uri); kw...)
 ```
 
 
@@ -1739,30 +2498,88 @@ stopping only if end of file is reached.
 Return the number of items transferred.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1633"}
-@db function transferall(stream, buf, n=length(buf); deadline=Inf, timeout=Inf)
+```{.julia .numberLines .lineAnchors startFrom="2342"}
+@db function transferall!(stream, buf, n=missing; stream_i=missing, buffer_i=missing, deadline=Inf, timeout=Inf)
+    @require deadline == Inf || timeout == Inf
+    @require TotalSize(stream) != TotalSize{:Infinite}() || (deadline + timeout < Inf)
+    # FIXME deadline requirement for infinite stream might make sense for input streams, but makes not sense for outputs
+    # Even for inputs, no deadline is ok if `n` is finine.
+    #
+    # FIXME `n=length(buf)` makes no sense for ToStream, ToPush, ToPut...
+    # FIXME `n=length(buf)` ... or ncodeunits(buf)??
+
+    if ismissing(buffer_i) && buffer_is_indexed(stream, buf)
+        buffer_i = 1
+    end
+    if ismissing(n) && buffer_is_indexed(stream, buf)
+        n = length(buf) # FIXME ??
+    end
+
     stream = timeout_stream(stream; timeout, deadline)
     ntransferred::UInt = 0
-    while ntransferred < n
-        r = transfer(stream, buf, n - ntransferred; start = ntransferred + 1)
-                                            # FIXME ^^^^^ passing start is not allowed for ToPut etc
+    while (ismissing(n) && !isfinished(stream)) || (!ismissing(n) && ntransferred < n)
+        r = transfer!(stream, buf, n - ntransferred; stream_i, buffer_i)
         if r == 0
             break
         end
         ntransferred += r
+        stream_i += r
+        buffer_i += r
     end
     @ensure ntransferred isa UInt
     @db return ntransferred
 end
 
-@db function transferall(t::Pair{<:Stream,<:Any}, a...; kw...)
-    @require TransferDirection(t[1]) == In()
-    transferall(t[1], t[2], a...; kw...)
+openread(uri::URI) = openread(uri.uri)
+openwrite(uri::URI) = openwrite(uri.uri)
+
+@db function openread(f::Function, x)
+    s = openread(x)
+    try
+        f(s)
+    finally
+        close(s)
+    end
 end
 
-@db function transferall(t::Pair{<:Any,<:Stream}, a...; kw...)
-    @require TransferDirection(t[1]) == Out()
-    transferall(t[2], t[1], a...; kw...)
+
+@db function openwrite(f::Function, x)
+    s = openwrite(x)
+    try
+        f(s)
+    finally
+        close(s)
+    end
+end
+
+
+@db function transferall!((a,b)::Pair{<:Any,<:Any}, args...;
+                          start::Pair=(missing => missing), kw...)
+    ai, bi = start
+
+    @require a isa Stream || b isa Stream
+    @require !(a isa Stream) || TransferDirection(a) == In()
+    @require !(b isa Stream) || TransferDirection(b) == Out()
+
+    if a isa Stream
+        transferall!(a, b, args...; stream_i=ai, buffer_i=bi, kw...)
+    else
+        transferall!(b, a, args...; stream_i=bi, buffer_i=ai, kw...)
+    end
+end
+
+
+function transferall!((a,b)::Pair{<:Union{URI,Cmd},<:Any}, args...; kw...)
+    openread(a) do s
+        transferall!(s=>b, args...; kw...)
+    end
+end
+
+
+function transferall!((a,b)::Pair{<:Any,<:Union{URI,Cmd}}, args...; kw...)
+    openwrite(b) do s
+        transferall!(a=>s, args...; kw...)
+    end
 end
 ```
 
@@ -1774,12 +2591,12 @@ end
 It is intended to be used for testing Delegate Streams.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1668"}
+```{.julia .numberLines .lineAnchors startFrom="2433"}
 struct NullIn <: Stream end
 
 TransferDirection(::Type{NullIn}) = In()
 
-transfer(io::NullIn, buf::Ptr{UInt8}, n; kw...) = n
+transfer!(io::NullIn, buf::Ptr{UInt8}, n; kw...) = n
 
 
 #=
@@ -1797,7 +2614,7 @@ each 2nd argument type used in pre-existing methods of `f`
     f(io::IODelegate, a2::T, a...; kw...) = f(unwrap(io), a2, a...; kw...)
 
 
-```{.julia .numberLines .lineAnchors startFrom="1688"}
+```{.julia .numberLines .lineAnchors startFrom="2453"}
 macro delegate_io(f, #= FIXME ---> =# D=FullInDelegate, u=unwrap)
     methods = [
       esc(:(( $f(io::$D              ; k...) = $f($u(io)          ; k...)   ))),
@@ -1838,7 +2655,7 @@ Generic type for Buffered Input Wrappers.
 See concrete types `BufferedInput` and `LazyBufferedInput` below.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1727"}
+```{.julia .numberLines .lineAnchors startFrom="2492"}
 abstract type GenericBufferedInput{T} <: Stream end
 
 function Base.show(io::IO, s::GenericBufferedInput{T}) where T
@@ -1849,14 +2666,18 @@ StreamDelegation(::Type{<:GenericBufferedInput}) = DelegatedToSubStream()
 
 TransferCost(::Type{<:GenericBufferedInput}) = LowTransferCost()
 
-ReadFragmentation(::Type{<:GenericBufferedInput}) = ReadsBytes()
+ReadUnit(::Type{<:GenericBufferedInput}) = ReadUnit{:Byte}()
 
 PeekSupport(::Type{<:GenericBufferedInput}) = Peekable()
 
+Availability(::Type{<:GenericBufferedInput}) = Availability{:Partial}()
+
+StreamIndexing(::Type{<:GenericBufferedInput}) = NotIndexable()
+
 function buffered_in_warning(stream)
-    if ReadFragmentation(stream) != ReadsBytes()
+    if ReadUnit(stream) != ReadUnit{:Byte}()
         @warn "Wrapping $(typeof(stream)) with `BufferedInput` causes " *
-              "the $(ReadFragmentation(stream)) trait to be ignored!"
+              "the $(ReadUnit(stream)) trait to be ignored!"
     end
     if TransferCost(stream) == LowTransferCost()
         @warn "$(typeof(stream)) already has LowTransfterCost. " *
@@ -1864,15 +2685,18 @@ function buffered_in_warning(stream)
     end
 end
 
-Base.close(s::GenericBufferedInput) = ( take!(s.buffer);
-                                        Base.close(s.io) )
+
+function Base.close(s::GenericBufferedInput)
+    take!(s.buffer)
+    Base.close(s.stream)
+end
 ```
 
 
 Size of the internal buffer.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1759"}
+```{.julia .numberLines .lineAnchors startFrom="2531"}
 buffer_size(s::GenericBufferedInput) = s.buffer_size
 ```
 
@@ -1880,7 +2704,7 @@ buffer_size(s::GenericBufferedInput) = s.buffer_size
 Buffer ~1 second of data by default.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1765"}
+```{.julia .numberLines .lineAnchors startFrom="2537"}
 default_buffer_size(stream) = DataRate(stream)
 ```
 
@@ -1888,9 +2712,9 @@ default_buffer_size(stream) = DataRate(stream)
 Transfer bytes from the wrapped IO to the internal buffer.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1771"}
+```{.julia .numberLines .lineAnchors startFrom="2543"}
 @db function refill_internal_buffer(s::GenericBufferedInput,
-                                    n=s.buffer_size; kw...)
+                                    n=s.buffer_size; deadline=Inf)
     # If needed, expand the buffer.
     sbuf = s.buffer
     @assert sbuf.append
@@ -1899,27 +2723,45 @@ Transfer bytes from the wrapped IO to the internal buffer.
 
     # Transfer from the stream to the buffer.
     p = pointer(sbuf.data, sbuf.size+1)
-    n = GC.@preserve sbuf transfer(s.stream, p, n; kw...)
+    n = GC.@preserve sbuf transfer!(s.stream, p, n; deadline)
     sbuf.size += n
     nothing
 end
 
-function readbyte(s::GenericBufferedInput; timeout)
+
+@db function pump!(s::GenericBufferedInput; deadline=Inf)
+    refill_internal_buffer(s; deadline)
+end
+
+
+function readbyte(s::GenericBufferedInput; deadline=Inf)
     sbuf = s.buffer
     if bytesavailable(sbuf) == 0
-        refill_internal_buffer(s; timeout)
+        refill_internal_buffer(s; deadline)
     end
     if bytesavailable(sbuf) != 0
         return read(sbuf, UInt8)
     end
-    @invoke readbyte(s::Stream; timeout)
+    @invoke readbyte(s::Stream; deadline)
 end
 
-function _peek(s::GenericBufferedInput, ::Type{T}; kw...) where T
-    while bytesavailable(s.buffer) < sizeof(T)
-        refill_internal_buffer(s; kw...)
+
+@db function Base.peek(s::GenericBufferedInput, ::Type{T}; timeout=Inf) where T
+    @db_not_tested
+    wait_for_n_bytes(sizeof(T); timeout)
+    if bytesavailable(s) < sizeof(T)
+        @db return nothing
     end
     peek(s.buffer, T)
+end
+
+
+@db function Base.position(s::GenericBufferedInput)
+    position(s.stream) - bytesavailable(s.buffer)
+end
+
+@db function Base.readline(s::GenericBufferedInput; keep=false, timeout=Inf)
+    _readline(s, ReadUnit{:Byte}(); keep, timeout)
 end
 ```
 
@@ -1939,19 +2781,22 @@ The default `buffer_size` depends on `IOTratis.DataRate(stream)`.
 `stream` must not be used directly after the wrapper is created.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1820"}
+```{.julia .numberLines .lineAnchors startFrom="2609"}
 struct BufferedInput{T<:Stream} <: GenericBufferedInput{T}
     stream::T
     buffer::IOBuffer
     buffer_size::Int
     function BufferedInput(stream::T; buffer_size=default_buffer_size(stream)) where T
+        @db_not_tested
         @require TransferDirection(stream) == In()
         buffered_in_warning(stream)
         new{T}(stream, PipeBuffer(), buffer_size)
     end
 end
 
-TransferSize(::Type{BufferedInput{T}}) where T = LimitedTransferSize()
+TransferSize(::Type{BufferedInput{T}}) where T = TransferSize{:Limited}()
+
+Cursors(::Type{<:BufferedInput}) = Cursors{Missing}()
 
 max_transfer_size(s::BufferedInput) = s.buffer_size
 ```
@@ -1965,39 +2810,42 @@ enough bytes. However, calling it here ensures that the enclosing retry
 loop will eventually get the data it needs.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1844"}
-@db function transfer_available(s::BufferedInput, direction,
-                                buf, interface::IsItemPtr,
-                                n::UInt, start::UInt)
+```{.julia .numberLines .lineAnchors startFrom="2636"}
+@db 2 function _attempt_transfer(s::BufferedInput,
+                                 buf, interface::IsItemPtr,
+                                 stream_i, buffer_i::UInt, n::UInt)
     @assert ioelsize(buf) > 1
     @assert ioelsize(buf) < s.buffer_size
+    @db_not_tested
 
     if bytesavailable(s) < ioelsize(buf)
-        refill_internal_buffer(s)
+        @db_not_tested
+        refill_internal_buffer(s; deadline=0) # FIXME ?)
     end
 
-    @invoke transfer_available(s::Stream, direction,
-                               buf, interface::IsItemPtr,
-                               n::UInt, start::UInt)
+    @invoke _attempt_transfer(s::Stream,
+                              buf, interface::IsItemPtr,
+                              stream_i, buffer_i::UInt, n::UInt)
 end
 
 
 
 @db function Base.bytesavailable(s::BufferedInput) 
-    n = bytesavailable(s.buffer) 
-    if n == 0
-        n = bytesavailable(s.stream) 
-    end
-    @db return n
+    @db_not_tested
+    @require isopen(s)
+    @db return bytesavailable(s.buffer) 
 end
 
 
 
-@db function unsafe_transfer(s::BufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
+@db function unsafe_transfer!(s::BufferedInput, buf::Ptr{UInt8},
+                              stream_offset::Missing, n::UInt)
 
+    @db_not_tested
     sbuf = s.buffer
     # If there are not enough bytes in `sbuf`, read more from the wrapped stream.
     if bytesavailable(sbuf) < n
+        @db_not_tested
         refill_internal_buffer(s)
     end
 
@@ -2028,7 +2876,7 @@ The default `buffer_size` depends on `IOTratis.DataRate(io)`.
 `stream` must not be used directly after the wrapper is created.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1905"}
+```{.julia .numberLines .lineAnchors startFrom="2700"}
 struct LazyBufferedInput{T<:Stream} <: GenericBufferedInput{T}
     stream::T
     buffer::IOBuffer
@@ -2041,10 +2889,19 @@ struct LazyBufferedInput{T<:Stream} <: GenericBufferedInput{T}
 end
 
 
-Base.bytesavailable(s::LazyBufferedInput) = bytesavailable(s.buffer) + 
-                                            bytesavailable(s.stream);
 
-@db function unsafe_transfer(s::LazyBufferedInput, ::In, buf::Ptr{UInt8}, n::UInt)
+@db function Base.bytesavailable(s::LazyBufferedInput)
+    @require isopen(s)
+    n = bytesavailable(s.buffer)
+    if availability_is_known(s.stream)
+        n += bytesavailable(s.stream)
+    end
+    @db return n
+end
+
+
+@db function unsafe_transfer!(s::LazyBufferedInput, buf::Ptr{UInt8},
+                              stream_offset::Missing, n::UInt)
 
     # First take bytes from the buffer.
     sbuf = s.buffer
@@ -2056,7 +2913,7 @@ Base.bytesavailable(s::LazyBufferedInput) = bytesavailable(s.buffer) +
 
     # Then read from the wrapped IO.
     if n > count
-        count += unsafe_transfer(s.stream, In(), buf + count, n - count)
+        count += unsafe_transfer!(s.stream, buf + count, stream_offset, n - count)
     end
 
     @ensure count <= n
@@ -2068,9 +2925,15 @@ end
 # Base.IO Interface
 
 
-```{.julia .numberLines .lineAnchors startFrom="1943"}
+```{.julia .numberLines .lineAnchors startFrom="2747"}
 Base.isreadable(io::BaseIO) = is_input(io.stream)
 Base.iswritable(io::BaseIO) = is_output(io.stream)
+Base.isopen(io::BaseIO) = isopen(io.stream)
+Base.close(io::BaseIO) = close(io.stream)
+Base.bytesavailable(io::BaseIO) = bytesavailable(io.stream)
+Base.position(io::BaseIO) = position(io.stream)
+Base.eof(io::BaseIO; deadline=Inf, timeout=Inf) =
+    eof(io.stream; deadline, timeout)
 ```
 
 
@@ -2080,17 +2943,48 @@ Base.iswritable(io::BaseIO) = is_output(io.stream)
 `eof` is specialised on Total Size.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1952"}
-function Base.eof(io::BaseIO; timeout=Inf)
-    @require is_input(io.stream)
-    if bytesavailable(io) > 0
-        return false
+```{.julia .numberLines .lineAnchors startFrom="2762"}
+@db function Base.eof(s::Stream; deadline=Inf, timeout=Inf)
+    @require is_input(s)
+    if !isopen(s)
+        @db return true
     end
-    if bytes_remaining(io) == 0
-        return true
+    deadline = deadline_or_timeout(deadline, timeout)
+    _eof(s, Availability(s); deadline)
+end
+
+
+@db function _eof(s, ::Availability{:Unknown}; deadline::Float64)
+    @db_not_tested
+    @dblock s wait(s; deadline)
+    return false
+end
+
+
+@db function _eof(s, ::AnyAvailability; deadline::Float64)
+    if bytesavailable(s) > 0
+        @db return false
     end
-    wait(io.stream; kw...)
-    return bytesavailable(io) == 0
+    @db deadline
+    # VV handled by isfinished ?
+```
+
+
+#    if length_is_known(s) && bytesremaining(s) == 0
+#        @db return true
+#    end
+
+```{.julia .numberLines .lineAnchors startFrom="2788"}
+    while isopen(s) && !isfinished(s) && time() < deadline
+        pump!(s; deadline)
+        @dblock s begin
+            if bytesavailable(s) > 0
+                @db return false
+            end
+            wait(s; deadline)
+        end
+    end
+    @db return true
 end
 ```
 
@@ -2098,24 +2992,30 @@ end
 ## Function `read(io, T)`
 
 
-```{.julia .numberLines .lineAnchors startFrom="1967"}
-function Base.read(io::BaseIO, ::Type{UInt8}; timeout=Inf)
-    x = readbyte(io.stream, timeout)
+```{.julia .numberLines .lineAnchors startFrom="2802"}
+function Base.read(io::BaseIO, ::Type{UInt8}; deadline=Inf)
+    x = readbyte(io.stream; deadline)
     x != nothing || throw(EOFError())
     return x
 end
+
+#Base.read(io::BaseIO, ::Type{T}; timeout) where T =
 ```
+
+
+#    read(io, a...; deadline = time() + timeout)
+
 
 
 Read as String. \
 Wrap with `TimeoutStream` if timeout is requested.
 
 
-```{.julia .numberLines .lineAnchors startFrom="1978"}
-function Base.read(io::BaseIO, ::Type{String}; timeout=Inf)
+```{.julia .numberLines .lineAnchors startFrom="2816"}
+function Base.read(io::BaseIO, ::Type{String}; deadline=Inf)
     @require is_input(io.stream)
-    stream = timeout_stream(io.stream; timeout)
-    String(_read(stream, TotalSize(stream), CursorSupport(stream)))
+    stream = timeout_stream(io.stream; deadline)
+    String(readall!(stream))
 end
 ```
 
@@ -2123,18 +3023,18 @@ end
 ## Function `readbytes!`
 
 
-```{.julia .numberLines .lineAnchors startFrom="1988"}
+```{.julia .numberLines .lineAnchors startFrom="2826"}
 Base.readbytes!(io::BaseIO, buf::Vector{UInt8}, nbytes=length(buf); kw...) =
     readbytes!(io, buf, UInt(nbytes); kw...)
 
-function Base.readbytes!(io::BaseIO, buf::Vector{UInt8}, nbytes::UInt;
+@db function Base.readbytes!(io::BaseIO, buf::Vector{UInt8}, nbytes::UInt;
                          all::Bool=true, timeout=Inf)
     @require is_input(io.stream)
     stream = timeout_stream(io.stream; timeout)
     _readbytes!(stream, buf, nbytes; all)
 end
 
-function _readbytes!(stream, buf, nbytes; all=true)
+@db function _readbytes!(stream, buf, nbytes; all=true)
     lb::Int = length(buf)
     nread = 0
     while nread < nbytes
@@ -2144,14 +3044,14 @@ function _readbytes!(stream, buf, nbytes; all=true)
             resize!(buf, lb)
         end
         @assert lb > nread
-        n = transfer(stream => buf, lb - nread; start = nread + 1)
+        n = transfer!(stream => buf, lb - nread; buffer_i = nread + 1)
         if n == 0 || !all
             break
         end
         nread += n
     end
     @ensure nread <= nbytes
-    return nread
+    @db return nread
 end
 ```
 
@@ -2159,16 +3059,17 @@ end
 ## Function `read(stream)`
 
 
-```{.julia .numberLines .lineAnchors startFrom="2022"}
-Base.read(io; timeout=Inf) = readall(io.stream; timeout)
+```{.julia .numberLines .lineAnchors startFrom="2860"}
+Base.read(io::BaseIO; timeout=Inf) = readall!(io.stream; timeout)
 ```
 
 
 ## Function `read(stream, n)`
 
 
-```{.julia .numberLines .lineAnchors startFrom="2029"}
-function Base.read(stream::BaseIO, n::Integer; timeout=Inf)
+```{.julia .numberLines .lineAnchors startFrom="2867"}
+function Base.read(io::BaseIO, n::Integer; timeout=Inf)
+    @db_not_tested
     @require is_input(io.stream)
     stream = timeout_stream(io.stream; timeout)
     buf = Vector{UInt8}(undef, n)
@@ -2184,7 +3085,7 @@ end
 `unsafe_read` must keep trying until `nbytes` nave been transferred.
 
 
-```{.julia .numberLines .lineAnchors startFrom="2043"}
+```{.julia .numberLines .lineAnchors startFrom="2882"}
 function Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt;
                           timeout=Inf)
     @require is_input(io.stream)
@@ -2192,8 +3093,9 @@ function Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt;
     nread = 0
     @debug "Base.unsafe_read(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)"
     while nread < nbytes
-        n = transfer(stream => (buf + nread), nbytes - nread)
+        n = transfer!(stream => (buf + nread), nbytes - nread)
         if n == 0
+            @db_not_tested
             throw(EOFError())
         end
         nread += n
@@ -2211,25 +3113,31 @@ end
 
 Read immediately available data from a stream.
 
-If `Availability(stream)` is `UnknownAvailability()` the only way to know how
+If `Availability(stream)` is `Availability{:Unknown}()` the only way to know how
 much data is available is to attempt a transfer.
 
 Otherwise, the amount of data immediately available can be queried using the
 `bytesavailable` function.
 
 
-```{.julia .numberLines .lineAnchors startFrom="2075"}
-@db function Base.readavailable(io::BaseIO; timeout=0)
-    @require is_input(io.stream)
-    if Availability(io.stream) == UnknownAvailability()
-        n = default_buffer_size(io.stream)
+```{.julia .numberLines .lineAnchors startFrom="2915"}
+@db function Base.readavailable(s::Stream; timeout=0)
+    @require isopen(s)
+    @require is_input(s)
+    if Availability(s) == Availability{:Unknown}()
+        n = default_buffer_size(s)
     else
-        n = bytesavailable(io.stream)
+        n = bytesavailable(s)
+        if n == 0
+            @db return UInt8[]
+        end
     end
     buf = Vector{UInt8}(undef, n)
-    n = transfer(stream, buf, n; timeout)
+    n = transfer!(s, buf, n; timeout)
     resize!(buf, n)
 end
+
+Base.readavailable(io::BaseIO; timeout=0) = readavailable(io.stream; timeout)
 ```
 
 
@@ -2239,11 +3147,9 @@ end
 `readline` is specialised based on the Read Fragmentation trait.
 
 
-```{.julia .numberLines .lineAnchors startFrom="2094"}
-function Base.readline(io::BaseIO; timeout=Inf, kw...)
-    @require is_input(io.stream)
-    stream = timeout_stream(io.stream; timeout)
-    _readline(stream, ReadFragmentation(stream); kw...)
+```{.julia .numberLines .lineAnchors startFrom="2940"}
+@db function Base.readline(io::BaseIO; keep=false, timeout=Inf)
+    readline(io.stream; keep, timeout)
 end
 ```
 
@@ -2252,13 +3158,15 @@ If there is no special Read Fragmentation method,
 invoke the default `Base.IO` method.
 
 
-```{.julia .numberLines .lineAnchors startFrom="2104"}
-_readline(stream, ::AnyReadFragmentation; kw...) =
-    @invoke Base.readline(BaseIO(stream)::IO; kw...)
+```{.julia .numberLines .lineAnchors startFrom="2948"}
+@db function _readline(stream, ::AnyReadUnit; keep=false, timeout=Inf)
+    stream = timeout_stream(stream; timeout)                ;@db timeout stream
+    @invoke Base.readline(BaseIO(stream)::IO; keep)
+end
 ```
 
 
-If Reads Lines is supported then simply calling `transfer` once will
+If the Read Unit is `:Line` simply calling `transfer` once will
 read one line.
 
 Character or Terminal devices (`S_IFCHR`) are often used in
@@ -2274,22 +3182,24 @@ Note that in canonical mode a line can be terminated by `CEOF` rather than
 shell sends a "bash\$ " prompt without a newline).
 
 
-```{.julia .numberLines .lineAnchors startFrom="2125"}
-function _readline(stream, ::ReadsLines; keep::Bool=false, kw...)
+```{.julia .numberLines .lineAnchors startFrom="2971"}
+@db function _readline(stream, ::ReadUnit{:Line}; keep::Bool=false, timeout=Inf)
 
     v = Base.StringVector(max_line)
-    n = transfer(stream => v; kw...)
+    n = transfer!(stream => v; timeout)
     if n == 0
-        return ""
+        @db_not_tested
+        @db return ""
     end
 
     # Trim end of line characters.
     while !keep && n > 0 && (v[n] == UInt8('\r') ||
                              v[n] == UInt8('\n'))
         n -= 1
+        @db_not_tested
     end
 
-    return String(resize!(v, n))
+    @db return String(resize!(v, n))
 end
 
 const max_line = 1024 # UnixIO.C.MAX_CANON
@@ -2299,8 +3209,9 @@ const max_line = 1024 # UnixIO.C.MAX_CANON
 ## Function `readuntil`
 
 
-```{.julia .numberLines .lineAnchors startFrom="2147"}
+```{.julia .numberLines .lineAnchors startFrom="2995"}
 function Base.readuntil(io::BaseIO, d::AbstractChar; timeout=Inf, kw...)
+    @db_not_tested
     @require is_input(io.stream)
     stream = timeout_stream(io.stream; timeout)
     @invoke Base.readuntil(BaseIO(stream)::IO, d; kw...)
@@ -2308,40 +3219,48 @@ end
 ```
 
 
+## Function `write(stream, x)`
+
+
+```{.julia .numberLines .lineAnchors startFrom="3005"}
+@db function Base.unsafe_write(io::BaseIO, buf::Ptr{UInt8}, nbytes::UInt)
+    @require is_output(io.stream)
+    @require isopen(io.stream)
+    transferall!(io.stream, buf, nbytes)
+end
+
+
+@db function Base.write(io::BaseIO, x::UInt8)
+    @require is_output(io.stream)
+    @require isopen(io.stream)
+    transfer!(x => io.stream)
+end
+```
+
+
 # Exports
 
 
-```{.julia .numberLines .lineAnchors startFrom="2157"}
-export TraitsIO, TransferDirection, transfer, transferall, readall
+```{.julia .numberLines .lineAnchors startFrom="3022"}
+export TraitsIO, TransferDirection, transfer!, transferall!, readall!
 
 export BufferedInput, LazyBufferedInput
 
-export TotalSize,
-       UnknownTotalSize, InfiniteTotalSize, KnownTotalSize, VariableTotalSize,
-       FixedTotalSize
+export TotalSize
 
-export Availability,
-       AlwaysAvailable, PartiallyAvailable, UnknownAvailability
+export Availability
 
-export TransferSize,
-       UnlimitedTransferSize, LimitedTransferSize,
-       FixedTransferSize
+export TransferSize
 
-export TransferSizeMechanism,
-       NoSizeMechanism, SupportsFIONREAD, SupportsStatSize
+export ReadUnit
 
-export ReadFragmentation,
-       ReadsBytes, ReadsLines, ReadsPackets, ReadsRequestedSize
+export TransferMode
 
-export WaitingMechanism,
-       WaitBySleeping, WaitUsingPosixPoll, WaitUsingEPoll, WaitUsingPidFD,
-       WaitUsingKQueue
+export TransferAPI, WaitAPI, LengthAPI, BlockSizeAPI, ReadSizeAPI
 
-export CursorSupport, AbstractHasPosition,
-       NoCursors,
-       HasPosition,
-       Seekable,
-       Markable
+export Cursors
+
+export StreamIndexing, NotIndexable, IndexableIO
 ```
 
 
@@ -2415,7 +3334,7 @@ Issue
 ## Errors
 
 
-```{.julia .numberLines .lineAnchors startFrom="2258"}
+```{.julia .numberLines .lineAnchors startFrom="3111"}
 struct IOTraitsError <: Exception
     stream::Stream
     message::String
