@@ -35,6 +35,9 @@ const io_uring_queue = IOURingQueue(Ref{LibURing.io_uring}(),
 
 waiting_fds(q::IOURingQueue) = @dblock q.dict_lock collect(values(q.dict))
 
+is_registered_with_wait_api(fd, ::WaitAPI{:IOURing}) =
+    fd ∈ waiting_fds(io_uring_queue)
+
 @db function io_uring_queue_init()
 
     LibURing.io_uring_queue_init(10 #= Queue depth =#, io_uring_queue.ring, 0);

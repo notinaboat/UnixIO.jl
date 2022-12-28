@@ -98,6 +98,7 @@ include("ccall.jl")
 include("errors.jl")
 include("debug.jl")
 include("stat.jl")
+include("warnings.jl")
 
 
 @db function __init__()
@@ -113,6 +114,8 @@ include("stat.jl")
     @db 1 "                     4: Log event polling detail."
     @db 1 "                     5: Log local variable state."
     @db 1 "                     6: Extra verbose."
+
+    warning_queue_init()
 
     poll_queue_init()
     if Sys.islinux()
@@ -144,8 +147,8 @@ mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.St
     fd::RawFD
     isclosed::Bool
     nwaiting::Int
-    ready::Threads.Condition
-    closed::Threads.Condition
+    const ready::Threads.Condition
+    const closed::Threads.Condition
     gothup::Bool
     extra::ImmutableDict{Symbol,Any}
 
@@ -166,13 +169,15 @@ mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.St
         if TransferAPI(FD{D,_T,_M}) == nothing
             error("No $_M API found for $_T file descriptor.")
         end
-        new{D,_T,_M}(RawFD(fd),
-                  false,
-                  0,
-                  Threads.Condition(),
-                  Threads.Condition(),
-                  false,
-                  ImmutableDict{Symbol,Any}())
+        fd = new{D,_T,_M}(RawFD(fd),
+                          false,
+                          0,
+                          Threads.Condition(),
+                          Threads.Condition(),
+                          false,
+                          ImmutableDict{Symbol,Any}())
+        warning_queue_push(fd)
+        fd
     end
 end
 

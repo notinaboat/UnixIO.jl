@@ -17,6 +17,9 @@ const epoll_queue = EPollQueue(RawFD(-1),
 
 waiting_fds(q::EPollQueue) = @dblock q.lock collect(values(q.dict))
 
+is_registered_with_wait_api(fd, ::WaitAPI{:EPoll}) =
+    fd ∈ waiting_fds(epoll_queue)
+
 
 @db function epoll_queue_init()
 

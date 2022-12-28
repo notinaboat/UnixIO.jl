@@ -19,14 +19,25 @@ a new FD waiting in `fd_new`.
 """
 struct PollQueue
     fd_new::Channel{FD}
-    fd_del::Channel{FD}
     fd_vector::Vector{FD}
     poll_vector::Vector{C.pollfd}
     wakeup_pipe::Vector{Cint}
 end
 
+waiting_fds(q::PollQueue) = q.fd_vector
+    # FIXME lock ??
+
+is_registered_with_wait_api(fd) = is_registered_with_wait_api(fd, WaitAPI(fd))
+
+is_registered_with_wait_api(fd, ::WaitAPI{Nothing}) = true
+
+is_registered_with_wait_api(fd, ::WaitAPI{:PosixPoll}) =
+    fd ∈ waiting_fds(poll_queue)
+
+
+# FIXME look at https://github.com/JuliaConcurrent/ConcurrentCollections.jl
+
 const poll_queue = PollQueue(Channel{FD}(Inf),
-                             Channel{FD}(Inf),
                              [],
                              [],
                              [])
@@ -66,13 +77,12 @@ end
 IOTraits._wait(fd::FD, ::WaitAPI{:PosixPoll}; deadline=Inf) =
     wait_for_event(poll_queue, fd; deadline)
 
+
 """
 Wait for an event to occur on `fd`.
 """
 @db 2 function wait_for_event(queue, fd::FD; deadline=Inf)
     assert_havelock(fd.ready)
-
-#    @info "wait_for_event" fd
 
     timer = register_timer(deadline) do
         @dblock fd.ready notify(fd.ready, :timeout)
@@ -101,12 +111,7 @@ end
 
 
 @db 4 function unregister_for_events(q::PollQueue, fd)
-    put!(q.fd_del, fd)
-    wakeup_poll(q)
 end
-
-
-waiting_fds(q::PollQueue) = q.fd_vector
 
 const poll_threads = Vector{Int}()
 
@@ -138,6 +143,7 @@ Run `poll_wait()` in a loop.
                     @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
                 if fd.nwaiting <= 0
+                    debug_write("none waiting! $fd\n");
                     @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
                 else
                     @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
@@ -151,7 +157,8 @@ Run `poll_wait()` in a loop.
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
         end
-        GC.safepoint()
+        # FIXME process_warning_queue()
+        # GC.safepoint()
         if Threads.threadid() == 1
             yield()
         end
@@ -164,7 +171,7 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
 
 
 """
-- Update `poll_vector` based on `fd_del` and `fd_new`.
+- Update `poll_vector` based on `fd_new`.
 - Wait for events.
 - Call `f(events, fd)` for each event.
 """
@@ -174,16 +181,6 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
     pollv = q.poll_vector                                         
     timeout_ms = next_timer_deadline_ms(timeout_ms)
     @db 4 " [ poll($timeout_ms ms)..."
-
-    # Remove old entries from fd_vector and poll_vector.
-    while !isempty(q.fd_del)
-        fd = take!(q.fd_del)
-        i = findfirst(isequal(fd), fdv)
-        if i != nothing                                        ;@db 4 "del $fd"
-            deleteat!(pollv, i)
-            deleteat!(fdv, i)
-        end
-    end
 
     # Add new entries to fd_vector and poll_vector.
     while !isempty(q.fd_new)
@@ -197,16 +194,17 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
               gc_safe_poll(pollv, length(pollv), timeout_ms))          ;@db 5 n
                                                                    ;@db 4 pollv
     # Check poll vector for events.
-    indexes_to_delete = Int[]
+    indexes_to_delete = Int[] #FIXME Svector
     for (i, e) in enumerate(pollv)
-        if e.revents != 0
-            if e.fd == q.wakeup_pipe[1]
-                C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 4 "got wakeup!"
-            else
-                push!(indexes_to_delete, i)
-                @assert RawFD(e.fd) == fdv[i].fd
-                f(e.revents, fdv[i])
-            end
+        if e.fd == q.wakeup_pipe[1]
+            C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 4 "got wakeup!"
+        elseif fdv[i].nwaiting == 0
+            push!(indexes_to_delete, i)
+        elseif e.revents != 0
+            push!(indexes_to_delete, i)
+            fd = fdv[i]
+            @assert fd.isclosed || RawFD(e.fd) == fd.fd
+            f(e.revents, fd)
         end
     end
     deleteat!(pollv, indexes_to_delete)           ;@db 6 indexes_to_delete pollv

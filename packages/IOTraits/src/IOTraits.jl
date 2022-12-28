@@ -25,6 +25,11 @@ include("../../../src/macroutils.jl")
 include("idoc.jl")
 
 
+#FIXME
+
+# - Scope of Intents : stream vs call
+#    e.g. blocking, timeout, buffering
+
 #Allocation    | Termination             | Block   | 
 #------------- | ----------------------- | ------- | 
 #New `String`. | Current length of file. | Yes.    | 
@@ -1125,6 +1130,7 @@ Waiting Mechanism     Description
 `:KQueue`             Wait using the BSD `kqueue` interface.
                       Like `epoll` but can also wait for files, processes,
                       signals etc. See [`kqueue(2)`][kqueue]
+                      FIXME https://code.saghul.net/2016/05/libuv-internals-the-osx-select2-trick/
 
 `:PidFD()`            Wait for process termination using the Linux `pidfd`
                       interface. A `pidfd` is a special process monitoring
@@ -1249,6 +1255,8 @@ const delay_sequence =
 end
 
 
+function process_warning_queue end
+
 ## Specialised Waiting Methods
 
 idoc"""
@@ -1266,6 +1274,9 @@ polling mechanism notifies the `ThreadSynchronizer` to wake up the waiting task.
 @db function wait_for_transfer(stream, ::AnyWaitAPI,
                                buf, indices, deadline::Float64)
     @db deadline - time()
+
+#    FIXME process_warning_queue()
+
     @dblock stream begin
         while !isfinished(stream)
             pump!(stream; deadline)
@@ -2216,11 +2227,10 @@ end
 
 function io_counts(stream)
     key = :IO_TRAITS_EVENT_COUNTS
-    counts_dict = try
-        task_local_storage(key)
-    catch
+    if !haskey(task_local_storage(), key)
         task_local_storage(key, Dict{Stream,IOEventCounts}())
     end
+    counts_dict = task_local_storage(key)
     counts = get(counts_dict, stream, nothing)
     if counts == nothing
         counts = IOEventCounts()
@@ -2228,7 +2238,6 @@ function io_counts(stream)
     end
     counts
 end
-
 
 
 global stats 
