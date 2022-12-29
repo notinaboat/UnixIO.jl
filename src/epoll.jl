@@ -5,21 +5,11 @@ See PollQueue above.
 """
 mutable struct EPollQueue
     fd::RawFD
-    dict::Dict{RawFD,FD}
     cvector::Vector{C.epoll_event}
-    lock::Threads.SpinLock
 end
 
 const epoll_queue = EPollQueue(RawFD(-1),
-                               Dict{RawFD,FD}(),
-                               Vector{C.epoll_event}(undef, 10),
-                               Threads.SpinLock())
-
-waiting_fds(q::EPollQueue) = values(q.dict)
-
-is_registered_with_wait_api(fd, ::WaitAPI{:EPoll}) =
-    is_registered_with_queue(epoll_queue)
-
+                               Vector{C.epoll_event}(undef, 10))
 
 @db function epoll_queue_init()
 
@@ -62,23 +52,19 @@ epoll_ctl(fd::FD, op, events=0; kw...) =
 Register `fd` to wake up `epoll_wait(7)` on `event`:
 """
 @db 4 function register_for_events(q::EPollQueue, fd)
-    @dblock q.lock begin
-        if !haskey(q.dict, fd.fd)
-            q.dict[fd.fd] = fd
-            epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd))
-        else
-            @db 2 "Already registered!"
-        end
-    end
+    epoll_ctl(fd, C.EPOLL_CTL_ADD, poll_event_type(fd) | C.EPOLLONESHOT;
+              allow=C.EEXIST)
+    epoll_ctl(fd, C.EPOLL_CTL_MOD, poll_event_type(fd) | C.EPOLLONESHOT;
+              allow=C.EEXIST)
+    #FIXME 
+    nothing
 end
 
 @db 4 function unregister_for_events(q::EPollQueue, fd)
-    @dblock q.lock begin
-        if haskey(q.dict, fd.fd)
-            delete!(q.dict, fd.fd)
-            epoll_ctl(fd, C.EPOLL_CTL_DEL)#; allow=C.ENOENT)
-        end
+    if !fd.isclosed
+        epoll_ctl(fd, C.EPOLL_CTL_DEL; allow=C.ENOENT)
     end
+    nothing
 end
 
 
@@ -87,21 +73,17 @@ Call `epoll_wait(7)` to wait for events.
 Call `f(events, fd)` for each event.
 """
 @db 4 function poll_wait(f::Function, q::EPollQueue, timeout_ms::Int)
-    v = q.cvector                                                 ;@db 6 q.dict
+    v = q.cvector
     n = @cerr(allow=C.EINTR,
               gc_safe_epoll_wait(q.fd, v, length(v), timeout_ms))    ;@db 6 n v
     if n >= 0
         for i in 1:n
             p = pointer(v, i)
-            fd = nothing
-            @dblock q.lock begin
-                fd = get(q.dict, RawFD(unsafe_load(p.data.fd)), nothing) ;@db 6 i fd
-            end
+            fd = get_weak_fd(unsafe_load(p.data.fd))
             if fd == nothing
                 @error "Ignoring epoll_wait() notification v[$i] = $(v[i]) " *
-                       "for unknown FD (already deleted?)." v[i] q.dict
+                       "for unknown FD (already deleted?)." v[i]
             else
-                unregister_for_events(q, fd)
                 f(unsafe_load(p.events), fd)
             end
         end

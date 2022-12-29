@@ -129,14 +129,37 @@ include("warnings.jl")
 
     atexit(kill_all_processes)
 
-    global stdin
-    global stdout
-    global stderr
-    stdin = FD{In}(RawFD(Base.STDIN_NO))
-    stdout = FD{Out}(RawFD(Base.STDOUT_NO))
-    stderr = FD{Out}(RawFD(Base.STDERR_NO))
+    global stdin = FD{In}(RawFD(Base.STDIN_NO))
+    global stdout = FD{Out}(RawFD(Base.STDOUT_NO))
+    global stderr = FD{Out}(RawFD(Base.STDERR_NO))
 end
 
+const MAX_FD = 999
+
+const g_weak_fds = Vector{WeakRef}(undef, MAX_FD+1)
+
+@inline weak_fd_index(fd) = Base.cconvert(Cint, fd) + 1
+
+store_weak_fd(fd) = g_weak_fds[weak_fd_index(fd)] = WeakRef(fd)
+@inline function get_weak_fd(fd)
+    i = weak_fd_index(fd)
+    isassigned(g_weak_fds, i) ? g_weak_fds[i].value : nothing
+end
+
+function fd_is_active(fd)
+    fd = get_weak_fd(fd)
+    fd != nothing && !fd.isclosed
+end
+
+function foreach_waiting_fd(f)
+    for i in 0:MAX_FD
+        fd = get_weak_fd(i)
+        if fd != nothing && !fd.isclosed && (@atomic fd.nwaiting) > 0
+            f(fd)
+        end
+    end
+    nothing
+end
 
 
 # Unix File Descriptor wrapper.
@@ -146,7 +169,7 @@ abstract type FDType end
 mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.Stream
     fd::RawFD
     isclosed::Bool
-    nwaiting::Int
+    @atomic nwaiting::Int
     const ready::Threads.Condition
     const closed::Threads.Condition
     gothup::Bool
@@ -157,6 +180,9 @@ mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.St
     FD{D,T}(fd) where {D,T} = FD{D,T,TransferMode{:Immediate}}(fd)
 
     function FD{D,T,M}(fd) where {D,T,M}
+
+        @require !fd_is_active(fd)
+
         if M != TransferMode{:Blocking}
             fcntl_setfl(fd, C.O_NONBLOCK)
         end
@@ -176,7 +202,7 @@ mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.St
                           Threads.Condition(),
                           false,
                           ImmutableDict{Symbol,Any}())
-        warning_queue_push(fd)
+        store_weak_fd(fd)
         fd
     end
 end

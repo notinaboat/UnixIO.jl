@@ -1,4 +1,5 @@
 using Test
+using Preconditions
 using UnixIO
 using UnixIO.IOTraits
 using UnixIO: dbstring, C

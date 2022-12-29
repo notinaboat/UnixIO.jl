@@ -19,26 +19,26 @@ a new FD waiting in `fd_new`.
 """
 struct PollQueue
     fd_new::Channel{FD}
-    fd_vector::Vector{FD}
     poll_vector::Vector{C.pollfd}
     wakeup_pipe::Vector{Cint}
     lock::Threads.SpinLock
 end
 
-waiting_fds(q::PollQueue) = q.fd_vector
+waiting_fds(q::PollQueue) = (RawFD(x.fd) for x in q.poll_vector)
 
-is_registered_with_queue(q) = @lock q.lock (fd ∈ waiting_fds(q))
+is_registered_with_queue(q, fd) = @lock q.lock (fd.fd ∈ waiting_fds(q))
 
 is_registered_with_wait_api(fd) = is_registered_with_wait_api(fd, WaitAPI(fd))
 
 is_registered_with_wait_api(fd, ::WaitAPI{:PosixPoll}) =
-    is_registered_with_queue(poll_queue)
+    is_registered_with_queue(poll_queue, fd)
+
+is_registered_with_wait_api(fd, ::WaitAPI) = missing
 
 
 # FIXME look at https://github.com/JuliaConcurrent/ConcurrentCollections.jl
 
 const poll_queue = PollQueue(Channel{FD}(Inf),
-                             [],
                              [],
                              [],
                              Threads.SpinLock())
@@ -50,7 +50,6 @@ const poll_queue = PollQueue(Channel{FD}(Inf),
     copy!(poll_queue.wakeup_pipe, wakeup_pipe())
     fd = poll_queue.wakeup_pipe[1]
     push!(poll_queue.poll_vector, C.pollfd(fd, C.POLLIN, 0))
-    push!(poll_queue.fd_vector, FD{In}(fd))
 
     # Global Task to run `poll(2)`.
     Threads.@spawn poll_task(poll_queue)              ;@db "@spawn poll_task()"
@@ -85,33 +84,40 @@ Wait for an event to occur on `fd`.
 @db 2 function wait_for_event(queue, fd::FD; deadline=Inf)
     assert_havelock(fd.ready)
 
-    timer = register_timer(deadline) do
-        @dblock fd.ready notify(fd.ready, :timeout)
-    end
-    fd.nwaiting += 1
-    event = try
+    n = @atomic fd.nwaiting += 1
+    @assert n > 0
+
+    timer = nothing
+    event = nothing
+    try
+        timer = register_timer(deadline) do
+            @dblock fd.ready notify(fd.ready, :timeout)
+        end
         register_for_events(queue, fd)
-        @db 2 "$(fd.nwaiting) waiting for $fd..."
-        wait(fd.ready) # Wait for: `poll_task()`
-    finally
-        close(timer)
-        @assert fd.nwaiting > 0
-        fd.nwaiting -= 1
-        if fd.nwaiting == 0
+        @db 2 "$(@atomic fd.nwaiting) waiting for $fd..."
+        # Wait for: `poll_task()`
+        event = wait(fd.ready) 
+        if event == :timeout
             unregister_for_events(queue, fd)
         end
+    finally
+        close(timer)
+        n = @atomic fd.nwaiting -= 1
+        @assert n >= 0
     end
-    @db 2 return event "Ready: $fd"
+    return event
 end
 
 
 @db 4 function register_for_events(q::PollQueue, fd)
     put!(q.fd_new, fd)
     wakeup_poll(q)                                           ;@db 5 poll_queue
+    nothing
 end
 
 
 @db 4 function unregister_for_events(q::PollQueue, fd)
+    nothing
 end
 
 const poll_threads = Vector{Int}()
@@ -143,7 +149,7 @@ Run `poll_wait()` in a loop.
                     fd.gothup = true
                     @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
-                if fd.nwaiting <= 0
+                if (@atomic fd.nwaiting) <= 0
                     debug_write("none waiting! $fd\n");
                     @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
                 else
@@ -152,11 +158,16 @@ Run `poll_wait()` in a loop.
                 end
             end
         catch err
-            @lock q.lock for fd in waiting_fds(q)
-                @lock fd.ready Base.notify_error(fd.ready, err)
-            end
             exception=(err, catch_backtrace())
             @error "Error in poll_task()" exception
+            try
+                foreach_waiting_fd() do fd
+                    @lock fd.ready Base.notify_error(fd.ready, err)
+                end
+            catch err
+                exception=(err, catch_backtrace())
+                @error "Error in poll_task()" exception
+            end
         end
         # FIXME process_warning_queue()
         # GC.safepoint()
@@ -178,18 +189,18 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
 """
 @db 4 function poll_wait(f::Function, q::PollQueue, timeout_ms::Int)
 
-    fdv = q.fd_vector                                         
     pollv = q.poll_vector                                         
     timeout_ms = next_timer_deadline_ms(timeout_ms)
     @db 4 " [ poll($timeout_ms ms)..."
 
-    # Add new entries to fd_vector and poll_vector.
+    # Add new entries to poll_vector.
     while !isempty(q.fd_new)
         fd = take!(q.fd_new)                                   ;@db 4 "add $fd"
-        @lock q.lock push!(fdv, fd)
-        push!(pollv, C.pollfd(fd, poll_event_type(fd), 0))
+        @lock q.lock push!(pollv, C.pollfd(fd, poll_event_type(fd), 0))
     end
     pollv_length = length(pollv)
+
+    @assert pollv[1].fd == q.wakeup_pipe[1]
 
     # Wait for events
     n = @cerr(allow=C.EINTR,
@@ -204,9 +215,11 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
     # Check poll vector for events.
     keep_i = 1
     for i in 2:pollv_length
-        fd = fdv[i]
-        fd.nwaiting > 0 || continue
         e = pollv[i]
+        fd = get_weak_fd(e.fd)
+        if isnothing(fd) || (@atomic fd.nwaiting) == 0
+            continue
+        end
         if e.revents != 0
             @assert fd.isclosed || RawFD(e.fd) == fd.fd
             f(e.revents, fd)
@@ -215,7 +228,6 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
             keep_i += 1
             if i != keep_i
                 pollv[keep_i] = e
-                fdv[keep_i] = fd
             end
         end
     end
@@ -223,8 +235,7 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
     # Resize the vectors to inclue only the kept items.
     if keep_i < pollv_length
         pollv_length = keep_i
-        resize!(pollv, pollv_length)
-        @lock q.lock resize!(fdv, pollv_length)
+        @lock q.lock resize!(pollv, pollv_length)
     end
 
     # Check for timeouts.
@@ -246,7 +257,7 @@ Base.show(io::IO, fd::C.pollfd) =
 
 
 Base.show(io::IO, q::PollQueue) =
-    dbprint(io, "(", q.fd_vector, ", ", q.poll_vector, ")")
+    dbprint(io, "(", q.poll_vector, ")")
 
 
 

@@ -18,6 +18,9 @@ const URI = IOTraits.URI
 
 """
 
+#FIXME  test for multiple waiting readers on single FD
+#
+
 
 cd(@__DIR__)
 
