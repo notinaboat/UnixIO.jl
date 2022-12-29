@@ -15,10 +15,10 @@ const epoll_queue = EPollQueue(RawFD(-1),
                                Vector{C.epoll_event}(undef, 10),
                                Threads.SpinLock())
 
-waiting_fds(q::EPollQueue) = @dblock q.lock collect(values(q.dict))
+waiting_fds(q::EPollQueue) = values(q.dict)
 
 is_registered_with_wait_api(fd, ::WaitAPI{:EPoll}) =
-    fd ∈ waiting_fds(epoll_queue)
+    is_registered_with_queue(epoll_queue)
 
 
 @db function epoll_queue_init()

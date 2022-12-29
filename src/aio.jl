@@ -55,7 +55,7 @@ function aio_task(q)
             end
 
         catch err
-            for fd in waiting_fds(q)
+            @lock q.lock for fd in waiting_fds(q)
                 @lock fd.ready Base.notify_error(fd.ready, err)
             end
             exception=(err, catch_backtrace())

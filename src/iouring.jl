@@ -33,10 +33,10 @@ const io_uring_queue = IOURingQueue(Ref{LibURing.io_uring}(),
                                     Dict{UInt,FD}(),
                                     Threads.SpinLock())
 
-waiting_fds(q::IOURingQueue) = @dblock q.dict_lock collect(values(q.dict))
+waiting_fds(q::IOURingQueue) = values(q.dict)
 
 is_registered_with_wait_api(fd, ::WaitAPI{:IOURing}) =
-    fd ∈ waiting_fds(io_uring_queue)
+    is_registered_with_queue(io_uring_queue)
 
 @db function io_uring_queue_init()
 

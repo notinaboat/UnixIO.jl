@@ -6,9 +6,12 @@ function warning_queue_init()
     global g_warning_queue = LinkedConcurrentRingQueue{FD}()
 
     # FIXME make this optional
-    @asynclog "UnixIO Warning Queue Task" while true
-        Base.sleep(1)
-        process_warning_queue()
+    @asynclog_loop "UnixIO Warning Queue Task" begin
+        Base.sleep(10)
+        while true
+            Base.sleep(1)
+            process_warning_queue()
+        end
     end
 end
 

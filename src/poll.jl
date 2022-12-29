@@ -22,17 +22,17 @@ struct PollQueue
     fd_vector::Vector{FD}
     poll_vector::Vector{C.pollfd}
     wakeup_pipe::Vector{Cint}
+    lock::Threads.SpinLock
 end
 
 waiting_fds(q::PollQueue) = q.fd_vector
-    # FIXME lock ??
+
+is_registered_with_queue(q) = @lock q.lock (fd ∈ waiting_fds(q))
 
 is_registered_with_wait_api(fd) = is_registered_with_wait_api(fd, WaitAPI(fd))
 
-is_registered_with_wait_api(fd, ::WaitAPI{Nothing}) = true
-
 is_registered_with_wait_api(fd, ::WaitAPI{:PosixPoll}) =
-    fd ∈ waiting_fds(poll_queue)
+    is_registered_with_queue(poll_queue)
 
 
 # FIXME look at https://github.com/JuliaConcurrent/ConcurrentCollections.jl
@@ -40,7 +40,8 @@ is_registered_with_wait_api(fd, ::WaitAPI{:PosixPoll}) =
 const poll_queue = PollQueue(Channel{FD}(Inf),
                              [],
                              [],
-                             [])
+                             [],
+                             Threads.SpinLock())
 
 
 @db function poll_queue_init()
@@ -151,7 +152,7 @@ Run `poll_wait()` in a loop.
                 end
             end
         catch err
-            for fd in waiting_fds(q)
+            @lock q.lock for fd in waiting_fds(q)
                 @lock fd.ready Base.notify_error(fd.ready, err)
             end
             exception=(err, catch_backtrace())
@@ -185,30 +186,46 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
     # Add new entries to fd_vector and poll_vector.
     while !isempty(q.fd_new)
         fd = take!(q.fd_new)                                   ;@db 4 "add $fd"
-        pushfirst!(fdv, fd)
-        pushfirst!(pollv, C.pollfd(fd, poll_event_type(fd), 0))
+        @lock q.lock push!(fdv, fd)
+        push!(pollv, C.pollfd(fd, poll_event_type(fd), 0))
     end
+    pollv_length = length(pollv)
 
     # Wait for events
     n = @cerr(allow=C.EINTR,
-              gc_safe_poll(pollv, length(pollv), timeout_ms))          ;@db 5 n
+              gc_safe_poll(pollv, pollv_length, timeout_ms))           ;@db 5 n
                                                                    ;@db 4 pollv
+    # Process wakeup pipe events.
+    @assert pollv[1].fd == q.wakeup_pipe[1]
+    if pollv[1].revents != 0
+        C.read(q.wakeup_pipe[1], Ref(0), 1)                ;@db 4 "got wakeup!"
+    end
+
     # Check poll vector for events.
-    indexes_to_delete = Int[] #FIXME Svector
-    for (i, e) in enumerate(pollv)
-        if e.fd == q.wakeup_pipe[1]
-            C.read(q.wakeup_pipe[1], Ref(0), 1)        ;@db 4 "got wakeup!"
-        elseif fdv[i].nwaiting == 0
-            push!(indexes_to_delete, i)
-        elseif e.revents != 0
-            push!(indexes_to_delete, i)
-            fd = fdv[i]
+    keep_i = 1
+    for i in 2:pollv_length
+        fd = fdv[i]
+        fd.nwaiting > 0 || continue
+        e = pollv[i]
+        if e.revents != 0
             @assert fd.isclosed || RawFD(e.fd) == fd.fd
             f(e.revents, fd)
+        else
+            # Keep this item if it is still waiting for events.
+            keep_i += 1
+            if i != keep_i
+                pollv[keep_i] = e
+                fdv[keep_i] = fd
+            end
         end
     end
-    deleteat!(pollv, indexes_to_delete)           ;@db 6 indexes_to_delete pollv
-    deleteat!(fdv, indexes_to_delete)
+
+    # Resize the vectors to inclue only the kept items.
+    if keep_i < pollv_length
+        pollv_length = keep_i
+        resize!(pollv, pollv_length)
+        @lock q.lock resize!(fdv, pollv_length)
+    end
 
     # Check for timeouts.
     notify_timers()
