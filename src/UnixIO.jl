@@ -312,6 +312,9 @@ include("WriteFD.jl")
 
 IOTraits.ReadFragmentation(::Type{FD{In,CanonicalMode}}) = ReadsLines()
 
+if Sys.isapple()
+    IOTraits.TransferSizeMechanism(::Type{<:FD{In,Pseudoterminal}}) = NoSizeMechanism()
+end
 IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:Stream}}) = SupportsFIONREAD()
 IOTraits.TotalSize(::Type{<:FD{In,<:File}}) = VariableTotalSize()
 IOTraits.TransferSizeMechanism(::Type{<:FD{In,<:File}}) = SuppoutsStatSize()
@@ -560,8 +563,6 @@ end
 @db function Base.wait(fd::FD{In,Pseudoterminal})
     assert_havelock(fd)
 
-    process = fd.extra[:pt_client]
-
     while true
         timer = register_timer(time() + 1) do
             @dblock fd notify(fd, :poll_isalive) # FIXME SIGCHILD?
@@ -572,9 +573,12 @@ end
                 return event
             end
             #FIXME no need to poll for PidFD?
-            if !isalive(check(process))
-                return nothing
-            end                                              ;@db event process
+            if haskey(fd.extra, :pt_client)
+                process = fd.extra[:pt_client]
+                if !isalive(check(process))
+                    return nothing
+                end                                          ;@db event process
+            end
         finally
             close(timer)
         end

@@ -36,7 +36,8 @@ is still alive and returning `0` if it has terminated.
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
-        if err == C.EAGAIN && !isalive(fd.extra[:pt_client])
+        if err == C.EAGAIN &&
+        (haskey(fd.extra, :pt_client) && !isalive(fd.extra[:pt_client]))
             @db 2 return 0 "Pseudoterminal client process died. -> HUP!"
         end
     end
