@@ -225,8 +225,8 @@ isalive(p::Process) = p.exit_status == nothing &&
 didexit(p::Process) = p.exit_status != nothing
 waskilled(p::Process) = !isstopped(p) && p.signal != nothing
 
-IOTraits.WaitingMechanism(::Type{Process}) = firstvalid(WaitUsingPidFD(),
-                                                        WaitBySleeping())
+IOTraits.WaitingMechanism(::Type{Process}) = IOTraits.firstvalid(WaitUsingPidFD(),
+                                                                 WaitBySleeping())
 
 @db function Base.wait(p::Process; timeout=Inf,
                                    deadline=timeout+time())
@@ -1438,9 +1438,9 @@ const signame = [string(unsafe_string(C.strsignal(n)),
 function Base.show(io::IO, e::ProcessFailedException)
     p = e.p
     print(io,
-          "ProcessFailedException: ", cmd, ", ", "pid ", p.pid,
+          "ProcessFailedException: ", e.cmd, ", ", "pid ", p.pid,
           (waskilled(p) ? (" killed by ", signame[p.signal]) :
-                          (" exit status ", p.exit_code))...)
+                          (" exit status ", p.exit_status))...)
 end
 
 
