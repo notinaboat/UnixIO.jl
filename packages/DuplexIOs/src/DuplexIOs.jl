@@ -89,6 +89,8 @@ end
 @wrap out Base.write
 @wrap out Base.unsafe_write
 
+Base.write(d::DuplexIOs.DuplexIO, a::Array) = Base.write(d.out, a::Array)
+
 
 # Input methods.
 
