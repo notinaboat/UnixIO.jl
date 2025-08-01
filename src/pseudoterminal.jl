@@ -55,8 +55,8 @@ end
 
 
 @db 1 function Base.close(fd::FD{Out,Pseudoterminal})
-    if !fd.isclosed                                           ;@db 1 "-> ^D 🛑"
-        fd.gothup = true
+    if isopen(fd)
+        fd.isconnected = false
         # FIXME tcdrain ?
         if iscanon(fd)
             # First CEOF terminates a possible un-terminated line.
@@ -95,7 +95,8 @@ is still alive and returning `0` if it has terminated.
 """
 @db 2 function raw_transfer(fd::FD{In,Pseudoterminal},
                             ::TransferAPI{:LibC},
-                            ::IOTraits.In, buf, count)
+                            ::IOTraits.In, buf, count,
+                            deadline)
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
@@ -115,24 +116,17 @@ end
 
     process = fd.extra[:pt_client]
 
-    while true
-        timer = register_timer(time() + 1) do
-            @dblock fd.ready notify(fd.ready, :poll_isalive) # FIXME SIGCHILD?
+    while time() < deadline
+        dl = min(deadline, time()+1)
+        event = @invoke IOTraits._wait(fd::FD{In}, wm::T; deadline=dl)
+        if  event != :timeout
+            @db return event
         end
-        try
-            event = @invoke IOTraits._wait(fd::FD{In}, wm::T; deadline)
-            if event != :poll_isalive                                ;@db event
-                @db return event
-            end
-            #FIXME no need to poll for PidFD?
-            @db process
-            @db fd
-            if !isalive(check(process))                      ;@db event process
-                fd.gothup = true # FIXME ?
-                @db return nothing
-            end                                              ;@db event process
-        finally
-            close(timer)
+        #FIXME no need to poll for PidFD?
+        if !isalive(check(process))
+            fd.isconnected = false
+            @db return :client_died
         end
     end
+    @db return :timeout
 end

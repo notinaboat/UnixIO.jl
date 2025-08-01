@@ -41,13 +41,18 @@ IOTraits._wait(fd::FD, ::WaitAPI{:IOURing}; deadline=Inf) =
     wait_for_event(io_uring_queue, fd; deadline)
 
 const IO_URING_POLL_REQUEST = unsigned(1 << 63)
-const IO_URING_TRANSFER_REQUEST = unsigned(1 << 62)
+const IO_URING_OBJREF_REQUEST = unsigned(1 << 62)
+const IO_URING_CANCEL_REQUEST = unsigned(1 << 61)
+const IO_URING_KEY_MASK = ~(IO_URING_POLL_REQUEST |
+                            IO_URING_OBJREF_REQUEST |
+                            IO_URING_CANCEL_REQUEST)
 
-io_uring_poll_key(fd) = unsigned(IO_URING_POLL_REQUEST |
-                                 Base.cconvert(Cint, fd.fd))
-
-io_uring_transfer_key(fd) = unsigned(IO_URING_TRANSFER_REQUEST |
-                                     Base.cconvert(Cint, fd.fd))
+function io_uring_key(key_flag, key_data)
+    p = UInt64(pointer_from_objref(key_data))
+    @assert (p & IO_URING_KEY_MASK) == p
+    unsigned(key_flag | p)
+end
+                           
 
 io_uring_key_fd(key) = unsafe_trunc(Cint, key)
 
@@ -59,7 +64,8 @@ io_uring_key_fd(key) = unsafe_trunc(Cint, key)
 Register `fd` to wake up `io_uring_wait_cqe` on `event`:
 """
 @db 4 function register_for_events(q::IOURingQueue, fd)
-    key = io_uring_poll_key(fd)
+    @fd_state fd FD_IDLE => FD_WAITING
+    key = io_uring_key(IO_URING_POLL_REQUEST, fd)
     @dblock q.ring_lock begin
         sqe = io_uring_get_sqe(q.ring)
         @assert sqe != C_NULL
@@ -74,12 +80,25 @@ end
 
 
 @db 4 function unregister_for_events(q::IOURingQueue, fd)
-    key = io_uring_poll_key(fd)
+    assert_havelock(fd.ready)
+    key = io_uring_key(IO_URING_POLL_REQUEST, fd)
+    io_uring_cancel(q, key)
+    debug_write("IOUring: unregister_for_events($fd) waiting for cancelation...\n")
+    res = wait(fd.ready)
+    debug_write("IOUring: unregister_for_events($fd) done: $res\n")
+    nothing
+end
+
+
+function io_uring_cancel(q::IOURingQueue, key_to_cancel::UInt64)
+    @fd_state fd (FD_TRANSFERING, FD_WAITING) => FD_CANCELING
+    p = key_to_cancel & IO_URING_KEY_MASK
+    request_key = p | IO_URING_CANCEL_REQUEST;
     @dblock q.ring_lock begin
         sqe = io_uring_get_sqe(q.ring)
         @assert sqe != C_NULL
-        io_uring_prep_cancel64(sqe, key, 0)
-        sqe.user_data = 0
+        io_uring_prep_cancel64(sqe, key_to_cancel, 0)
+        sqe.user_data = request_key
         n = io_uring_submit(q.ring)
         @assert n == 1 || n < 0
         n == 1 || systemerror("io_uring_prep_cancel64()", 0 - n)
@@ -97,53 +116,69 @@ end
     res = unsafe_load(cqe.res)
     user_data = unsafe_load(cqe.user_data)
     io_uring_cqe_seen(q.ring, cqe)
-    
-    if user_data == 0 || res == -C.ECANCELED
-        # Ignore cancelation requests and canceled requests
-    elseif res ∈ (-C.ENOENT, -C.EALREADY)
-        @show res, user_data
-        @assert false
-        @db 1 "io_uring_wait_cqe -> $(errname(-res))" res user_data
-    elseif res < 0
-        msg = "io_uring_cqe.res = $res"
-        @db 1 msg res user_data
-        systemerror(msg, 0 - res)
-    else
-        fd = get_weak_fd(io_uring_key_fd(user_data))
-        if fd == nothing
-            @db 1 "⚠️ fd not found" res user_data
-#            @error "Ignoring io_uring_wait_cqe() notification " *
-#                   "for unknown FD (already deleted?)." res user_data
-        elseif user_data & IO_URING_POLL_REQUEST != 0
-            if (@atomic fd.nwaiting) > 0
-                f(res, fd)
-            end
-        elseif user_data & IO_URING_TRANSFER_REQUEST != 0
-            @db 2 "read $(res) -> notify($fd)"
-            @dblock fd.ready notify(fd.ready, res);
-            # Wake: `raw_transfer(fd, ::IOURingTransfer, ...)`
-        else
-            @assert false
-        end
+
+    if (user_data & ~IO_URING_KEY_MASK) ∉ (IO_URING_OBJREF_REQUEST,
+                                           IO_URING_POLL_REQUEST,
+                                           IO_URING_CANCEL_REQUEST)
+        error("IOURing: unrecognised CQE user_data!")
     end
-end
+    p = user_data & IO_URING_KEY_MASK
+    user_obj = unsafe_pointer_to_objref(Ptr{Nothing}(p))
 
+    if res == -C.ECANCELED
+        @fd_state fd FD_CANCELING => FD_CANCELED
+    end
 
-function raw_transfer(fd, ::TransferAPI{:IOURing}, ::Out, buf, count)
-    # FIXME
-    C.write(fd, buf, count)
+    if user_data & IO_URING_OBJREF_REQUEST != 0
+        debug_write("IOUring poll_wait(): objref res = $res $(constant_name(-res; prefix="E")) $user_obj\n")
+        @dblock user_obj notify(user_obj, res);
+    elseif user_data & IO_URING_POLL_REQUEST != 0
+#        debug_write("IOUring poll_wait(): poll request ! $res\n")
+        f(res, user_obj)
+    elseif user_data & IO_URING_CANCEL_REQUEST != 0
+        if res ∈ (0, -C.ENOENT)
+            debug_write("IOUring poll_wait(): canceled! $user_obj\n")
+            #@dblock user_obj notify(user_obj, :canceled)
+        elseif res == -C.EALREADY
+            @fd_state fd FD_CANCELING => FD_WAITING
+            debug_write("IOUring poll_wait(): cancel failed EALREADY ($res) $user_obj\n");
+            #@dblock user_obj notify(user_obj, :not_canceled)
+        else
+            msg = "io_uring_prep_cancel64() -> io_uring_cqe.res = $res"
+            @db 1 msg res user_data
+            systemerror(msg, 0 - res)
+        end
+    else
+        @assert false
+    end
 end
 
 
 @inline @db 1 function raw_transfer(fd, ::TransferAPI{:IOURing},
-                                    dir::AnyDirection, buf, fd_offset, count)
+                                    dir::AnyDirection, buf, fd_offset, count,
+                                    deadline)
     if ismissing(fd_offset)
         fd_offset = unsigned(-1)
     end
 
-#FIXME  test for multiple waiting readers on single FD - io_uring async transfer
+    #FIXME  test for multiple waiting readers on single FD - io_uring async transfer
 
-    @dblock fd.ready begin
+    # FIXME don't share ring between threads ?
+    # https://github.com/axboe/liburing/issues/109#issuecomment-1166378978
+    #
+    @fd_state fd FD_IDLE => FD_TRANSFERING
+
+    res = nothing
+
+    t0 = time()
+
+    GC.@preserve fd @dblock fd.ready try
+
+        key = io_uring_key(IO_URING_OBJREF_REQUEST, fd)
+        
+        timer = register_timer(deadline) do
+            @dblock fd.ready notify(fd.ready, nothing)
+        end
 
         @dblock io_uring_queue.ring_lock begin
             sqe = io_uring_get_sqe(io_uring_queue.ring)
@@ -152,14 +187,41 @@ end
             else
                 io_uring_prep_write(sqe, fd, buf, count, fd_offset);
             end
-            sqe.user_data = io_uring_transfer_key(fd)
+            sqe.user_data = key
             n = io_uring_submit(io_uring_queue.ring)
-            # FIXME don't share ring between threads
-            # https://github.com/axboe/liburing/issues/109#issuecomment-1166378978
             @assert n == 1 || n < 0
             n == 1 || systemerror("io_uring_submit()", 0 - n)
         end
 
-        @db return wait(fd.ready)
+        try 
+            res = wait(fd.ready)
+            if !isnothing(res) && res < 0
+                errno(-res)
+                res = Cint(-1)
+            end
+
+        finally
+            if res == nothing
+                assert_havelock(fd.ready)
+                io_uring_cancel(io_uring_queue, key)
+                debug_write("IOUring: raw_transfer($fd) waiting for cancelation...\n")
+                res = wait(ready)
+                debug_write("IOUring: raw_transfer($fd) " *
+                            "res=$res $(typeof(res)) $(time() -t0)\n")
+                if fd.state == FD_CANCELED
+                    res = Cint(-1)
+                    errno(-C.ECANCELED)
+                end
+#                FIXME test case for cancelation 
+#                @fd_state fd FD_CANCELED => FD_IDLE
+            end
+        end
+
+    finally
+        fd.state = FD_IDLE
     end
+
+    @ensure fd.state == FD_IDLE
+    @ensure res isa Cint
+    @db 1 return res
 end

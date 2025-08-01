@@ -25,6 +25,15 @@ const URI = IOTraits.URI
 cd(@__DIR__)
 
 @testset LoggingTestSet "UnixIO" begin
+#-------------------------------------------------------------------------------
+
+v = Vector{Vector{UInt8}}()
+cmd = `bash -c "echo FOO; sleep 2; echo BAR"`
+n = transferall!(cmd => v; timeout=1)
+@show n, String.(v)
+
+
+#exit(0)
 
 #-------------------------------------------------------------------------------
 

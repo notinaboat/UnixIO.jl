@@ -159,6 +159,7 @@ function parse_headers()
         "<termios.h>",
         "<fcntl.h>",
         "<poll.h>",
+        "<signal.h>",
         (Sys.islinux() ? ("<sys/epoll.h>",) : ())...,
         (Sys.isapple() ? ("<dispatch/dispatch.h>",) : ())...,
         (Sys.isapple() ? ("<sys/disk.h>",) : ())...,
@@ -188,7 +189,7 @@ function parse_headers()
             "general" => Dict{String,Any}(
                 "is_local_header_only" => false,
                 "auto_mutability" => true,
-                "auto_mutability_includelist" => ["termios"],
+                "auto_mutability_includelist" => ["termios", "sigaction"],
                 "auto_mutability_ignorelist" => ["posix_spawnattr_t",
                                                  "__sigset_t"],
                 "library_name" => ""
@@ -329,7 +330,7 @@ using Base: @ccall, @generated,
             Vector,
             signed,
             getproperty,
-            unsafe_store!,
+            unsafe_load, unsafe_store!,
             (&), (-), (+), (*), (<<), (>>), (>), (==), (|), (~)
 
 import Core.Intrinsics.bitcast

@@ -148,19 +148,41 @@ end
 
 function fd_is_active(fd)
     fd = get_weak_fd(fd)
-    fd != nothing && !fd.isclosed
+    fd != nothing && isopen(fd)
 end
 
 function foreach_waiting_fd(f)
     for i in 0:MAX_FD
         fd = get_weak_fd(i)
-        if fd != nothing && !fd.isclosed && (@atomic fd.nwaiting) > 0
+        if fd != nothing && isopen(fd) && fd.state == FD_WAITING
             f(fd)
         end
     end
     nothing
 end
 
+const FD_IDLE        = 0
+const FD_WAITING     = 1 << 0
+const FD_CANCELING   = 1 << 1
+const FD_CANCELED    = 1 << 2
+const FD_TIMEOUT     = 1 << 3
+const FD_READY       = 1 << 4
+const FD_TRANSFERING = 1 << 5
+#const FD_TRANSFERED  = 1 << 6
+const FD_CLOSED      = 1 << 7
+
+macro fd_state(fd, expr)
+    @assert fd isa Symbol
+    @assert expr isa Expr && expr.head == :call && expr.args[1] == :(=>)
+    old_state = expr.args[2]
+    new_state = expr.args[3]
+    esc(:(
+        old_state = @atomicswap $fd.state = $new_state;
+        (old_state ∈ $old_state) ||
+        error("UnixIO $($fd) @fd_state $($old_state) => $($(new_state)) " *
+              "failed! (old_state = $old_state)")
+    ))
+end
 
 # Unix File Descriptor wrapper.
 
@@ -168,11 +190,10 @@ abstract type FDType end
 
 mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.Stream
     fd::RawFD
-    isclosed::Bool
-    @atomic nwaiting::Int
+    isconnected::Bool
+    @atomic state::Int
     const ready::Threads.Condition
     const closed::Threads.Condition
-    gothup::Bool
     extra::ImmutableDict{Symbol,Any}
 
     FD{D}(fd) where D = FD{D,Union{}}(fd)
@@ -196,11 +217,10 @@ mutable struct FD{D<:TransferDirection,T<:FDType,M<:TransferMode} <: IOTraits.St
             error("No $_M API found for $_T file descriptor.")
         end
         fd = new{D,_T,_M}(RawFD(fd),
-                          false,
-                          0,
+                          true,
+                          FD_IDLE,
                           Threads.Condition(),
                           Threads.Condition(),
-                          false,
                           ImmutableDict{Symbol,Any}())
         store_weak_fd(fd)
         fd
@@ -243,7 +263,7 @@ struct Pseudoterminal  <: S_IFCHR end
 struct CanonicalMode   <: S_IFCHR end
 
 @db function  IOTraits.isconnected(fd::FD)
-    !fd.gothup
+    fd.isconnected
 end
 
 function fdtype(fd)
@@ -300,6 +320,7 @@ Base.lock(fd::FD) = lock(fd.ready)
 Base.unlock(fd::FD) = unlock(fd.ready)
 Base.islocked(fd::FD) = islocked(fd.ready)
 Base.assert_havelock(fd::FD) = Base.assert_havelock(fd.ready)
+Base.notify(fd::FD, a...) = notify(fd.ready, a...)
 
 Base.convert(::Type{Cint}, fd::FD) = Base.cconvert(Cint, fd.fd)
 Base.convert(::Type{Cuint}, fd::FD) = Cuint(convert(Cint, fd))
@@ -337,18 +358,18 @@ input_trait_doc = """
 
 # Input Traits
 
-| FD Type         | Read Unit | Availability  | Transfer Size | Total Size | Read Size API | Max Read API |
-| --------------- | --------- | ------------- | ------------- | ---------- | ------------- | ------------ |
-| S_IFDIR         |           |               |               | Variable   |               |              |
-| S_IFLNK         |           |               |               | Zero       |               |              |
-| S_IFREG         | Byte      | Always        | Unlimited     | Variable   | FStat         |              |
-| S_IFBLK         | Byte      | Always        | Unlimited     | Fixed      | BLKGETSIZE    |              |
-| S_IFIFO         | Byte      | Partial       | Limited       |            | FIONREAD      | GETPIPE_SZ   |
-| S_IFSOCK        | Byte      | Partial       | Limited       |            | FIONREAD      | SO_RCVBUF    |
-| S_IFCHR         | Byte      | Partial       | Unlimited     |            | FIONREAD      |              |
-| Pseudoterminal  | Line      | Unknown       | Unlimited     |            |               |              |
-| CanonicalMode   | Line      | Partial       | Unlimited     |            | FIONREAD      |              |
-| PidFD           |           |               |               | Zero       |               |              |
+| FD Type         | Read Unit | Availability  | Cancellable | Transfer Size | Total Size | Read Size API | Max Read API |
+| --------------- | --------- | ------------- | ----------- | ------------- | ---------- | ------------- | ------------ |
+| S_IFDIR         |           |               |             |               | Variable   |               |              |
+| S_IFLNK         |           |               |             |               | Zero       |               |              |
+| S_IFREG         | Byte      | Always        | False       | Unlimited     | Variable   | FStat         |              |
+| S_IFBLK         | Byte      | Always        | False       | Unlimited     | Fixed      | BLKGETSIZE    |              |
+| S_IFIFO         | Byte      | Partial       | True        | Limited       |            | FIONREAD      | GETPIPE_SZ   |
+| S_IFSOCK        | Byte      | Partial       | True        | Limited       |            | FIONREAD      | SO_RCVBUF    |
+| S_IFCHR         | Byte      | Partial       | True        | Unlimited     |            | FIONREAD      |              |
+| Pseudoterminal  | Line      | Unknown       | True        | Unlimited     |            |               |              |
+| CanonicalMode   | Line      | Partial       | True        | Unlimited     |            | FIONREAD      |              |
+| PidFD           |           |               |             |               | Zero       |               |              |
 """
 md_table_foreach_cell(input_trait_doc) do trait, fdtype, x
     trait = replace(trait, " " => "")
@@ -455,7 +476,7 @@ open(args...; kw...) = open(Union{}, args...; kw...)
     fd = FD{D,T,M}(rawfd)
     @ensure isopen(fd)
     finalizer(fd) do fd
-        if !fd.isclosed
+        if isopen(fd)
             C.close(fd)
         end
     end
@@ -524,10 +545,10 @@ include("termio.jl")
 
 
 @db 1 function Base.close(fd::FD)
-    if fd.isclosed
+    old_state = @atomicswap fd.state = FD_CLOSED
+    if old_state == FD_CLOSED
         return
     end
-    fd.isclosed = true
     @dblock fd.ready notify(fd.ready)
     yield()
     shutdown(fd)
@@ -541,7 +562,7 @@ end
 Base.close(io::Tuple{FD{In},FD{Out}}) = close.(io)
 
 
-Base.isopen(fd::FD) = !fd.isclosed
+Base.isopen(fd::FD) = fd.state != FD_CLOSED
 
 
 @db 1 function Base.wait_close(fd::FD; timeout=Inf,
@@ -581,8 +602,9 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
 @inline @db 2 function IOTraits.unsafe_transfer!(fd::FD,
                                                  buf::Ptr{UInt8},
                                                  fd_offset::Union{Missing,UInt},
-                                                 count::UInt)
-    @require !fd.isclosed
+                                                 count::UInt,
+                                                 deadline::Float64)
+    @require isopen(fd)
     @require count > 0
     @require TransferMode(fd) == TransferMode{:Blocking}() ||
              (fcntl_getfl(fd) & C.O_NONBLOCK) != 0
@@ -594,13 +616,14 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
              (fcntl_getfl(fd) & C.O_APPEND) == 0
 
     while true
-        n = @cerr(allow=(C.EAGAIN, C.EINTR),
+        n = @cerr(allow=(C.EAGAIN, C.EINTR, C.ECANCELED),
                   raw_transfer(fd,
                                TransferAPI(fd),
                                TransferDirection(fd),
                                buf,
                                fd_offset,
-                               Csize_t(count)))
+                               Csize_t(count),
+                               deadline))
         if n == -1
             @db 2 n err=errno() errname(err)
             n = 0
@@ -612,13 +635,13 @@ Return number of bytes transferred or `0` on timeout or `C.EAGAIN`.
 end
 
 @inline @db 2 function raw_transfer(fd, ::TransferAPI{:LibC}, ::Out,
-                                    buf, fd_offset, count)
+                                    buf, fd_offset, count, deadline)
     ismissing(fd_offset) ? C.write(fd, buf, count) :
                           C.pwrite(fd, buf, count, fd_offset)
 end
 
 @inline @db 2 function raw_transfer(fd, ::TransferAPI{:LibC}, ::In,
-                                    buf, fd_offset, count)
+                                    buf, fd_offset, count, deadline)
     ismissing(fd_offset) ? C.read(fd, buf, count) :
                           C.pread(fd, buf, count, fd_offset)
 end
@@ -747,11 +770,11 @@ function Base.show(io::IO, fd::FD{D,T}) where {D,T}
     else
         print(io, "FD{→$t}($fdint")
     end
-    fd.isclosed && print(io, "🚫")
-    fd.nwaiting > 0 && print(io, repeat("👀", fd.nwaiting))
+    !isopen(fd) && print(io, "🚫")
+    fd.state == FD_WAITING && print(io, "👀")
     islocked(fd) && print(io, "🔒")
     if D == In
-        fd.gothup && print(io, "☠️ ")
+        fd.isconnected || print(io, "☠️ ")
     end
     print(io, ")")
 end

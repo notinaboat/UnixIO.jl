@@ -1,5 +1,6 @@
 [IOTraits]
 poll_interface = "IOURing"
+#poll_interface = "EPoll"
 
 [Preconditions]
 check_postconditions = true

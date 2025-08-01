@@ -61,7 +61,7 @@ Register `fd` to wake up `epoll_wait(7)` on `event`:
 end
 
 @db 4 function unregister_for_events(q::EPollQueue, fd)
-    if !fd.isclosed
+    if isopen(fd)
         epoll_ctl(fd, C.EPOLL_CTL_DEL; allow=C.ENOENT)
     end
     nothing

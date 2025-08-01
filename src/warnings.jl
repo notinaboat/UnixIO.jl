@@ -30,11 +30,11 @@ end
 
 function check_warnings(fd)
     #@info "check_warnings $fd"
-    if fd.nwaiting > 0
+    if fd.state == FD_WAITING
         ok = is_registered_with_wait_api(fd)
         if !ismissing(ok) && !ok
             @warn "wait(fd) is stuck for: $fd\n" *
-                  "fd.nwaiting is $(fd.nwaiting) but fd is not registered " *
+                  "fd.state is FD_WAITING  but fd is not registered " *
                   "with $(WaitAPI(fd))"
         end
     end

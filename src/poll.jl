@@ -84,32 +84,39 @@ Wait for an event to occur on `fd`.
 @db 2 function wait_for_event(queue, fd::FD; deadline=Inf)
     assert_havelock(fd.ready)
 
-    n = @atomic fd.nwaiting += 1
-    @assert n > 0
-
     timer = nothing
     event = nothing
-    try
+    GC.@preserve fd  try
         timer = register_timer(deadline) do
             @dblock fd.ready notify(fd.ready, :timeout)
         end
         register_for_events(queue, fd)
-        @db 2 "$(@atomic fd.nwaiting) waiting for $fd..."
-        # Wait for: `poll_task()`
-        event = wait(fd.ready) 
+        event = wait(fd.ready) # Wait for: `poll_task()`
         if event == :timeout
+            debug_write("wait_for_event => timeout\n")
             unregister_for_events(queue, fd)
+            if fd.state == FD_WAITING
+                event = wait(fd.read)
+            else
+                @fd_state fd FD_CANCELED => FD_TIMEOUT
+            end
         end
+
     finally
+        if fd.state == FD_WAITING
+            unregister_for_events(queue, fd)
+            @fd_state fd FD_CANCELED => FD_IDLE
+        end
         close(timer)
-        n = @atomic fd.nwaiting -= 1
-        @assert n >= 0
     end
+
+    @ensure fd.state ∈ (FD_IDLE, FD_TIMEOUT, FD_READY)
     return event
 end
 
 
 @db 4 function register_for_events(q::PollQueue, fd)
+    @fd_state fd FD_IDLE => FD_WAITING
     put!(q.fd_new, fd)
     wakeup_poll(q)                                           ;@db 5 poll_queue
     nothing
@@ -117,6 +124,11 @@ end
 
 
 @db 4 function unregister_for_events(q::PollQueue, fd)
+    @fd_state fd FD_WAITING => FD_CANCELING
+    wakeup_poll(q)
+    while fd.state != FD_CANCELED
+        yield()
+    end
     nothing
 end
 
@@ -146,16 +158,12 @@ Run `poll_wait()` in a loop.
         try
             poll_wait(q, timeout_ms) do events, fd
                 if events & (C.POLLHUP | C.POLLNVAL) != 0
-                    fd.gothup = true
+                    fd.isconnected = false
                     @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
-                if (@atomic fd.nwaiting) <= 0
-                    debug_write("none waiting! $fd\n");
-                    @db 1 "$(db_c(events,r"POLL[A-Z]")) -> $fd None Waiting!"
-                else
-                    @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
-                    @dblock fd.ready notify(fd.ready, events); # Wake: `wait_for_event()`
-                end
+                @fd_state fd FD_WAITING => FD_READY
+                @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
+                @dblock fd.ready notify(fd.ready, events); # Wake: `wait_for_event()`
             end
         catch err
             exception=(err, catch_backtrace())
@@ -217,11 +225,12 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
     for i in 2:pollv_length
         e = pollv[i]
         fd = get_weak_fd(e.fd)
-        if isnothing(fd) || (@atomic fd.nwaiting) == 0
-            continue
-        end
-        if e.revents != 0
-            @assert fd.isclosed || RawFD(e.fd) == fd.fd
+        if isnothing(fd) || fd.state == FD_IDLE
+            # Skip
+        elseif fd.state == FD_CANCELING
+            @atomic fd.state = FD_CANCELED
+        elseif e.revents != 0
+            @assert !isopen(fd) || RawFD(e.fd) == fd.fd
             f(e.revents, fd)
         else
             # Keep this item if it is still waiting for events.

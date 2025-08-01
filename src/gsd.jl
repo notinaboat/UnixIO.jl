@@ -73,7 +73,7 @@ end
 gsd_notify(handle) = ccall(:uv_async_send, Cvoid, (Ptr{Cvoid},), handle)
 
 @db 1 function raw_transfer(fd, ::TransferAPI{:GSD}, dir::AnyDirection,  buf,
-                            fd_offset, count)
+                            fd_offset, count, deadline)
 
     if IOTraits.isfinished(fd)
         return 0
@@ -86,18 +86,42 @@ gsd_notify(handle) = ccall(:uv_async_send, Cvoid, (Ptr{Cvoid},), handle)
         fd_offset = -1
     end
 
-    cond = Base.AsyncCondition()
-    GC.@preserve cond begin
+    async = Base.AsyncCondition()
+
+    cancelled = Ref(false)
+    timer = register_timer(deadline) do
+        cancelled[] = true
+        @lock async.cond notify(async.cond, true)
+    end
+
+    GC.@preserve async try
         dispatch_source(dir, fd, buf, count, fd_offset, result, err,
                         gsd_queue.queue,
                         @cfunction(gsd_notify, Cvoid, (Ptr{Cvoid},)),
-                        cond.handle)
+                        async.handle)
         if result[] == 0
-            wait(cond)
+            # Note: AsyncCondition has internal `set` flag that causes `wait()` to
+            # return without waiting if `uv_async_send` is called before `wait()`.
+            wait(async) == false
+            if cancelled[]
+                @error "FIXME GSD transfer not cancelled after timeout"
+                return 0
+
+                FIXME -
+                    maybe revert passing deadline down into raw_transfer
+                    instead, issue a warning that says "deadline won't work"
+                    for TransferMode{:Async} and Cancellable{:false} 
+                    then, in buffer wrapper, handle timeout of buffer refill
+                    - maybe let the read-to-buffer compelte in the background?
+                    - or, maybe detach the buffers and let the read complete
+                      in the background but with no effect on anything.
+            end
         end
 
         errno(err[])
         return result[]
+    finally 
+        close(timer)
     end
     
 

@@ -19,6 +19,20 @@ cd(slowfs_dir) do
     UnixIO.system(`make mount`)
 end
 
+#-------------------------------------------------------------------------------
+#
+UnixIO.system(`ls slowfs_mount`)
+
+in = IOTraits.openread("slowfs_mount/A")
+v = Vector{UInt8}(undef, 10)
+@time n = transfer!(in => v; timeout=0.5)
+close(in)
+in = IOTraits.openread("slowfs_mount/A")
+@time n = transfer!(in => v; timeout=0.5)
+
+#=
+#-------------------------------------------------------------------------------
+
 @testset LoggingTestSet "Slow FS" begin
 
     t0 = nothing
@@ -102,7 +116,7 @@ end #testset
 
 end #testset
 
-
+=#
 cd(slowfs_dir) do
     UnixIO.system(`make umount`)
 end
