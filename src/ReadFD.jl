@@ -76,10 +76,10 @@ Base.bytesavailable(fd::FD, ::NoSizeMechanism) = bytesavailable(fd.buffer)
 end
 
 @db 1 function Base.bytesavailable(fd::FD, ::SupportsFIONREAD)
-    @assert bytesavailable(fd.buffer) == 0
+    n = bytesavailable(fd.buffer)
     x = Ref(Cint(0))
     @cerr C.ioctl(fd, C.FIONREAD, x)
-    @db 1 return x[]
+    @db 1 return n + x[]
 end
 
 

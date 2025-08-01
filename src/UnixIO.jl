@@ -505,7 +505,7 @@ end
 
 function setspeed!(attr::C.termios_m, speed)
     flag = eval(:(C.$(Symbol("B$speed"))))
-    @cerr C.cfsetspeed_m(Ref(attr), flag)
+    @cerr C.cfsetspeed(Ref(attr), flag)
     nothing
 end
 
