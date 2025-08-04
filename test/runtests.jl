@@ -6,6 +6,7 @@ using Preconditions
 using UnixIO.IOTraits
 using UnixIO: C
 
+
 #FIXME look at https://github.com/aviatesk/JET.jl
 
 # FIXME use ReTest.jl
@@ -17,6 +18,7 @@ using UnixIO: C
 
 """
 
+
 @show UnixIO.IOTraits.WaitAPI(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK})
 @show UnixIO.IOTraits.WaitAPI(UnixIO.FD{UnixIO.In, UnixIO.S_IFREG})
 @show UnixIO.IOTraits.TransferAPI(UnixIO.FD{UnixIO.In, UnixIO.S_IFSOCK, TransferMode{:Immediate}})
@@ -24,11 +26,11 @@ using UnixIO: C
 
 cd(@__DIR__)
 
-@testset LoggingTestSet "UnixIO" begin
+@testset "UnixIO" begin
 
 include("abstractio.jl")
 
-@testset LoggingTestSet "Open Type" begin
+@testset "Open Type" begin
 
 let f() = UnixIO.open(UnixIO.FDType, "foobar")
     info, type = code_typed(f, ())[1]
@@ -116,7 +118,6 @@ readbytes!(uio, uv, 100)
 @test isopen(jio) == isopen(uio)
 
 
-#-
 @info "Test system() and read(::Cmd) with large data"
 for _ in 1:1
     mktempdir() do d
@@ -262,7 +263,7 @@ sleep(1)
 
 include("pseudoterminal.jl")
 include("blockdev.jl")
-include("slowfs_tests.jl")
+#include("slowfs_tests.jl")
 
 
 

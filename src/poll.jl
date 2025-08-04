@@ -77,7 +77,6 @@ end
 IOTraits._wait(fd::FD, ::WaitAPI{:PosixPoll}; deadline=Inf) =
     wait_for_event(poll_queue, fd; deadline)
 
-
 """
 Wait for an event to occur on `fd`.
 """
@@ -90,16 +89,16 @@ Wait for an event to occur on `fd`.
         timer = register_timer(deadline) do
             @dblock fd.ready notify(fd.ready, :timeout)
         end
+
         register_for_events(queue, fd)
         event = wait(fd.ready) # Wait for: `poll_task()`
+
         if event == :timeout
-            debug_write("wait_for_event => timeout\n")
+#            debug_write("wait_for_event => timeout\n")
             unregister_for_events(queue, fd)
-            if fd.state == FD_WAITING
-                event = wait(fd.read)
-            else
-                @fd_state fd FD_CANCELED => FD_TIMEOUT
-            end
+            @fd_state fd FD_CANCELED => FD_TIMEOUT
+        else
+            @assert isnothing(event)
         end
 
     finally
@@ -111,24 +110,40 @@ Wait for an event to occur on `fd`.
     end
 
     @ensure fd.state ∈ (FD_IDLE, FD_TIMEOUT, FD_READY)
-    return event
+    @ensure isnothing(event) || event isa Symbol
+    @db 2 return event
 end
 
 
 @db 4 function register_for_events(q::PollQueue, fd)
-    @fd_state fd FD_IDLE => FD_WAITING
+    #FIXME hack...
+    if (@atomic fd.state) == FD_READY
+        sleep(0.1)
+    end
+
+    @fd_state fd (FD_READY, FD_TIMEOUT, FD_IDLE) => FD_WAITING
+    #FIXME @fd_state fd FD_IDLE => FD_WAITING
+    #   In the test reading to a `Channel{NTuple{3,UInt8}}()` from a `Cmd`...
+    #    the transfer is not attempted because not enough bytes are available,
+    #    so the loop waits again. Will this spin at 100% CPU in some cases?
+    #    Issue a warning with a suggestion to use a buffered wrapper.
     put!(q.fd_new, fd)
     wakeup_poll(q)                                           ;@db 5 poll_queue
+    @ensure fd.state ∈ (FD_WAITING, FD_READY)
     nothing
 end
 
 
 @db 4 function unregister_for_events(q::PollQueue, fd)
-    @fd_state fd FD_WAITING => FD_CANCELING
-    wakeup_poll(q)
-    while fd.state != FD_CANCELED
-        yield()
+
+    old_state, ok = @atomicreplace fd.state FD_WAITING => FD_CANCELLING
+    if old_state == FD_READY
+        @fd_state fd FD_READY => FD_CANCELED
+    else
+        wakeup_poll(q)
+        wait(fd.ready)
     end
+    @ensure fd.state == FD_CANCELED
     nothing
 end
 
@@ -161,9 +176,13 @@ Run `poll_wait()` in a loop.
                     fd.isconnected = false
                     @db 1 "$(db_c(events,"POLL")) -> $fd 💥"
                 end
-                @fd_state fd FD_WAITING => FD_READY
+
+                old_state, ok = @atomicreplace fd.state FD_WAITING => FD_READY
+                if old_state == FD_CANCELLING
+                    @atomic fd.state = FD_CANCELED
+                end
                 @db 2 "$(db_c(events,r"POLL[A-Z]")) -> notify($fd)"
-                @dblock fd.ready notify(fd.ready, events); # Wake: `wait_for_event()`
+                @dblock fd.ready notify(fd.ready); # Wake: `wait_for_event()`
             end
         catch err
             exception=(err, catch_backtrace())
@@ -178,7 +197,7 @@ Run `poll_wait()` in a loop.
             end
         end
         # FIXME process_warning_queue()
-        # GC.safepoint()
+        # GC.safepoint() not needed because of `gc_safe_poll()` ?
         if Threads.threadid() == 1
             yield()
         end
@@ -227,8 +246,9 @@ gc_safe_poll(fds, nfds, timeout_ms) = @gc_safe C.poll(fds, nfds, timeout_ms)
         fd = get_weak_fd(e.fd)
         if isnothing(fd) || fd.state == FD_IDLE
             # Skip
-        elseif fd.state == FD_CANCELING
+        elseif fd.state == FD_CANCELLING
             @atomic fd.state = FD_CANCELED
+            @dblock fd.ready notify(fd.ready)
         elseif e.revents != 0
             @assert !isopen(fd) || RawFD(e.fd) == fd.fd
             f(e.revents, fd)

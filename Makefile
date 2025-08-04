@@ -1,7 +1,7 @@
 PACKAGE := UnixIO
 #export JULIA_PKG_OFFLINE = true
 export JULIA_PROJECT = $(CURDIR)
-export JULIA_DEPOT_PATH = $(CURDIR)/../jl_depot
+#export JULIA_DEPOT_PATH = $(CURDIR)/../jl_depot
 export JULIA_NUM_THREADS = 8
 #export JULIA_DEBUG=loading
 export JULIA_UNIX_IO_DEBUG_LEVEL=0
@@ -40,7 +40,7 @@ packages/IOTraits/README.md: packages/IOTraits/src/IOTraits.jl.md
 #	$(JL) -e "using IOTraits; IOTraits.dump_info()" >> $@.tmp
 	mv $@.tmp $@
 
-JL := julia18
+JL := julia
 
 .PHONY: README.md
 README.md:
@@ -51,21 +51,23 @@ README.md:
 #	$(JL) -e "using Documenter, $(PACKAGE); \
 #	          makedocs(sitename=\"$(PACKAGE)\")"
 
+JL_TEST := $(JL) --project=$(JULIA_PROJECT)/test
+
 .PHONY: test
 test:
-	$(JL) test/runtests.jl
+	$(JL_TEST) test/runtests.jl
 
 testslowfs:
-	$(JL) test/slowfs_tests.jl
+	$(JL_TEST) test/slowfs_tests.jl
 
 testblockdev:
-	$(JL) test/blockdev.jl
+	$(JL_TEST) test/blockdev.jl
 
 testabs:
-	$(JL) test/abstractio.jl
+	$(JL_TEST) test/abstractio.jl
 
 testpt:
-	$(JL) test/pseudoterminal.jl
+	$(JL_TEST) test/pseudoterminal.jl
 
 jl:
 	$(JL) -i -e "using $(PACKAGE)"

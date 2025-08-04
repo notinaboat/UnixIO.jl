@@ -95,15 +95,19 @@ is still alive and returning `0` if it has terminated.
 """
 @db 2 function raw_transfer(fd::FD{In,Pseudoterminal},
                             ::TransferAPI{:LibC},
-                            ::IOTraits.In, buf, count,
+                            ::IOTraits.In, buf, fd_offset, count,
                             deadline)
+    @require ismissing(fd_offset)
+    @fd_state fd (FD_READY, FD_IDLE, FD_TIMEOUT) => FD_TRANSFERING
     n = C.read(fd.fd, buf, count)
     if n == -1
         err = errno()
         if err == C.EAGAIN && !isalive(fd.extra[:pt_client])
+            @fd_state fd FD_TRANSFERING => FD_IDLE # FIXME state for dead process ?
             @db 2 return 0 "Pseudoterminal client process died. -> HUP!"
         end
     end
+    @fd_state fd FD_TRANSFERING => FD_IDLE
     @db 2 return n
 end
 
@@ -116,9 +120,12 @@ end
 
     process = fd.extra[:pt_client]
 
+    @db 2 process
+
     while time() < deadline
         dl = min(deadline, time()+1)
         event = @invoke IOTraits._wait(fd::FD{In}, wm::T; deadline=dl)
+        @db 2 event
         if  event != :timeout
             @db return event
         end
@@ -128,5 +135,10 @@ end
             @db return :client_died
         end
     end
+        #FIXME no need to poll for PidFD?
+        if !isalive(check(process))
+            fd.isconnected = false
+            @db return :client_died
+        end
     @db return :timeout
 end

@@ -13,7 +13,7 @@ bd_info(f=bd) = read_xml_plist_string(String(sh"diskutil information -plist $f")
 atexit(()->UnixIO.system("hdiutil eject $bd"))
 
 
-@testset LoggingTestSet "Block Device" begin
+@testset "Block Device" begin
 
     @info "Test block device: $bd" bd_info()["Size"] bd_info()["DeviceBlockSize"]
 

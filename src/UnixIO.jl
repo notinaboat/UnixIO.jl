@@ -90,8 +90,8 @@ const typetree = TypeTree.tt
 using DuplexIOs
 using IOTraits
 using IOTraits: In, Out, AnyDirection
-using UnixIOHeaders
-const C = UnixIOHeaders.C
+using UnixLibC
+const C = UnixLibC
 
 include("macroutils.jl")
 include("ccall.jl")
@@ -123,7 +123,7 @@ include("warnings.jl")
         io_uring_queue_init()
     end
     if Sys.isapple()
-        gsd_queue_init()
+        #gsd_queue_init()
         #aio_queue_init()
     end
 
@@ -163,7 +163,7 @@ end
 
 const FD_IDLE        = 0
 const FD_WAITING     = 1 << 0
-const FD_CANCELING   = 1 << 1
+const FD_CANCELLING   = 1 << 1
 const FD_CANCELED    = 1 << 2
 const FD_TIMEOUT     = 1 << 3
 const FD_READY       = 1 << 4
@@ -171,17 +171,36 @@ const FD_TRANSFERING = 1 << 5
 #const FD_TRANSFERED  = 1 << 6
 const FD_CLOSED      = 1 << 7
 
+function fd_state_emoji(state)
+    state == FD_WAITING     ? "👀" :
+    state == FD_IDLE        ? "😴" :
+    state == FD_CANCELLING  ? "🔪" :
+    state == FD_CANCELED    ? "🪦" :
+    state == FD_TIMEOUT     ? "⌛️" :
+    state == FD_READY       ? "✅" :
+    state == FD_TRANSFERING ? "🔄" :
+    state == FD_CLOSED      ? "🚪" : 💩;
+end
+
 macro fd_state(fd, expr)
     @assert fd isa Symbol
     @assert expr isa Expr && expr.head == :call && expr.args[1] == :(=>)
     old_state = expr.args[2]
     new_state = expr.args[3]
-    esc(:(
-        old_state = @atomicswap $fd.state = $new_state;
-        (old_state ∈ $old_state) ||
-        error("UnixIO $($fd) @fd_state $($old_state) => $($(new_state)) " *
-              "failed! (old_state = $old_state)")
-    ))
+    esc(quote
+        ok = false
+        old_state = missing
+        for x in $old_state
+            old_state, ok = @atomicreplace $fd.state x => $new_state
+            if ok
+                break
+            end
+        end
+        ok || error("UnixIO $($fd) @fd_state " *
+                    "$(fd_state_emoji.($old_state)) => " *
+                    "$(fd_state_emoji($new_state)) => " *
+                    "failed! (old_state = $(fd_state_emoji(old_state))")
+    end)
 end
 
 # Unix File Descriptor wrapper.
@@ -298,7 +317,8 @@ IOTraits.TransferMode(T::Type{S_IFREG}) = TransferMode{:Async}()
 IOTraits.TransferAPI(T::Type{<:FD{<:Any,<:Any,TransferMode{:Async}}}) =
     IOTraits.firstvalid(TransferAPI{:IOURing}(),
                         TransferAPI{:GSD}(),
-                        TransferAPI{:AIO}())
+                        TransferAPI{:AIO}(),
+                        TransferAPI{:LibC}())
 
 
 # FIXME unify with open() ?
@@ -636,14 +656,25 @@ end
 
 @inline @db 2 function raw_transfer(fd, ::TransferAPI{:LibC}, ::Out,
                                     buf, fd_offset, count, deadline)
-    ismissing(fd_offset) ? C.write(fd, buf, count) :
-                          C.pwrite(fd, buf, count, fd_offset)
+    @fd_state fd (FD_READY, FD_IDLE) => FD_TRANSFERING
+    n = ismissing(fd_offset) ? C.write(fd, buf, count) :
+                               C.pwrite(fd, buf, count, fd_offset)
+    @fd_state fd FD_TRANSFERING => FD_IDLE
+    return n
 end
 
 @inline @db 2 function raw_transfer(fd, ::TransferAPI{:LibC}, ::In,
                                     buf, fd_offset, count, deadline)
-    ismissing(fd_offset) ? C.read(fd, buf, count) :
-                          C.pread(fd, buf, count, fd_offset)
+    @fd_state fd (FD_READY, FD_IDLE, FD_TIMEOUT) => FD_TRANSFERING
+    n = ismissing(fd_offset) ? C.read(fd, buf, count) :
+                               C.pread(fd, buf, count, fd_offset)
+    if n == 0 &&
+    (fcntl_getfl(fd) & C.O_NONBLOCK) != 0
+        @db 3 "EOF! $fd"
+        fd.isconnected = false
+    end
+    @fd_state fd FD_TRANSFERING => FD_IDLE
+    return n
 end
 
 raw_transfer(fd::FD{In,S_IFDIR}, ::TransferAPI{:LibC}, ::In,  args...) =
@@ -656,7 +687,7 @@ if Sys.islinux()
     include("epoll.jl")
 end
 if Sys.isapple()
-    include("gsd.jl")
+    #include("gsd.jl")
     #include("aio.jl")
 end
 
@@ -771,7 +802,14 @@ function Base.show(io::IO, fd::FD{D,T}) where {D,T}
         print(io, "FD{→$t}($fdint")
     end
     !isopen(fd) && print(io, "🚫")
-    fd.state == FD_WAITING && print(io, "👀")
+    fd.state == FD_WAITING     && print(io, "👀")
+    fd.state == FD_IDLE        && print(io, "😴")
+    fd.state == FD_CANCELLING  && print(io, "🔪")
+    fd.state == FD_CANCELED    && print(io, "🪦")
+    fd.state == FD_TIMEOUT     && print(io, "⌛️")
+    fd.state == FD_READY       && print(io, "✅")
+    fd.state == FD_TRANSFERING && print(io, "🔄")
+    fd.state == FD_CLOSED      && print(io, "🚪")
     islocked(fd) && print(io, "🔒")
     if D == In
         fd.isconnected || print(io, "☠️ ")

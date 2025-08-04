@@ -7,7 +7,7 @@ using AsyncLog
 using LoggingTestSets
 using Crayons
 
-@testset LoggingTestSet "Pseudoterminal Tests" begin
+@testset "Pseudoterminal Tests" begin
 
 function ptdump(f, cmd, cin, cout)
 
@@ -100,7 +100,7 @@ mktempdir() do d
         end
         """)
 
-    @info "readline() from pseudoterminal with fragmented writes."
+    @info "readline() from pseudoterminal with fragmented writes. (Julia UnixIO pty client)"
     env = merge(ENV, Dict("JULIA_UNIX_IO_DEBUG_LEVEL" => "0",
                           "JULIA_DEBUG" => ""))
     UnixIO.ptopen(`$(Base.julia_cmd()) $jlfile`; env=env, opts...) do cin, cout
@@ -198,7 +198,7 @@ mktempdir() do d
     binfile=joinpath(d, "tmp")
     UnixIO.system("gcc -o $binfile $cfile")
 
-    @info "readline() from pseudoterminal with fragmented writes."
+    @info "readline() from pseudoterminal with fragmented writes. (blocking C read)"
     UnixIO.ptopen(`$binfile`; opts...) do cin, cout
         cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
         cin=IOTraits.BaseIO(cin)
@@ -224,7 +224,7 @@ mktempdir() do d
         @test readline(cout; keep=true) == "7:Hello5\\n\n"
     end
 
-    @info "readline() from socket with fragmented writes."
+    @info "readline() from socket with fragmented writes. (blocking C read)"
     UnixIO.open(`$binfile`; opts...) do cin, cout
         cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
         cin=IOTraits.BaseIO(cin)
@@ -246,7 +246,7 @@ mktempdir() do d
     end
 end
 
-@info "readline() from pseudoterminal with fragmented writes."
+@info "readline() from pseudoterminal with fragmented writes. (C client with sleep)"
 mktempdir() do d
     cfile=joinpath(d, "tmp.c")
     write(cfile, """

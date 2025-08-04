@@ -1,4 +1,9 @@
 [deps]
 AsyncLog = "b136e949-d42a-4c20-998e-69d09231b44a"
+Crayons = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
+IOTraits = "8782331d-1791-483a-a4c8-2712d2c95aed"
 LoggingTestSets = "c2339e6d-2e7f-4cf9-92d2-844738085fb8"
+PLists = "244549da-a957-11e8-2419-29f9eea8ace5"
+Preconditions = "059f9e2d-edd5-4920-8ad6-95789b106d09"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+UnixIO = "86724fa0-f1e0-464a-a4b2-d754f3ca1f13"

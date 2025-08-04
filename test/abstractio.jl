@@ -24,18 +24,22 @@ const URI = IOTraits.URI
 
 cd(@__DIR__)
 
-@testset LoggingTestSet "UnixIO" begin
+@testset "UnixIO" begin
 #-------------------------------------------------------------------------------
+
+@info "Test transferall!() from Cmd with timeout"
 
 v = Vector{Vector{UInt8}}()
 cmd = `bash -c "echo FOO; sleep 2; echo BAR"`
 n = transferall!(cmd => v; timeout=1)
-@show n, String.(v)
-
-
-#exit(0)
+@test n == 1
+r = String.(v)
+@test r == ["FOO\n"]
 
 #-------------------------------------------------------------------------------
+
+
+@info "Test fragmented writes and canonical mode reads"
 
 ptin, ptout, ptpath = UnixIO.openpt()
 clientin = IOTraits.openread(ptpath)
@@ -65,6 +69,13 @@ try
             n = transfer!(clientin => c, 3)
             @test n == 2
             @test bytesavailable(clientin) == 0
+            sleep(2);
+            if Sys.isapple()
+                @test_broken bytesavailable(clientin) == 5
+                @test bytesavailable(clientin) == 7
+            else
+                @test bytesavailable(clientin) == 5
+            end
             n = transfer!(clientin => c, 3)
             @test bytesavailable(clientin) == 0
             @test n == 1
@@ -75,7 +86,10 @@ finally
     close.([clientin, ptin, ptout])
 end
 
+
 #-------------------------------------------------------------------------------
+#
+@info "Test transfer trhough pipe to Channel"
 
 c = Channel{Tuple{UInt32,UInt32}}()
 i, o = UnixIO.pipe()
@@ -105,7 +119,9 @@ end
 @test r[] == vcat([(UInt32(n+64x), UInt32(n+64x)) for n in 1:9, x in 1:12]...)
 
 
-c = Vector{Vector{UInt8}}()
+@info "Test large transfer through pipe"
+
+v = Vector{Vector{UInt8}}()
 
 i, o = UnixIO.pipe()
 @show i, o
@@ -114,31 +130,51 @@ i, o = UnixIO.pipe()
     @asynclog "write" begin
         for x in 1:3
             n = transferall!(fill(UInt8(x), 1_000_000) => o)
-#            @show "write $n"
+            @test n == 1_000_000
         end
         close(o)
     end
     @asynclog "read" begin
         while !IOTraits.isfinished(i)
-            n = transfer!(i => c, 10)
-#            @show n
+            n = transfer!(i => v, 10)
+            @test n ∈ (0, 1)
         end
     end
 end
 
-#@test c == ["FOO\n", "BAR\n", "FUM\n", "EXTRA"]
+pipe_buf_len = 65536
+n = 3_000_000 ÷ pipe_buf_len
+r = 3_000_000 % pipe_buf_len
+
+@test length.(v) == [fill(pipe_buf_len , n)..., r]
+
+r = vcat(v...)
+@test r == vcat(fill(UInt8(1), 1_000_000)...,
+                fill(UInt8(2), 1_000_000)...,
+                fill(UInt8(3), 1_000_000)...)
+
+
+@info "Test Cmd --> Vector{Vector{UInt8}}"
 
 v = Vector{Vector{UInt8}}()
 `bash -c "echo FOO; sleep 1; echo BAR; sleep 0.1; echo FUM"` --> v
 @test String.(v) == ["FOO\n", "BAR\n", "FUM\n"]
 
+
+@info "Test Cmd --> Vector{String}"
+
 v = Vector{String}()
 `bash -c "echo FOO; sleep 1; echo BAR; sleep 0.1; echo FUM"` --> v
 @test v == ["FOO\n", "BAR\n", "FUM\n"]
 
+@info "Test Cmd --> Vector{Vector{UInt8}}"
+
 v = Vector{Vector{UInt8}}()
 `bash -c "echo FOO; sleep 1; echo BAR; sleep 0.1; echo FUM"` --> v
 @test String(vcat(v...)) == "FOO\nBAR\nFUM\n"
+
+
+@info "Test Cmd --> Vector{String} eager reader"
 
 v = Vector{String}()
 s = IOTraits.openread(`bash -c "echo FOO; sleep 1; echo BAR; sleep 0.1; echo FUM"`)
@@ -153,12 +189,16 @@ close(s)
 
 
 
-@testset LoggingTestSet "Open Type" begin
+@testset "Open Type" begin
+
+@info "Test type of openread()"
 
 let f() = IOTraits.openread(UnixIO.FDType, "foobar")
     info, type = code_typed(f, ())[1]
     @test type == UnixIO.FD{IOTraits.In,UnixIO.FDType,TransferMode{:Immediate}}
 end
+
+@info "Test type of openwrite()"
 
 let f() = IOTraits.openwrite(UnixIO.FDType, "foobar")
     info, type = code_typed(f, ())[1]
@@ -167,9 +207,10 @@ end
 
 end # testset
 
+
 @info "Test open(cmd) -> Channel"
 c = Channel{NTuple{3,UInt8}}()
-cmd = `bash -c "echo FOO; sleep 1; echo BAR"`
+cmd = `bash -c "echo FOO; sleep 1; echo BAR; sleep 1"`
 @asynclog "UnixIO.open(::Cmd)" UnixIO.open(cmd) do i, o
     close(i)
     try

@@ -9,13 +9,9 @@ module IOTraits
 using Preconditions
 using Markdown
 using Preferences
-using Mmap
 include("../../../src/macroutils.jl")
 
-    using UnixIOHeaders
-    const C = UnixIOHeaders
     include("../../../src/debug.jl")
-
     @db function __init__()
         @ccall(jl_generating_output()::Cint) == 1 && return
         debug_init()
@@ -158,9 +154,9 @@ Everything in Unix is a file, but there are many different types of file,
 a few different types of Unix, and many ways a file handle can be configured.
 
 Selection of correct (or most efficient) methods can often be
-achieved with a simple type hierarchy. However traits seem to be
+achieved with a simple type hierarchy. However, traits seem to be
 useful way to deal with variations in behaviour that depend
-file handle configuration and platform.
+configuration and platform.
 
 In general `libc`'s `write(2)` and `read(2)` can be used to transfer
 data to or from any Unix file descriptor. However, the precise
@@ -422,7 +418,7 @@ added by a wrapper layer that combines two streams e.g. see DuplexIO.jl.
 [^AS7]: Note the [Transfer Direction Trait](#transfer-direction-trait)
 supports direction: `Exchange` for interfaces like [SPI][SPI] where data
 must be synchronously exchanged between a buffer and the interface (i.e.
-input and output are not separable). This can be though of as having exactly
+input and output are not separable). This can be thought of as having exactly
 the same behavior as direction `Out` except that incoming data appears in the
 output buffer after each output transfer.
 
@@ -642,10 +638,11 @@ Base.lock(s::Stream) = is_proxy(s) ? lock(unwrap(s)) :
 Base.unlock(s::Stream) = is_proxy(s) ? unlock(unwrap(s)) :
     @warn "Base.unlock(::$(typeof(s)) not defined!"
 
-@db function Base.wait(s::Stream; deadline=Inf, timeout=Inf)
+@db function Base.wait(s::Stream; deadline=missing, timeout=missing)
     deadline = deadline_or_timeout(deadline, timeout)     ;@db deadline - time()
     is_proxy(s) ? wait(unwrap(s); deadline) :
-                 _wait(s, WaitAPI(s); deadline)
+                  _wait(s, WaitAPI(s); deadline)
+    nothing
 end
 
 @db function Base.bytesavailable(s::Stream)
@@ -816,7 +813,7 @@ verb(::Out) = "to"
 function describe(s::Stream, buffer)
     sdir = TransferDirection(s)
     bdir = sdir == In() ? Out() : In()
-    "$(verb(sdir)) $(tyepof(s)) $(verb(bdir)) $(tyepof(buffer))"
+    "$(verb(sdir)) $(typeof(s)) $(verb(bdir)) $(typeof(buffer))"
 end
 
 
@@ -905,8 +902,8 @@ A transfer to a `URI` creates a new resource or replaces the resource
                                n::Union{Integer,Missing}=missing;
                                stream_i::Union{Integer,Missing}=missing,
                                buffer_i::Union{Integer,Missing}=missing,
-                               deadline=Inf,
-                               timeout=Inf)
+                               deadline::Union{Float64,Missing}=missing,
+                               timeout::Union{Float64,Missing}=missing)
 
     @require isopen(stream)
     @require ismissing(n) || n > 0
@@ -915,6 +912,7 @@ A transfer to a `URI` creates a new resource or replaces the resource
              StreamIndexing(stream) == IndexableIO() ||
              Cursors(stream) isa HasCursors
     @require ismissing(buffer_i) || buffer_i > 0
+    @require ismissing(deadline) || ismissing(timeout)
 
     @db typeof(stream) stream_i buffer_i deadline timeout
 
@@ -934,10 +932,13 @@ end
 
 missing_or_uint64(i) = ismissing(i) ? i : UInt(unsigned(i))
 
-function deadline_or_timeout(deadline, timeout)
-    Float64((timeout == 0)   ? 0 :
-            (timeout == Inf) ? deadline :
-                               (time() + timeout))
+function deadline_or_timeout(deadline::Union{Float64,Missing},
+                             timeout::Union{Float64,Missing};
+                             default::Float64=Inf)::Float64
+
+    !ismissing(timeout)  ? time() + timeout :
+    !ismissing(deadline) ? deadline :
+                           default
 end
 
 transfer!(a...; timeout) = transfer!(a...; deadline=time() + Float64(timeout))
@@ -997,87 +998,6 @@ transfer!(t::Pair{<:IOStreams,<:Any}, a...; kw...) =
     transfer!(input(t[1]) => t[2], a...; kw...)
 
 
-
-
-## Waiting for the Deadline
-
-idoc"""
-The specification for `transfer!` says: If no items are immediately available,
-wait until `time() > deadline` for at least one item to be transferred.
-
-The method below starts by simply attempting the transfer.
-This avoids the overhead of locking and measuring the current time.
-If the initial transfer attempt yields no data, the `wait_for_transfer`
-method is selected based on Waiting Interface trait.
-
-If the buffer elements are larger than one byte and the stream has
-Unknown Availability then `attempt_transfer` can end up with a
-partial item in the buffer. In this situation a second attempt is needed
-to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
-that the second transfer adheres to the specified deadline.
-
-"""
-@inline @db 2 function _transfer!(stream, buffer, indices, deadline::Float64)
-
-    if (Availability(stream) == Availability{:Unknown}()
-    &&  try ioelsize(buffer) != 1 catch; false end
-    &&  deadline != Inf)
-        stream = timeout_stream(stream; deadline)
-    end
-
-    _transfer!(stream, TransferMode(stream) buffer, indices, deadline)
-end
-
-@inline @db 2 function _transfer!(stream, ::TransferMode{:Immediate},
-                                  buffer, indices, deadline)
-
-    r = attempt_transfer(stream, buffer, indices, deadline)
-    if r == 0 && !iszero(deadline)
-        r = wait_for_transfer(stream, WaitAPI(stream), buffer, indices, deadline)
-    end
-    @db 2 return r
-end
-
-
-@inline @db 2 function _transfer!(stream, TransferMode{:Blocking},
-                                  buffer, indices, deadline)
-    @require deadline == Inf
-    attempt_transfer(stream, buffer, indices, deadline)
-end
-
-
-@inline @db 2 function _transfer!(stream, ::TransferMode{:Async},
-                                  buffer, indices, deadline)
-    if deadline == Inf
-        @db return 2 attempt_transfer(stream, buffer, indices, deadline)
-    end
-
-    if !is_cancellable(stream) || !is_cancellable(buffer)
-
-        @warn "transfer!() with `deadline != Inf` might get stuck because " *
-              "neither the stream or the buffer has " *
-              "the `Cancellable{:true}` trait " *
-              "(transfer $(describe(steram, buffer)))." *
-              "e.g. If the stream is connected to a slow USB storage device " *
-              "the OS might block waiting for the block device." *
-              "Consider using the `LazyBufferedInput` wrapper to make the " *
-              "stream cancellable." *
-              "Or, consider a `Cancellable{:true`} buffer."
-    end
-
-    transfer_task = @async attempt_transfer(stream, buffer, indices, deadline)
-    timer = register_timer(deadline) do
-         FIXME "cancel" the buffer and or the stream
-    end
-    try 
-        wait(transfer_task)
-    finally
-        # FIXME race here?
-        close(timer)
-    end
-end
-
-
 # Transfer Mode Trait
 
 struct TransferMode{T} end
@@ -1106,6 +1026,91 @@ Transfer Mode         Description
 TransferMode(x) = TransferMode(typeof(x))
 TransferMode(T::Type) = is_proxy(T) ? TransferMode(unwrap(T)) :
                                       TransferMode{:Immediate}()
+
+
+
+# Waiting for the Deadline
+
+idoc"""
+The specification for `transfer!` says: If no items are immediately available,
+wait until `time() > deadline` for at least one item to be transferred.
+
+The method below starts by simply attempting the transfer.
+This avoids the overhead of locking and measuring the current time.
+If the initial transfer attempt yields no data, the `wait_for_transfer`
+method is selected based on Waiting Interface trait.
+
+If the buffer elements are larger than one byte and the stream has
+Unknown Availability then `attempt_transfer` can end up with a
+partial item in the buffer. In this situation a second attempt is needed
+to transfer the missing bytes. A TimeoutStream wrapper is used to ensure
+that the second transfer adheres to the specified deadline.
+
+"""
+@inline @db 2 function _transfer!(stream, buffer, indices, deadline::Float64)
+
+    if (Availability(stream) == Availability{:Unknown}()
+    &&  try ioelsize(buffer) != 1 catch; false end
+    &&  deadline != Inf)
+        stream = timeout_stream(stream; deadline)
+    end
+
+    _transfer!(stream, TransferMode(stream), buffer, indices, deadline)
+end
+
+@inline @db 2 function _transfer!(stream, ::TransferMode{:Immediate},
+                                  buffer, indices, deadline)
+
+    r = attempt_transfer(stream, buffer, indices, deadline)
+    if r == 0 && !iszero(deadline)
+        r = wait_for_transfer(stream, WaitAPI(stream), buffer, indices, deadline)
+    end
+    @db 2 return r
+end
+
+
+@inline @db 2 function _transfer!(stream, ::TransferMode{:Blocking},
+                                  buffer, indices, deadline)
+    @require deadline == Inf
+    attempt_transfer(stream, buffer, indices, deadline)
+end
+
+
+@inline @db 2 function _transfer!(stream, ::TransferMode{:Async},
+                                  buffer, indices, deadline)
+    if deadline == Inf
+        @db 2 return attempt_transfer(stream, buffer, indices, deadline)
+    end
+
+    if !is_cancellable(stream) || !is_cancellable(buffer)
+
+        @warn "transfer!() with `deadline != Inf` might get stuck because " *
+              "neither the stream or the buffer has " *
+              "the `Cancellable{:true}` trait " *
+              "(transfer $(describe(stream, buffer)))." *
+              "e.g. If the stream is connected to a slow USB storage device " *
+              "the OS might block waiting for the block device." *
+              "Consider using the `LazyBufferedInput` wrapper to make the " *
+              "stream cancellable." *
+              "Or, consider a `Cancellable{:true`} buffer."
+    end
+
+
+    transfer_task = @async attempt_transfer(stream, buffer, indices, deadline)
+# FIXME register_timer() is in UnixIO, need to move to IOTraits
+# timer = register_timer(deadline) do
+#         @error "FIXME 'cancel' the buffer and or the stream"
+#    end
+    r = 0
+    try 
+        r = fetch(transfer_task)
+    finally
+        # FIXME race here?
+#        close(timer)
+    end
+    @ensure r isa UInt
+    return r
+end
 
 
 # Transfer Cancelation Trait
@@ -1184,7 +1189,7 @@ TransferAPI(T::Type) = is_proxy(T) ? TransferAPI(unwrap(T)) :
 Base.isvalid(::TransferAPI) = true
 Base.isvalid(::TransferAPI{:IOURing}) = Sys.islinux()
 Base.isvalid(::TransferAPI{:AIO}) = false
-Base.isvalid(::TransferAPI{:GSD}) = Sys.isapple()
+Base.isvalid(::TransferAPI{:GSD}) = false # FIXME Sys.isapple()
 
 
 # Waiting Interface Trait
@@ -1250,7 +1255,7 @@ waiting for IO. Sleeping allows other Julia tasks to run immediately, whereas
 the other polling mechanisms all have some amount of book-keeping and system
 call overhead.
 
-FIXME: Conditer WaitWithoutYeilding -- Block calling thread.
+FIXME: Condsider WaitWithoutYeilding -- Block calling thread.
  - Might be useful where low latency is important.
 """
 WaitAPI(x) = WaitAPI(typeof(x))
@@ -1782,7 +1787,9 @@ but an error is thrown if a partial item is transferred.
     @assert sz > 1
     if Availability(stream) != Availability{:Unknown}()
         n::UInt = min(n, bytesavailable(stream) ÷ sz)
-        n > 0 || @db 2 return UInt(0)
+        if n == 0
+            @db 2 return UInt(0)
+        end
     end
 
     buf = Ptr{UInt8}(buf)
@@ -2071,7 +2078,7 @@ end
         end
         r2 = transferall!(buf => s2, r; start=(1 => buffer_i))
         # FIXME pass deadline to write stream?
-        # what happens id read ok, but write fails? data loss?
+        # what happens if read ok, but write fails? data loss?
         buffer_i += r2
         @assert r2 == r
         # FIXME should query available capacity and not read more than that?
@@ -2283,19 +2290,19 @@ StreamDelegation(::Type{<:TimeoutStream}) = DelegatedToSubStream()
     transfer!(s.stream, buffer, n; deadline = min(deadline, s.deadline), kw...)
 end
 
-@db function pump!(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+@db function pump!(s::TimeoutStream{T}; deadline=missing, timeout=missing) where T
     @db_not_tested
     deadline = deadline_or_timeout(deadline, timeout)
     pump!(s.stream; deadline = min(deadline, s.deadline))
 end
 
-@db function Base.wait(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+@db function Base.wait(s::TimeoutStream{T}; deadline=missing, timeout=missing) where T
     @db_not_tested
     deadline = deadline_or_timeout(deadline, timeout)
     wait(s.stream; deadline = min(deadline, s.deadline))
 end
 
-@db function Base.eof(s::TimeoutStream{T}; deadline=Inf, timeout=Inf) where T
+@db function Base.eof(s::TimeoutStream{T}; deadline=missing, timeout=missing) where T
     deadline = deadline_or_timeout(deadline, timeout)
     eof(s.stream; deadline = min(deadline, s.deadline))
 end
@@ -2489,7 +2496,7 @@ Return the number of items transferred.
 @db function transferall!(stream, buf, n=missing; stream_i=missing, buffer_i=missing, deadline=Inf, timeout=Inf)
     @require deadline == Inf || timeout == Inf
     @require TotalSize(stream) != TotalSize{:Infinite}() || (deadline + timeout < Inf)
-    # FIXME deadline requirement for infinite stream might make sense for input streams, but makes not sense for outputs
+    # FIXME deadline requirement for infinite stream might make sense for input streams, but makes no sense for outputs
     # Even for inputs, no deadline is ok if `n` is finine.
     #
     # FIXME `n=length(buf)` makes no sense for ToStream, ToPush, ToPut...
@@ -2689,7 +2696,8 @@ default_buffer_size(stream) = DataRate(stream)
 Transfer bytes from the wrapped IO to the internal buffer.
 """
 @db function refill_internal_buffer(s::GenericBufferedInput,
-                                    n=s.buffer_size; deadline=Inf)
+                                    n=s.buffer_size;
+                                    deadline::Float64=Inf)
     # If needed, expand the buffer.
     sbuf = s.buffer
     @assert sbuf.append
@@ -2790,7 +2798,7 @@ loop will eventually get the data it needs.
 
     if bytesavailable(s) < ioelsize(buf)
         @db_not_tested
-        refill_internal_buffer(s; deadline=0) # FIXME ?)
+        refill_internal_buffer(s; deadline=0.0) # FIXME ?)
     end
 
     @invoke _attempt_transfer(s::Stream,
@@ -2809,14 +2817,15 @@ end
 
 
 @db function unsafe_transfer!(s::BufferedInput, buf::Ptr{UInt8},
-                              stream_offset::Missing, n::UInt)
+                              stream_offset::Missing, n::UInt,
+                              deadline::Float64)
 
     @db_not_tested
     sbuf = s.buffer
     # If there are not enough bytes in `sbuf`, read more from the wrapped stream.
     if bytesavailable(sbuf) < n
         @db_not_tested
-        refill_internal_buffer(s)
+        refill_internal_buffer(s; deadline)
     end
 
     # Read available bytes from `sbuf` into the caller's `buffer`.
@@ -2869,7 +2878,8 @@ end
 
 
 @db function unsafe_transfer!(s::LazyBufferedInput, buf::Ptr{UInt8},
-                              stream_offset::Missing, n::UInt)
+                              stream_offset::Missing, n::UInt,
+                              deadline::Float64)
 
     # First take bytes from the buffer.
     sbuf = s.buffer
@@ -2881,7 +2891,7 @@ end
 
     # Then read from the wrapped IO.
     if n > count
-        count += unsafe_transfer!(s.stream, buf + count, stream_offset, n - count)
+        count += unsafe_transfer!(s.stream, buf + count, stream_offset, n - count, deadline)
     end
 
     @ensure count <= n
@@ -2907,7 +2917,7 @@ Base.eof(io::BaseIO; deadline=Inf, timeout=Inf) =
 idoc"""
 `eof` is specialised on Total Size.
 """
-@db function Base.eof(s::Stream; deadline=Inf, timeout=Inf)
+@db function Base.eof(s::Stream; deadline=missing, timeout=missing)
     @require is_input(s)
     if !isopen(s)
         @db return true
@@ -3060,9 +3070,13 @@ much data is available is to attempt a transfer.
 Otherwise, the amount of data immediately available can be queried using the
 `bytesavailable` function.
 """
-@db function Base.readavailable(s::Stream; timeout=0)
+@db function Base.readavailable(s::Stream; timeout=missing, deadline=missing)
     @require isopen(s)
     @require is_input(s)
+    @require ismissing(timeout) || ismissing(deadline)
+
+    deadline = deadline_or_timeout(deadline, timeout; default=0.0)
+
     if Availability(s) == Availability{:Unknown}()
         n = default_buffer_size(s)
     else
@@ -3072,11 +3086,12 @@ Otherwise, the amount of data immediately available can be queried using the
         end
     end
     buf = Vector{UInt8}(undef, n)
-    n = transfer!(s, buf, n; timeout)
+
+    n = transfer!(s, buf, n; deadline)
     resize!(buf, n)
 end
 
-Base.readavailable(io::BaseIO; timeout=0) = readavailable(io.stream; timeout)
+Base.readavailable(io::BaseIO; timeout=0.0) = readavailable(io.stream; timeout)
 
 
 
@@ -3176,6 +3191,8 @@ export TotalSize
 export Availability
 
 export TransferSize
+
+export Cancellable
 
 export ReadUnit
 
