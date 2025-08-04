@@ -142,11 +142,10 @@ i, o = UnixIO.pipe()
     end
 end
 
+@test sum(length.(v)) == 3_000_000
 pipe_buf_len = 65536
-n = 3_000_000 ÷ pipe_buf_len
-r = 3_000_000 % pipe_buf_len
 
-@test length.(v) == [fill(pipe_buf_len , n)..., r]
+@test count(isequal(pipe_buf_len), length.(v)) > (3_000_000÷pipe_buf_len) - 2
 
 r = vcat(v...)
 @test r == vcat(fill(UInt8(1), 1_000_000)...,

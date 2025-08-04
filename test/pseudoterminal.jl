@@ -440,7 +440,8 @@ end
 
 
 @info "Interactive bash script via pseudoterminal."
-UnixIO.ptopen(`bash`; opts...) do cin, cout
+env = merge(ENV, Dict("TERM" => "dumb"))
+UnixIO.ptopen(`bash`; env, opts...) do cin, cout
     cout=IOTraits.BaseIO(IOTraits.LazyBufferedInput(cout))
     cin=IOTraits.BaseIO(cin)
     ptdump(`bash`, cin, cout) do fin, fout

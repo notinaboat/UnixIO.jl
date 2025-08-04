@@ -9,7 +9,7 @@ uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
 version = "1.11.0"
 
 [[deps.AsyncLog]]
-git-tree-sha1 = "3f6382fdac70760e148a58f3d9f51ff1795842fc"
+path = "../../AsyncLog"
 uuid = "b136e949-d42a-4c20-998e-69d09231b44a"
 version = "0.1.2"
 

@@ -54,7 +54,11 @@ function io_uring_key(key_flag, key_data)
 end
                            
 
-io_uring_key_fd(key) = unsafe_trunc(Cint, key)
+function io_uring_key_fd(key)
+    @assert "not used ?"
+    p = user_data & IO_URING_KEY_MASK
+    unsafe_pointer_to_objref(Ptr{Nothing}(p))
+end
 
 #FIXME what if two tasks are waiting for the same file descriptor.
 # (possibly from two different UnixIO.FD objects).
@@ -64,7 +68,12 @@ io_uring_key_fd(key) = unsafe_trunc(Cint, key)
 Register `fd` to wake up `io_uring_wait_cqe` on `event`:
 """
 @db 4 function register_for_events(q::IOURingQueue, fd)
-    @fd_state fd FD_IDLE => FD_WAITING
+    #FIXME hack...
+    if (@atomic fd.state) == FD_READY
+        sleep(0.1)
+    end
+
+    @fd_state fd (FD_READY, FD_TIMEOUT, FD_IDLE) => FD_WAITING
     key = io_uring_key(IO_URING_POLL_REQUEST, fd)
     @dblock q.ring_lock begin
         sqe = io_uring_get_sqe(q.ring)
@@ -81,17 +90,22 @@ end
 
 @db 4 function unregister_for_events(q::IOURingQueue, fd)
     assert_havelock(fd.ready)
-    key = io_uring_key(IO_URING_POLL_REQUEST, fd)
-    io_uring_cancel(q, key)
-    debug_write("IOUring: unregister_for_events($fd) waiting for cancelation...\n")
-    res = wait(fd.ready)
-    debug_write("IOUring: unregister_for_events($fd) done: $res\n")
+    # FIXME this logic is duplicated in poll.jl -- need a shared layer?
+    old_state, ok = @atomicreplace fd.state FD_WAITING => FD_CANCELLING
+    if old_state == FD_READY
+        @fd_state fd FD_READY => FD_CANCELED
+    else
+        key = io_uring_key(IO_URING_POLL_REQUEST, fd)
+        io_uring_cancel(q, key)
+        #debug_write("IOUring: unregister_for_events($fd) waiting for cancelation...\n")
+        res = wait(fd.ready)
+        #debug_write("IOUring: unregister_for_events($fd) done: $res\n")
+    end
     nothing
 end
 
 
 function io_uring_cancel(q::IOURingQueue, key_to_cancel::UInt64)
-    @fd_state fd (FD_TRANSFERING, FD_WAITING) => FD_CANCELING
     p = key_to_cancel & IO_URING_KEY_MASK
     request_key = p | IO_URING_CANCEL_REQUEST;
     @dblock q.ring_lock begin
@@ -125,23 +139,25 @@ end
     p = user_data & IO_URING_KEY_MASK
     user_obj = unsafe_pointer_to_objref(Ptr{Nothing}(p))
 
-    if res == -C.ECANCELED
-        @fd_state fd FD_CANCELING => FD_CANCELED
-    end
+    # FIXME needed ? or handled by poll_task()?
+    #if res == -C.ECANCELED
+    #    @fd_state fd FD_CANCELLING => FD_CANCELED
+    #end
 
     if user_data & IO_URING_OBJREF_REQUEST != 0
-        debug_write("IOUring poll_wait(): objref res = $res $(constant_name(-res; prefix="E")) $user_obj\n")
+#        debug_write("IOUring poll_wait(): objref res = $res $(constant_name(-res; prefix="E")) $user_obj\n")
         @dblock user_obj notify(user_obj, res);
     elseif user_data & IO_URING_POLL_REQUEST != 0
 #        debug_write("IOUring poll_wait(): poll request ! $res\n")
         f(res, user_obj)
     elseif user_data & IO_URING_CANCEL_REQUEST != 0
         if res ∈ (0, -C.ENOENT)
-            debug_write("IOUring poll_wait(): canceled! $user_obj\n")
+            #debug_write("IOUring poll_wait(): canceled! $user_obj\n")
             #@dblock user_obj notify(user_obj, :canceled)
         elseif res == -C.EALREADY
-            @fd_state fd FD_CANCELING => FD_WAITING
-            debug_write("IOUring poll_wait(): cancel failed EALREADY ($res) $user_obj\n");
+            fd = user_obj
+            @fd_state fd FD_CANCELLING => FD_WAITING
+            #debug_write("IOUring poll_wait(): cancel failed EALREADY ($res) $user_obj\n");
             #@dblock user_obj notify(user_obj, :not_canceled)
         else
             msg = "io_uring_prep_cancel64() -> io_uring_cqe.res = $res"
@@ -165,6 +181,7 @@ end
 
     # FIXME don't share ring between threads ?
     # https://github.com/axboe/liburing/issues/109#issuecomment-1166378978
+    # https://github.com/axboe/liburing/issues/926#issuecomment-1686678750
     #
     @fd_state fd FD_IDLE => FD_TRANSFERING
 
@@ -203,11 +220,12 @@ end
         finally
             if res == nothing
                 assert_havelock(fd.ready)
+                @fd_state fd FD_TRANSFERING => FD_CANCELLING
                 io_uring_cancel(io_uring_queue, key)
-                debug_write("IOUring: raw_transfer($fd) waiting for cancelation...\n")
-                res = wait(ready)
-                debug_write("IOUring: raw_transfer($fd) " *
-                            "res=$res $(typeof(res)) $(time() -t0)\n")
+                #debug_write("IOUring: raw_transfer($fd) waiting for cancelation...\n")
+                res = wait(fd.ready)
+                #debug_write("IOUring: raw_transfer($fd) " *
+                #            "res=$res $(typeof(res)) $(time() -t0)\n")
                 if fd.state == FD_CANCELED
                     res = Cint(-1)
                     errno(-C.ECANCELED)
@@ -218,7 +236,8 @@ end
         end
 
     finally
-        fd.state = FD_IDLE
+        # FIXME hack
+        @atomic fd.state = FD_IDLE
     end
 
     @ensure fd.state == FD_IDLE

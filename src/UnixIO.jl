@@ -15,7 +15,7 @@ Features:
  - Run a sub-process in a pseudo terminal.
  - Communicate with a subprocess via stdin/stdout sockets with option to merge stderr.
  - Timeout option for all operations.
- - Use `epoll` and `poll` for asynchronous IO.
+ - Use `epoll` and `poll` for asynchronous IO. FIXME io_uring ?
  - Optional fine grained debug tracing.
  - Read and write unix device files.
  - Wait for sub-process termination without signals `pid_fd`, `epoll`.
